@@ -211,8 +211,8 @@ def create_app(db_path: str) -> FastAPI:
                         "size_b": s.size_b,
                         "sample_face_ids_a": s.sample_face_ids_a,
                         "sample_face_ids_b": s.sample_face_ids_b,
-                        "name_a": persons_map.get(s.cluster_a),
-                        "name_b": persons_map.get(s.cluster_b),
+                        "name_a": persons_map.get(s.cluster_a) if s.kind_a == "person" else None,
+                        "name_b": persons_map.get(s.cluster_b) if s.kind_b == "person" else None,
                     }
                     for s in page
                 ],

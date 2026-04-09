@@ -23,6 +23,8 @@ class MergeSuggestion:
     size_b: int
     sample_face_ids_a: list[int]
     sample_face_ids_b: list[int]
+    kind_a: str = "cluster"  # "person" or "cluster"
+    kind_b: str = "cluster"
 
 
 def _faces_centroid(faces: list[Face]) -> np.ndarray:
@@ -411,6 +413,8 @@ def suggest_merges(
                     size_b=len(fids_b),
                     sample_face_ids_a=fids_a[:4],
                     sample_face_ids_b=fids_b[:4],
+                    kind_a=kind_a,
+                    kind_b=kind_b,
                 )
             )
 
