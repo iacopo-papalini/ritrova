@@ -1,12 +1,13 @@
 """SQLite database for face recognition data."""
 
+import contextlib
 import functools
 import json
 import sqlite3
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 
@@ -20,7 +21,7 @@ def _locked(method: Callable[..., R]) -> Callable[..., R]:
     """Decorator: hold the DB lock for the entire method call."""
 
     @functools.wraps(method)
-    def wrapper(self: "FaceDB", *args: Any, **kwargs: Any) -> R:
+    def wrapper(self: FaceDB, *args: Any, **kwargs: Any) -> R:
         with self._lock:
             return method(self, *args, **kwargs)
 
@@ -118,10 +119,8 @@ class FaceDB:
             "ALTER TABLE photos ADD COLUMN video_path TEXT",
             "ALTER TABLE faces ADD COLUMN species TEXT NOT NULL DEFAULT 'human'",
         ]:
-            try:
+            with contextlib.suppress(sqlite3.OperationalError):
                 self.conn.execute(migration)
-            except sqlite3.OperationalError:
-                pass  # column already exists
         self.conn.commit()
 
     @_locked
@@ -141,7 +140,7 @@ class FaceDB:
         self.conn.close()
 
     def _now(self) -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
     # --- Photos ---
 

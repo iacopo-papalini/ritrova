@@ -82,7 +82,7 @@ async function excludeSelected() {
   const resp = await fetch('/api/faces/exclude', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({face_ids: ids.map(Number)})
+    body: JSON.stringify({face_ids: ids.map(Number), cluster_id: {{ cluster_id }}})
   });
   if (resp.ok) location.reload();
 }

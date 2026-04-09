@@ -12,11 +12,17 @@ from PIL import Image, ImageOps
 
 from .cluster import (
     compare_persons,
+    find_similar_cluster,
     find_similar_unclustered,
     rank_persons_for_cluster,
     suggest_merges,
 )
 from .db import FaceDB
+from .services import (
+    compute_cluster_hint,
+    compute_singleton_hints,
+    filter_persons_by_species,
+)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -77,65 +83,17 @@ def create_app(db_path: str) -> FastAPI:
 
     @app.get("/singletons", response_class=HTMLResponse)
     def singletons_page(request: Request, species: str = "human"):
-        import numpy as np
-
         total = db.get_singleton_count(species=species)
         faces = db.get_singleton_faces(species=species, limit=200)
         all_persons = db.get_persons()
-        pet_species = db.PET_SPECIES
-        persons = []
-        for p in all_persons:
-            pfaces = db.get_person_faces(p.id, limit=1)
-            if not pfaces:
-                continue
-            fs = pfaces[0].species
-            if species == "pet" and fs in pet_species:
-                persons.append(p)
-            elif species != "pet" and fs == species:
-                persons.append(p)
+        persons = filter_persons_by_species(db, all_persons, species)
 
         face_paths = {}
         for face in faces:
             photo = db.get_photo(face.photo_id)
             face_paths[face.id] = photo.file_path if photo else ""
 
-        # Precompute person centroids for nearest-match hints (matching species only)
-        pet_species = db.PET_SPECIES
-        person_centroids = []
-        for p in persons:
-            pfaces = db.get_person_faces(p.id, limit=200)
-            if not pfaces:
-                continue
-            face_sp = pfaces[0].species
-            if species == "pet" and face_sp not in pet_species:
-                continue
-            if species != "pet" and face_sp != species:
-                continue
-            embs = np.array([f.embedding for f in pfaces])
-            c = embs.mean(axis=0)
-            norm = np.linalg.norm(c)
-            if norm > 0:
-                c = c / norm
-            person_centroids.append((p.id, p.name, c))
-
-        # For each singleton, find nearest person
-        face_hints = {}
-        if person_centroids:
-            centroid_matrix = np.array([pc[2] for pc in person_centroids])
-            for face in faces:
-                emb = face.embedding
-                norm = np.linalg.norm(emb)
-                if norm > 0:
-                    emb = emb / norm
-                sims = centroid_matrix @ emb
-                best_idx = int(sims.argmax())
-                best_sim = float(sims[best_idx])
-                pid, pname, _ = person_centroids[best_idx]
-                face_hints[face.id] = {
-                    "person_id": pid,
-                    "name": pname,
-                    "sim": round(best_sim * 100, 1),
-                }
+        face_hints = compute_singleton_hints(db, faces, persons, species)
 
         return templates.TemplateResponse(
             name="singletons.html",
@@ -152,29 +110,7 @@ def create_app(db_path: str) -> FastAPI:
 
     @app.get("/persons", response_class=HTMLResponse)
     def persons_page(request: Request, species: str = "human"):
-        persons = db.get_persons()
-        # Filter to persons that have faces of the requested species
-        if species == "pet":
-            pet_species = db.PET_SPECIES
-            persons = [
-                p
-                for p in persons
-                if db.query(
-                    "SELECT 1 FROM faces WHERE person_id = ? AND species IN ({}) LIMIT 1".format(
-                        ",".join("?" * len(pet_species))
-                    ),
-                    (p.id, *pet_species),
-                )
-            ]
-        else:
-            persons = [
-                p
-                for p in persons
-                if db.query(
-                    "SELECT 1 FROM faces WHERE person_id = ? AND species = ? LIMIT 1",
-                    (p.id, species),
-                )
-            ]
+        persons = filter_persons_by_species(db, db.get_persons(), species)
         return templates.TemplateResponse(
             name="persons.html",
             context={"persons": persons, "species": species},
@@ -345,54 +281,12 @@ def create_app(db_path: str) -> FastAPI:
         return JSONResponse({"ok": True, "claimed": len(face_ids)})
 
     @app.get("/api/clusters/{cluster_id}/hint")
-    def cluster_hint(cluster_id: int):
+    def cluster_hint_api(cluster_id: int):
         """Return the best matching person for a cluster."""
-        import numpy as np
-
-        faces = db.get_cluster_faces(cluster_id, limit=200)
-        if not faces:
+        hint = compute_cluster_hint(db, cluster_id)
+        if hint is None:
             return JSONResponse({"name": None})
-
-        cluster_species = faces[0].species
-        pet_species = db.PET_SPECIES
-
-        embs = np.array([f.embedding for f in faces])
-        centroid = embs.mean(axis=0)
-        norm = np.linalg.norm(centroid)
-        if norm > 0:
-            centroid = centroid / norm
-
-        best_name = None
-        best_sim = 0
-        best_pid = None
-        for person in db.get_persons():
-            pfaces = db.get_person_faces(person.id, limit=200)
-            if not pfaces:
-                continue
-            # Only compare within same species group
-            face_sp = pfaces[0].species
-            if cluster_species in pet_species and face_sp not in pet_species:
-                continue
-            if cluster_species not in pet_species and face_sp != cluster_species:
-                continue
-            p_embs = np.array([f.embedding for f in pfaces])
-            p_c = p_embs.mean(axis=0)
-            p_norm = np.linalg.norm(p_c)
-            if p_norm > 0:
-                p_c = p_c / p_norm
-            sim = float(centroid @ p_c)
-            if sim > best_sim:
-                best_sim = sim
-                best_name = person.name
-                best_pid = person.id
-
-        return JSONResponse(
-            {
-                "name": best_name,
-                "person_id": best_pid,
-                "sim": round(best_sim * 100, 1),
-            }
-        )
+        return JSONResponse(hint)
 
     # ── API: pagination ─────────────────────────────────────
 
@@ -427,7 +321,6 @@ def create_app(db_path: str) -> FastAPI:
         photo = db.get_photo(face.photo_id)
         if not photo:
             raise HTTPException(404)
-        # Strip __pets suffix for pet photos
         real_path = photo.file_path.removesuffix("__pets")
         if not Path(real_path).exists():
             raise HTTPException(404)
@@ -470,13 +363,11 @@ def create_app(db_path: str) -> FastAPI:
 
     # ── API: actions ───────────────────────────────────────
 
-    def _next_similar_cluster(self_person_id: int) -> str:
+    def _next_similar_cluster(person_id: int) -> str:
         """Find the unnamed cluster most similar to this person, return redirect URL."""
-        from .cluster import find_similar_cluster
-
-        next_cluster = find_similar_cluster(db, self_person_id)
+        next_cluster = find_similar_cluster(db, person_id)
         if next_cluster:
-            return f"/clusters/{next_cluster}?suggested_person={self_person_id}"
+            return f"/clusters/{next_cluster}?suggested_person={person_id}"
         return "/clusters"
 
     @app.post("/api/clusters/{cluster_id}/name")
@@ -496,20 +387,15 @@ def create_app(db_path: str) -> FastAPI:
     @app.post("/api/clusters/{cluster_id}/dismiss")
     def dismiss_cluster(cluster_id: int):
         """Dismiss all faces in a cluster as non-faces."""
-        face_ids = [
-            r[0] for r in db.query("SELECT id FROM faces WHERE cluster_id = ?", (cluster_id,))
-        ]
+        face_ids = db.get_cluster_face_ids(cluster_id)
         if face_ids:
             db.dismiss_faces(face_ids)
         return JSONResponse({"ok": True, "dismissed": len(face_ids)})
 
     @app.post("/api/clusters/merge")
-    def merge_clusters(source_cluster: int = Body(...), target_cluster: int = Body(...)):
+    def merge_clusters_api(source_cluster: int = Body(...), target_cluster: int = Body(...)):
         """Move all faces from source cluster into target cluster."""
-        db.run(
-            "UPDATE faces SET cluster_id = ? WHERE cluster_id = ?",
-            (target_cluster, source_cluster),
-        )
+        db.merge_clusters(source_cluster, target_cluster)
         return JSONResponse({"ok": True})
 
     @app.post("/api/faces/dismiss")
@@ -519,13 +405,12 @@ def create_app(db_path: str) -> FastAPI:
         return JSONResponse({"ok": True, "dismissed": len(face_ids)})
 
     @app.post("/api/faces/exclude")
-    def exclude_faces(face_ids: list[int] = Body(..., embed=True)):
+    def exclude_faces(
+        face_ids: list[int] = Body(..., embed=True),
+        cluster_id: int = Body(..., embed=True),
+    ):
         if face_ids:
-            placeholders = ",".join("?" * len(face_ids))
-            db.run(
-                f"UPDATE faces SET cluster_id = NULL WHERE id IN ({placeholders})",
-                face_ids,
-            )
+            db.exclude_faces(face_ids, cluster_id=cluster_id)
         return JSONResponse({"ok": True, "excluded": len(face_ids)})
 
     @app.post("/api/faces/{face_id}/assign")
@@ -535,7 +420,7 @@ def create_app(db_path: str) -> FastAPI:
 
     @app.post("/api/faces/{face_id}/unassign")
     def unassign_face(face_id: int):
-        db.run("UPDATE faces SET person_id = NULL WHERE id = ?", (face_id,))
+        db.unassign_face(face_id)
         return JSONResponse({"ok": True})
 
     @app.post("/api/persons/{person_id}/rename")
@@ -553,11 +438,7 @@ def create_app(db_path: str) -> FastAPI:
     @app.post("/api/persons/{person_id}/delete")
     def delete_person(person_id: int):
         """Unassign all faces and delete the person."""
-        db.run(
-            "UPDATE faces SET person_id = NULL WHERE person_id = ?",
-            (person_id,),
-        )
-        db.run("DELETE FROM persons WHERE id = ?", (person_id,))
+        db.delete_person(person_id)
         return RedirectResponse("/persons", status_code=303)
 
     @app.get("/api/export")
