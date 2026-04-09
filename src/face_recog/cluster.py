@@ -14,9 +14,6 @@ from .embeddings import compute_centroid, cosine_similarity, normalize
 
 logger = logging.getLogger(__name__)
 
-# Below this threshold, use exact hierarchical clustering (fast enough)
-_EXACT_THRESHOLD = 20_000
-
 
 @dataclass
 class MergeSuggestion:
@@ -169,12 +166,11 @@ def cluster_faces(
     min_size: int = 2,
     species: str = "human",
 ) -> dict[str, Any]:
-    """Cluster unassigned face embeddings.
+    """Cluster face embeddings using FAISS-accelerated two-phase clustering.
 
-    Uses exact hierarchical clustering (complete linkage) for small datasets,
-    and FAISS-accelerated two-phase clustering for large ones.
-
-    Only clusters faces that aren't already assigned to a person.
+    Phase 1: FAISS range search finds candidate neighbor pairs in O(n log n).
+    Phase 2: Connected components → candidate groups, then exact
+    complete-linkage verification within each group (O(k^2), k << n).
 
     Args:
         db: Database instance.
@@ -184,21 +180,16 @@ def cluster_faces(
     """
     db.clear_clusters(species=species)
 
-    logger.info("Loading unassigned %s embeddings...", species)
-    data = db.get_unassigned_embeddings(species=species)
+    logger.info("Loading %s embeddings...", species)
+    data = db.get_all_embeddings(species=species)
     if not data:
         return {"total_faces": 0, "clusters": 0, "noise": 0}
 
     face_ids = [d[0] for d in data]
     embeddings = _normalize_embeddings(np.array([d[1] for d in data]))
-    n = len(embeddings)
 
-    logger.info("Clustering %d unassigned face embeddings...", n)
-
-    if n <= _EXACT_THRESHOLD:
-        labels = _cluster_exact(embeddings, threshold, min_size)
-    else:
-        labels = _cluster_faiss(embeddings, threshold, min_size)
+    logger.info("Clustering %d face embeddings...", len(embeddings))
+    labels = _cluster_faiss(embeddings, threshold, min_size)
 
     face_cluster_map = {
         fid: int(label) for fid, label in zip(face_ids, labels, strict=True) if label >= 0

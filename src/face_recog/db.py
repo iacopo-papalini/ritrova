@@ -313,19 +313,15 @@ class FaceDB:
 
     @_locked
     def clear_clusters(self, species: str | None = None) -> None:
-        """Reset cluster assignments for unassigned faces only.
+        """Reset cluster assignments (preserves person assignments).
 
-        Faces already assigned to a person keep their cluster_id.
         If species is given, only clear clusters for that species group.
         """
         if species is None:
-            self.conn.execute("UPDATE faces SET cluster_id = NULL WHERE person_id IS NULL")
+            self.conn.execute("UPDATE faces SET cluster_id = NULL")
         else:
             clause, params = self.species_filter(species)
-            self.conn.execute(
-                f"UPDATE faces SET cluster_id = NULL WHERE person_id IS NULL AND {clause}",
-                params,
-            )
+            self.conn.execute(f"UPDATE faces SET cluster_id = NULL WHERE {clause}", params)
         self.conn.commit()
 
     @_locked
