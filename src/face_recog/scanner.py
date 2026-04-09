@@ -73,7 +73,7 @@ def scan_photos(
     """Scan all photos, detect faces, store in DB. Returns stats dict."""
     images = find_images(photos_dir)
     total = len(images)
-    print(f"Found {total} images to process")
+    logger.info("Found %d images to process", total)
 
     skipped = 0
     processed = 0
@@ -139,10 +139,7 @@ def scan_photos(
 
 def _is_duplicate(embedding: np.ndarray, seen: list[np.ndarray], threshold: float = 0.6) -> bool:
     """Check if this face embedding is too similar to one already seen."""
-    for emb in seen:
-        if float(embedding @ emb) > threshold:
-            return True
-    return False
+    return any(float(embedding @ emb) > threshold for emb in seen)
 
 
 def scan_videos(
@@ -157,7 +154,7 @@ def scan_videos(
     """Scan videos: extract frames, detect faces, deduplicate per video."""
     videos = find_videos(photos_dir)
     total = len(videos)
-    print(f"Found {total} videos to process")
+    logger.info("Found %d videos to process", total)
 
     frames_dir.mkdir(parents=True, exist_ok=True)
 
@@ -300,11 +297,12 @@ def scan_pets(
     min_confidence: float = 0.5,
 ) -> dict:
     """Scan all photos for dogs and cats using YOLO + SigLIP."""
-    from PIL import Image as _Image, ImageOps as _ImageOps
+    from PIL import Image as _Image
+    from PIL import ImageOps as _ImageOps
 
     images = find_images(photos_dir)
     total = len(images)
-    print(f"Found {total} images to scan for pets")
+    logger.info("Found %d images to scan for pets", total)
 
     skipped = 0
     processed = 0
