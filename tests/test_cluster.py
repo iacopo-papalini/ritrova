@@ -8,7 +8,11 @@ import pytest
 from face_recog.cluster import (
     auto_assign,
     auto_merge_clusters,
+    cluster_faces,
+    compare_persons,
     find_similar_cluster,
+    find_similar_unclustered,
+    rank_persons_for_cluster,
     suggest_merges,
 )
 from face_recog.db import FaceDB
@@ -195,3 +199,145 @@ class TestFindSimilarCluster(TestCase):
 
         result = find_similar_cluster(self.db, pid, min_similarity=0.99)
         assert result is None
+
+
+class TestClusterFaces(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_db(self, db: FaceDB) -> None:
+        self.db = db
+
+    def test_empty_db(self) -> None:
+        result = cluster_faces(self.db)
+        assert result["total_faces"] == 0
+        assert result["clusters"] == 0
+
+    def test_identical_embeddings_cluster_together(self) -> None:
+        _add_face(self.db, "/a.jpg", seed=1)
+        _add_face(self.db, "/b.jpg", seed=1)
+        _add_face(self.db, "/c.jpg", seed=1)
+
+        result = cluster_faces(self.db)
+        assert result["total_faces"] == 3
+        assert result["clusters"] >= 1
+
+    def test_distant_embeddings_stay_separate(self) -> None:
+        _add_face(self.db, "/a.jpg", seed=1)
+        _add_face(self.db, "/b.jpg", seed=1)
+        _add_face(self.db, "/c.jpg", seed=999)
+        _add_face(self.db, "/d.jpg", seed=999)
+
+        result = cluster_faces(self.db, threshold=0.3)
+        assert result["clusters"] >= 2
+
+    def test_species_isolation(self) -> None:
+        """Clustering humans doesn't wipe pet clusters."""
+        _add_face(self.db, "/dog1.jpg", seed=1, species="dog")
+        _add_face(self.db, "/dog2.jpg", seed=1, species="dog")
+        self.db.update_cluster_ids(
+            {
+                self.db.get_all_embeddings(species="dog")[0][0]: 100,
+                self.db.get_all_embeddings(species="dog")[1][0]: 100,
+            }
+        )
+
+        _add_face(self.db, "/h1.jpg", seed=2)
+        _add_face(self.db, "/h2.jpg", seed=2)
+
+        cluster_faces(self.db, species="human")
+
+        # Pet cluster should still exist
+        dog_faces = self.db.get_cluster_faces(100)
+        assert len(dog_faces) == 2
+
+
+class TestFindSimilarUnclustered(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_db(self, db: FaceDB) -> None:
+        self.db = db
+
+    def test_finds_similar(self) -> None:
+        pid = self.db.create_person("Alice")
+        fid = _add_face(self.db, "/a.jpg", seed=1)
+        self.db.assign_face_to_person(fid, pid)
+
+        # Unclustered face with same embedding
+        _add_face(self.db, "/b.jpg", seed=1)
+
+        results = find_similar_unclustered(self.db, pid, min_similarity=0.5)
+        assert len(results) >= 1
+        assert results[0][1] > 90  # similarity percentage
+
+    def test_no_match_below_threshold(self) -> None:
+        pid = self.db.create_person("Alice")
+        fid = _add_face(self.db, "/a.jpg", seed=1)
+        self.db.assign_face_to_person(fid, pid)
+
+        _add_face(self.db, "/b.jpg", seed=999)
+
+        results = find_similar_unclustered(self.db, pid, min_similarity=0.99)
+        assert len(results) == 0
+
+    def test_empty_person(self) -> None:
+        pid = self.db.create_person("Alice")
+        results = find_similar_unclustered(self.db, pid)
+        assert results == []
+
+
+class TestComparePersons(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_db(self, db: FaceDB) -> None:
+        self.db = db
+
+    def test_finds_swaps(self) -> None:
+        """When a face is closer to the other person's centroid, it's flagged."""
+        pid_a = self.db.create_person("Alice")
+        pid_b = self.db.create_person("Bob")
+
+        # Give Alice a face with seed=1 centroid
+        fid_a = _add_face(self.db, "/a.jpg", seed=1)
+        self.db.assign_face_to_person(fid_a, pid_a)
+
+        # Give Bob a face with seed=999 centroid
+        fid_b = _add_face(self.db, "/b.jpg", seed=999)
+        self.db.assign_face_to_person(fid_b, pid_b)
+
+        # Assign a seed=999 face to Alice — should be flagged as swap to Bob
+        fid_wrong = _add_face(self.db, "/wrong.jpg", seed=999)
+        self.db.assign_face_to_person(fid_wrong, pid_a)
+
+        result = compare_persons(self.db, pid_a, pid_b)
+        assert len(result["swaps_a_to_b"]) >= 1
+
+    def test_empty_person(self) -> None:
+        pid_a = self.db.create_person("Alice")
+        pid_b = self.db.create_person("Bob")
+        result = compare_persons(self.db, pid_a, pid_b)
+        assert result["swaps_a_to_b"] == []
+        assert result["swaps_b_to_a"] == []
+
+
+class TestRankPersonsForCluster(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_db(self, db: FaceDB) -> None:
+        self.db = db
+
+    def test_ranks_by_similarity(self) -> None:
+        pid_close = self.db.create_person("Close")
+        fid = _add_face(self.db, "/close.jpg", seed=1)
+        self.db.assign_face_to_person(fid, pid_close)
+
+        pid_far = self.db.create_person("Far")
+        fid2 = _add_face(self.db, "/far.jpg", seed=999)
+        self.db.assign_face_to_person(fid2, pid_far)
+
+        # Cluster with seed=1 embedding
+        fid3 = _add_face(self.db, "/c1.jpg", seed=1)
+        fid4 = _add_face(self.db, "/c2.jpg", seed=1)
+        self.db.update_cluster_ids({fid3: 10, fid4: 10})
+
+        ranked = rank_persons_for_cluster(self.db, 10)
+        assert len(ranked) == 2
+        assert ranked[0][1] == "Close"  # most similar first
+
+    def test_empty_cluster(self) -> None:
+        assert rank_persons_for_cluster(self.db, 999) == []
