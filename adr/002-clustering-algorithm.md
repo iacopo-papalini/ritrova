@@ -2,44 +2,45 @@
 
 ## Status
 
-Accepted
+Accepted (updated)
 
 ## Context
 
-After extracting face embeddings, we need to group them into clusters representing the same person. The initial implementation used DBSCAN (Density-Based Spatial Clustering of Applications with Noise) with cosine distance. While DBSCAN worked for small collections, it suffered from a fundamental problem at scale: **chaining**.
-
-With DBSCAN's reachability-based approach, face A can be similar to face B, and face B similar to face C, causing A and C to end up in the same cluster even if they are not similar to each other at all. This is especially problematic for:
-
-- Family members who share some facial features
-- A person aging over decades (baby photos chain through childhood into adulthood)
-- Low-quality detections acting as "bridges" between distinct identities
-
-The original DBSCAN parameters were `eps=0.50` (cosine distance) and `min_samples=2`.
+After extracting face embeddings, we need to group them into clusters representing the same person. The initial implementation used DBSCAN which suffered from **chaining** at scale. We then switched to scipy's agglomerative clustering with complete linkage, which solved chaining but had O(n²) memory for the full pairwise distance matrix (~14GB for 61K faces).
 
 ## Decision
 
-We switched to **agglomerative hierarchical clustering with complete linkage** using scipy's `linkage` and `fcluster`.
+We use a **two-phase FAISS-accelerated clustering** approach:
 
-The algorithm:
+### Phase 1: Candidate neighbor discovery
+- Build a FAISS `IndexFlatIP` (inner product on L2-normalized vectors = cosine similarity)
+- Run `range_search` to find all pairs within the cosine distance threshold
+- Build a sparse adjacency graph from these pairs
+- Find connected components via BFS
 
-1. Compute all pairwise cosine distances via `pdist` (after L2-normalizing embeddings)
-2. Build the linkage tree using `method="complete"` -- complete linkage means the distance between two clusters is the **maximum** distance between any pair of their members
-3. Cut the tree at `threshold=0.45` cosine distance using `fcluster(criterion="distance")`
-4. Discard clusters smaller than `min_size=2`
+### Phase 2: Exact verification
+- For each connected component (candidate cluster), run **exact complete-linkage** hierarchical clustering using scipy `pdist` + `linkage`
+- This prevents chaining: connected components give single-linkage behavior, but the verification step enforces complete linkage
+- Components larger than 500 faces are split via FAISS k-means first, then verified per sub-group
 
-Complete linkage guarantees that every member of a cluster is within the distance threshold of every other member. No chaining is possible.
+### Species isolation
+- Humans, dogs, and cats are clustered independently (different embedding dimensions: 512 for humans, 768 for pets)
+- Cluster IDs are offset per species to avoid namespace collision
+
+### Complexity
+- Phase 1 is O(n²) in theory (brute-force index) but much faster in practice due to FAISS's SIMD-optimized native code
+- Phase 2 is O(k²) per component where k << n
+- No full n×n distance matrix is stored in memory
+- The default threshold of 0.45 cosine distance works well for ArcFace 512-dim embeddings
 
 ## Consequences
 
 **Positive:**
-
-- Eliminates chaining: siblings, parents, and look-alikes no longer get merged
-- The threshold parameter has a clear interpretation: "every face in this cluster is at most X cosine distance from every other face"
-- Results are deterministic (unlike DBSCAN which can vary with point ordering)
-- The default threshold of 0.45 works well for ArcFace 512-dim embeddings across tested collections
+- Eliminates chaining via complete-linkage verification
+- Handles 61K+ faces without memory exhaustion
+- Species are fully isolated — pet clustering cannot corrupt human clusters
+- Deterministic results
 
 **Negative:**
-
-- **O(n^2) memory and compute** for pairwise distances: this becomes expensive for large collections (tens of thousands of faces). For ~15k faces the distance matrix is ~900 MB. Iterative or batch approaches are planned for future scaling.
-- Complete linkage is conservative -- it tends to split rather than merge, so the same person may end up in multiple clusters. This is mitigated by the auto-assign workflow (ADR-007) and the merge UI.
-- Re-clustering clears all cluster assignments (person assignments are preserved), so the workflow encourages naming clusters first, then re-clustering with adjusted thresholds.
+- Still O(n²) in the FAISS range search phase (could be improved with `IndexIVFFlat` for approximate search)
+- Complete linkage is conservative — same person may split across clusters. Mitigated by auto-assign (ADR-007) and merge UI.

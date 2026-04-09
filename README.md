@@ -14,53 +14,60 @@ Built for Apple Silicon (CoreML acceleration) but works on any platform via CPU 
 ```bash
 cd face_recog
 uv sync
+cp .env.example .env
+# Edit .env: set PHOTOS_DIR to your photos root directory
 ```
 
 The first run of `scan` downloads the InsightFace `buffalo_l` model (~300 MB) to `~/.insightface/models/`. The first run of `scan-pets` downloads YOLO and SigLIP models.
+
+## Configuration
+
+All configuration is via environment variables (loaded from `.env`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `PHOTOS_DIR` | (required) | Root directory for photos |
+| `FACE_DB` | `./data/faces.db` | Path to SQLite database |
 
 ## Recommended workflow
 
 ```bash
 # 1. Scan photos for human faces
-uv run face-recog scan /path/to/photos
+uv run face-recog scan
 
 # 2. Scan videos for human faces
-uv run face-recog scan-videos /path/to/photos
+uv run face-recog scan-videos
 
 # 3. Scan photos for pets (dogs and cats)
-uv run face-recog scan-pets /path/to/photos
+uv run face-recog scan-pets
 
-# 4. Cluster human faces
+# 4. Cluster all faces (humans + dogs + cats)
 uv run face-recog cluster
 
-# 5. Cluster pets (separately per species)
-uv run face-recog cluster --species dog
-uv run face-recog cluster --species cat
-
-# 6. Launch the web UI to name clusters and review faces
+# 5. Launch the web UI to name clusters and review faces
 uv run face-recog serve
 
-# 7. After naming some persons in the UI, bulk-assign remaining clusters
+# 6. After naming some persons in the UI, bulk-assign remaining clusters
 uv run face-recog auto-assign
 
-# 8. Re-cluster if needed (adjusting threshold), then auto-assign again
-uv run face-recog cluster --threshold 0.50
+# 7. Re-cluster if needed (adjusting threshold), then auto-assign again
+uv run face-recog cluster
 uv run face-recog auto-assign
 ```
 
 ## CLI commands
 
-All commands accept a global `--db PATH` option (default: `./faces.db`, env: `FACE_DB`) to specify the database location.
+All commands use `PHOTOS_DIR` and `FACE_DB` from `.env` (or `--photos-dir` / `--db` flags).
 
 ### scan
 
-Scan a directory of photos for human faces.
+Scan the photos directory for human faces.
 
 ```bash
-uv run face-recog scan /path/to/photos
+uv run face-recog scan
 ```
 
-Walks the directory tree, finds JPG/JPEG files, detects faces using InsightFace/ArcFace, extracts 512-dimensional embeddings, and stores everything in the SQLite database.
+Walks the directory tree, finds JPG/JPEG files, detects faces using InsightFace/ArcFace, extracts 512-dimensional embeddings, and stores everything in the SQLite database. Paths are stored relative to `PHOTOS_DIR`.
 
 Options:
 - `--min-confidence 0.65` -- minimum detection confidence (filters false positives)
@@ -69,13 +76,13 @@ Scanning is incremental: already-processed photos are skipped on re-run.
 
 ### scan-videos
 
-Scan a directory of videos for human faces.
+Scan the photos directory for videos containing human faces.
 
 ```bash
-uv run face-recog scan-videos /path/to/photos
+uv run face-recog scan-videos
 ```
 
-Finds MP4, MOV, AVI, and MKV files. Samples one frame every N seconds, detects faces, and deduplicates per video (keeping the highest-confidence detection for each unique identity). Extracted frames are saved as JPEG in `tmp/frames/` next to the database.
+Finds MP4, MOV, AVI, and MKV files. Samples one frame every N seconds, detects faces, and deduplicates per video (keeping the highest-confidence detection for each unique identity). Extracted frames are saved as JPEG in `data/tmp/frames/`.
 
 Options:
 - `--min-confidence 0.65` -- minimum detection confidence
@@ -85,13 +92,13 @@ Scanning is incremental: already-processed videos are skipped on re-run.
 
 ### scan-pets
 
-Scan a directory of photos for dogs and cats.
+Scan the photos directory for dogs and cats.
 
 ```bash
-uv run face-recog scan-pets /path/to/photos
+uv run face-recog scan-pets
 ```
 
-Uses YOLO for object detection (COCO classes: dog, cat) and SigLIP for visual embeddings. Pet detections are stored separately from human faces using a species column, and pet photos use a `__pets` suffix for idempotent scanning.
+Uses YOLO for object detection (COCO classes: dog, cat) and SigLIP for visual embeddings. Pet detections are stored separately from human faces using a species column.
 
 Options:
 - `--min-confidence 0.5` -- minimum YOLO detection confidence
@@ -100,20 +107,19 @@ Scanning is incremental: already-processed photos are skipped on re-run.
 
 ### cluster
 
-Cluster detected faces by embedding similarity.
+Cluster all detected faces by embedding similarity.
 
 ```bash
 uv run face-recog cluster
 ```
 
-Uses agglomerative clustering with complete linkage on cosine distances. Complete linkage requires ALL members of a cluster to be within the distance threshold of each other, which avoids the chaining problem common with DBSCAN.
+Clusters humans, dogs, and cats separately in one pass. Uses FAISS-accelerated two-phase clustering: brute-force range search to find candidate neighbor pairs, then exact complete-linkage verification within each connected component. Complete linkage guarantees that ALL members of a cluster are within the distance threshold of each other, avoiding chaining.
 
 Options:
-- `--threshold 0.45` -- maximum cosine distance within a cluster (lower = stricter, fewer false merges)
-- `--min-size 2` -- minimum number of faces to form a cluster (smaller groups become noise)
-- `--species human` -- species to cluster (`human`, `dog`, `cat`); each species is clustered independently
+- `--threshold 0.45` -- maximum cosine distance within a cluster (lower = stricter)
+- `--min-size 2` -- minimum number of faces to form a cluster
 
-Re-running cluster clears previous cluster assignments but **preserves** person assignments.
+Re-running cluster clears previous cluster assignments for each species independently (human clustering does not affect pet clusters, and vice versa).
 
 ### auto-assign
 
@@ -123,11 +129,35 @@ Bulk-assign unnamed clusters to existing named persons by centroid similarity.
 uv run face-recog auto-assign
 ```
 
-Computes a centroid embedding for each named person and each unnamed cluster, then matches clusters to the most similar person. This is O(clusters x persons) rather than requiring a full re-clustering.
-
 Options:
 - `--min-similarity 50.0` -- minimum centroid similarity percentage to accept a match
 - `--species human` -- species to process (`human`, `dog`, `cat`)
+
+### auto-merge
+
+Auto-merge unnamed clusters whose centroids are highly similar.
+
+```bash
+uv run face-recog auto-merge
+```
+
+Options:
+- `--min-similarity 70.0` -- minimum centroid similarity percentage
+- `--species human` -- species to process
+
+### cleanup
+
+Dismiss tiny and blurry faces from the database.
+
+```bash
+uv run face-recog cleanup
+```
+
+Options:
+- `--min-size 50` -- minimum face width/height in pixels
+- `--min-sharpness 30.0` -- minimum Laplacian variance (focus blur)
+- `--min-edges 2.0` -- minimum Canny edge density % (motion blur)
+- `--dry-run` -- show what would be dismissed without acting
 
 ### serve
 
@@ -143,6 +173,16 @@ Options:
 - `--host 0.0.0.0` -- bind address
 - `--port 8787` -- port number
 
+### migrate-paths
+
+Rewrite absolute paths in the DB to relative (using `PHOTOS_DIR` as base).
+
+```bash
+uv run face-recog migrate-paths
+```
+
+Run this once after setting `PHOTOS_DIR` if your database was created with absolute paths.
+
 ### export
 
 Export database as JSON.
@@ -152,9 +192,6 @@ uv run face-recog export              # JSON to stdout
 uv run face-recog export -o data.json # JSON to file
 ```
 
-Options:
-- `--output / -o` -- output file path (default: `-` for stdout)
-
 ### stats
 
 Show database statistics.
@@ -163,132 +200,52 @@ Show database statistics.
 uv run face-recog stats
 ```
 
-Displays: photos scanned, faces detected, persons named, named faces, unnamed clusters, unclustered faces.
-
 ## Web UI
 
-The web UI (started with `serve`) provides the following pages:
+The web UI (started with `serve`) provides:
 
-### Dashboard (`/`)
+- **Dashboard** (`/`) -- overview statistics
+- **Clusters** (`/clusters`) -- browse unnamed face groups, name/assign/dismiss them
+- **Singletons** (`/singletons`) -- unmatched single faces with nearest-person hints
+- **Persons** (`/persons`) -- browse named people, rename/delete/merge
+- **Compare** (`/compare`) -- find misassigned faces between two persons
+- **Merge suggestions** (`/merge-suggestions`) -- auto-detected similar cluster pairs
+- **Photo view** (`/photos/{id}`) -- photo with face bounding box overlays
+- **Search** (`/search`) -- search persons by name
 
-Overview statistics: photos scanned, faces detected, persons named, named faces, unnamed clusters, unclustered faces, dismissed faces.
-
-### Clusters (`/clusters`)
-
-Browse unnamed face groups ordered by size. Each cluster shows thumbnail samples of the faces it contains. Click into a cluster to see all its faces and take action.
-
-**Cluster detail** (`/clusters/{id}`):
-- **Name** -- create a new person with a name and assign the cluster to them. After naming, you are automatically redirected to the next most-similar unnamed cluster for that person.
-- **Assign** -- assign the cluster to an existing named person. Existing persons are ranked by centroid similarity to help you pick.
-- **Dismiss** -- mark all faces in the cluster as non-faces (statues, paintings, etc.). Dismissed faces are excluded from clustering and all views.
-- **Exclude** -- remove selected faces from the cluster (sets their cluster_id to NULL) without dismissing them, so they can be re-clustered later.
-
-### Persons (`/persons`)
-
-Browse all named people with their face counts. Click into a person for details.
-
-**Person detail** (`/persons/{id}`):
-- **Rename** -- change the person's name
-- **Delete** -- remove the person (unassigns all their faces, does not delete face data)
-- **Merge** -- merge this person into another (all faces are reassigned to the target, this person is deleted)
-- **Find similar unclustered** -- search for unclustered faces that are similar to this person's centroid and claim them
-- **Photo gallery** -- all photos containing this person, newest first
-
-### Compare persons (`/compare`)
-
-Select two persons and find misassigned faces. Shows faces from person A that are closer to person B's centroid (and vice versa), sorted by the size of the gap. You can then swap selected faces to the correct person.
-
-### Merge suggestions (`/merge-suggestions`)
-
-Automatically identifies pairs of clusters/persons whose centroids are highly similar, suggesting they might be the same identity. Results are paginated and sorted by similarity. Configurable minimum similarity threshold.
-
-### Photo view (`/photos/{id}`)
-
-Display a photo with bounding box overlays on all detected faces. Each face shows its confidence score and person assignment. You can assign individual faces to existing persons or unassign them.
-
-### Search (`/search`)
-
-Search for persons by name (case-insensitive substring match). Results link to person detail pages.
-
-## Tuning
-
-### Siblings / look-alikes getting merged
-
-Lower the threshold for stricter clustering:
-
-```bash
-uv run face-recog cluster --threshold 0.40
-```
-
-### Too many small clusters / same person split across clusters
-
-Raise the threshold to allow more variation:
-
-```bash
-uv run face-recog cluster --threshold 0.55
-```
-
-### Children growing up
-
-Children's faces change significantly over years. The algorithm handles moderate aging well, but young children (toddler vs. teenager) will likely end up in separate clusters. Use the **merge** feature in the web UI to combine them under one person.
-
-### Pets being confused
-
-Pets of the same species can look similar. Use a stricter threshold and review clusters carefully:
-
-```bash
-uv run face-recog cluster --species dog --threshold 0.35
-```
+Species toggle (human/pet) is available in the navigation bar.
 
 ## Project structure
 
 ```
 face_recog/
 ├── pyproject.toml
+├── .env.example           # Configuration template
 ├── adr/                   # Architecture Decision Records
+├── data/                  # Runtime data (gitignored)
+│   ├── faces.db           # SQLite database
+│   ├── yolo11m.pt         # YOLO model weights
+│   └── tmp/               # Thumbnails and video frames
 ├── src/face_recog/
 │   ├── cli.py             # CLI entry points (click)
 │   ├── db.py              # SQLite schema and operations (WAL, RLock)
 │   ├── detector.py        # InsightFace/ArcFace face detection + embeddings
 │   ├── pet_detector.py    # YOLO detection + SigLIP embeddings for pets
 │   ├── scanner.py         # Photo/video/pet scanning pipelines
-│   ├── cluster.py         # Agglomerative clustering, auto-assign, merge suggestions
+│   ├── cluster.py         # FAISS clustering, auto-assign, merge suggestions
+│   ├── embeddings.py      # Pure math: normalize, centroid, cosine similarity
+│   ├── services.py        # Business logic (cluster hints, singleton hints)
 │   ├── app.py             # FastAPI web application
 │   ├── templates/         # Jinja2 HTML templates
 │   └── static/            # CSS and JS
+└── tests/                 # pytest test suite (131 tests)
 ```
 
 ## Database
 
 SQLite with WAL journaling and four tables:
 
-- **photos** -- file path, dimensions, EXIF date, video_path (for frames extracted from videos)
-- **faces** -- bounding box (pixel coords), embedding (512-dim float32 blob), person/cluster assignment, confidence, species (`human`/`dog`/`cat`)
+- **photos** -- file path (relative to `PHOTOS_DIR`), dimensions, EXIF date, video_path
+- **faces** -- bounding box, embedding (512-dim for humans, 768-dim for pets), person/cluster assignment, confidence, species (`human`/`dog`/`cat`)
 - **persons** -- name, created_at
-- **dismissed_faces** -- face IDs marked as non-faces (excluded from clustering and views)
-
-The JSON export produces:
-
-```json
-{
-  "persons": [
-    {
-      "id": 1,
-      "name": "Alice",
-      "photos": [
-        {
-          "file_path": "/path/to/photo.jpg",
-          "faces": [{"bbox": [x, y, w, h], "confidence": 0.89}]
-        }
-      ]
-    }
-  ],
-  "unnamed_faces": [
-    {
-      "photo": "/path/to/photo.jpg",
-      "bbox": [x, y, w, h],
-      "cluster_id": 42
-    }
-  ]
-}
-```
+- **dismissed_faces** -- face IDs marked as non-faces
