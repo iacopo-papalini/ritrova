@@ -187,6 +187,12 @@ def cluster_faces(
     """
     db.clear_clusters(species=species)
 
+    # Offset cluster IDs to avoid collision with other species' clusters
+    max_existing = db.query(
+        "SELECT COALESCE(MAX(cluster_id), -1) FROM faces WHERE cluster_id IS NOT NULL"
+    )
+    cluster_offset = max_existing[0][0] + 1 if max_existing else 0
+
     logger.info("Loading %s embeddings...", species)
     data = db.get_all_embeddings(species=species)
     if not data:
@@ -199,7 +205,9 @@ def cluster_faces(
     labels = _cluster_faiss(embeddings, threshold, min_size)
 
     face_cluster_map = {
-        fid: int(label) for fid, label in zip(face_ids, labels, strict=True) if label >= 0
+        fid: int(label) + cluster_offset
+        for fid, label in zip(face_ids, labels, strict=True)
+        if label >= 0
     }
 
     logger.info("Updating %d face cluster assignments...", len(face_cluster_map))

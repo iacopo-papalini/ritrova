@@ -134,7 +134,7 @@ def cluster(ctx: click.Context, threshold: float, min_size: int) -> None:
 
     db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
 
-    for species in ("human", "pet"):
+    for species in ("human", "dog", "cat"):
         print(f"\n── {species} ──")
         result = cluster_faces(db, threshold=threshold, min_size=min_size, species=species)
         print(f"  Total faces:      {result['total_faces']}")
