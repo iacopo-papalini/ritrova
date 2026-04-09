@@ -142,6 +142,20 @@ class TestFaceOperations(TestCase):
         self.db.clear_clusters()
         assert self.db.get_cluster_ids() == []
 
+    def test_clear_clusters_species_scoped(self) -> None:
+        _, fid_human = _add_photo_with_face(self.db, path="/h.jpg", species="human")
+        _, fid_dog = _add_photo_with_face(self.db, path="/d.jpg", species="dog")
+        self.db.update_cluster_ids({fid_human: 1, fid_dog: 2})
+
+        # Clear only human clusters
+        self.db.clear_clusters(species="human")
+        human_face = self.db.get_face(fid_human)
+        dog_face = self.db.get_face(fid_dog)
+        assert human_face is not None
+        assert human_face.cluster_id is None
+        assert dog_face is not None
+        assert dog_face.cluster_id == 2
+
     def test_get_cluster_face_ids(self) -> None:
         _, fid1 = _add_photo_with_face(self.db, path="/a.jpg")
         _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")

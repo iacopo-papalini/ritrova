@@ -113,22 +113,23 @@ def scan_videos(ctx, photos_dir, min_confidence, interval):
     help="Max cosine distance within a cluster (complete linkage)",
 )
 @click.option("--min-size", default=2, help="Minimum faces per cluster")
-@click.option("--species", default="human", help="Species to cluster (human/dog/cat/other_pet)")
 @click.pass_context
-def cluster(ctx, threshold, min_size, species):
-    """Cluster detected faces by embedding similarity (agglomerative, complete linkage)."""
+def cluster(ctx, threshold, min_size):
+    """Cluster all detected faces by embedding similarity (humans + pets)."""
     from .cluster import cluster_faces
     from .db import FaceDB
 
     db = FaceDB(ctx.obj["db_path"])
-    result = cluster_faces(db, threshold=threshold, min_size=min_size, species=species)
 
-    print("\nClustering results:")
-    print(f"  Total faces:      {result['total_faces']}")
-    print(f"  Clusters formed:  {result['clusters']}")
-    print(f"  Noise (outliers): {result['noise']}")
-    if result.get("largest_cluster"):
-        print(f"  Largest cluster:  {result['largest_cluster']} faces")
+    for species in ("human", "pet"):
+        print(f"\n── {species} ──")
+        result = cluster_faces(db, threshold=threshold, min_size=min_size, species=species)
+        print(f"  Total faces:      {result['total_faces']}")
+        print(f"  Clusters formed:  {result['clusters']}")
+        print(f"  Noise (outliers): {result['noise']}")
+        if result.get("largest_cluster"):
+            print(f"  Largest cluster:  {result['largest_cluster']} faces")
+
     db.close()
 
 

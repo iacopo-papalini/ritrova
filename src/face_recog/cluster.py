@@ -48,7 +48,7 @@ def cluster_faces(
         min_size: Discard clusters smaller than this.
         species: Only cluster faces of this species.
     """
-    db.clear_clusters()
+    db.clear_clusters(species=species)
 
     logger.info("Loading %s embeddings...", species)
     data = db.get_all_embeddings(species=species)
