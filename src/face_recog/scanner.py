@@ -142,6 +142,89 @@ def _is_duplicate(embedding: np.ndarray, seen: list[np.ndarray], threshold: floa
     return any(float(embedding @ emb) > threshold for emb in seen)
 
 
+def _update_or_add_face(
+    unique_faces: list[dict],
+    emb: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    conf: float,
+    frame: np.ndarray,
+    w: int,
+    h: int,
+    dedup_threshold: float,
+) -> None:
+    """Add a face to the unique list, or update if it's a higher-confidence duplicate."""
+    seen_embs = [uf["embedding"] for uf in unique_faces]
+    if _is_duplicate(emb, seen_embs, dedup_threshold):
+        for uf in unique_faces:
+            if float(emb @ uf["embedding"]) > dedup_threshold and conf > uf["confidence"]:
+                uf.update(
+                    frame=frame.copy(),
+                    bbox=bbox,
+                    confidence=conf,
+                    embedding=emb,
+                    width=w,
+                    height=h,
+                )
+                break
+    else:
+        unique_faces.append(
+            {
+                "frame": frame.copy(),
+                "bbox": bbox,
+                "embedding": emb,
+                "confidence": conf,
+                "width": w,
+                "height": h,
+            }
+        )
+
+
+def _extract_video_faces(
+    video_path: str,
+    detector: FaceDetector,
+    min_confidence: float,
+    interval_sec: float,
+    dedup_threshold: float,
+) -> list[dict] | None:
+    """Extract unique faces from a video. Returns None on error."""
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        cap.release()
+        return None
+
+    frame_interval = max(1, int(fps * interval_sec))
+    unique_faces: list[dict] = []
+    frame_idx = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_idx % frame_interval != 0:
+            frame_idx += 1
+            continue
+
+        h, w = frame.shape[:2]
+        raw_faces = detector.app.get(frame)
+
+        for face in raw_faces:
+            conf = float(face.det_score)
+            if conf < min_confidence:
+                continue
+            emb = face.normed_embedding.astype(np.float32)
+            x1, y1, x2, y2 = face.bbox.astype(int)
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            bbox = (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
+            _update_or_add_face(unique_faces, emb, bbox, conf, frame, w, h, dedup_threshold)
+
+        frame_idx += 1
+
+    cap.release()
+    return unique_faces
+
+
 def scan_videos(
     db: FaceDB,
     photos_dir: Path,
@@ -178,82 +261,26 @@ def scan_videos(
             continue
 
         try:
-            cap = cv2.VideoCapture(abs_video)
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            if fps <= 0:
-                cap.release()
+            unique_faces = _extract_video_faces(
+                abs_video,
+                detector,
+                min_confidence,
+                interval_sec,
+                dedup_threshold,
+            )
+            if unique_faces is None:
                 errors += 1
                 continue
 
-            frame_interval = max(1, int(fps * interval_sec))
-            # Collect unique faces: embedding + best frame + best bbox + best conf
-            unique_faces: list[dict] = []
-            frame_idx = 0
-
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                if frame_idx % frame_interval != 0:
-                    frame_idx += 1
-                    continue
-
-                h, w = frame.shape[:2]
-                raw_faces = detector.app.get(frame)
-
-                for face in raw_faces:
-                    conf = float(face.det_score)
-                    if conf < min_confidence:
-                        continue
-                    emb = face.normed_embedding.astype(np.float32)
-                    x1, y1, x2, y2 = face.bbox.astype(int)
-                    x1, y1 = max(0, x1), max(0, y1)
-                    x2, y2 = min(w, x2), min(h, y2)
-                    bbox = (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
-
-                    # Check for duplicate
-                    seen_embs = [uf["embedding"] for uf in unique_faces]
-                    if _is_duplicate(emb, seen_embs, dedup_threshold):
-                        # Update if this detection has higher confidence
-                        for uf in unique_faces:
-                            if float(emb @ uf["embedding"]) > dedup_threshold:
-                                if conf > uf["confidence"]:
-                                    uf["frame"] = frame.copy()
-                                    uf["bbox"] = bbox
-                                    uf["confidence"] = conf
-                                    uf["embedding"] = emb
-                                    uf["width"] = w
-                                    uf["height"] = h
-                                break
-                    else:
-                        unique_faces.append(
-                            {
-                                "frame": frame.copy(),
-                                "bbox": bbox,
-                                "embedding": emb,
-                                "confidence": conf,
-                                "width": w,
-                                "height": h,
-                            }
-                        )
-
-                frame_idx += 1
-
-            cap.release()
-
             if not unique_faces:
-                # No faces — still register so we skip next time
                 vid_hash = hashlib.md5(abs_video.encode()).hexdigest()[:10]
                 db.add_photo(f"__nofaces_{vid_hash}", 0, 0, video_path=abs_video)
                 processed += 1
                 continue
 
-            # Save each unique face's frame as a JPEG and store in DB
+            vid_hash = hashlib.md5(abs_video.encode()).hexdigest()[:10]
             for j, uf in enumerate(unique_faces):
-                vid_hash = hashlib.md5(abs_video.encode()).hexdigest()[:10]
-                frame_filename = f"vid_{vid_hash}_{j}.jpg"
-                frame_path = frames_dir / frame_filename
-                # Convert BGR to RGB for saving
+                frame_path = frames_dir / f"vid_{vid_hash}_{j}.jpg"
                 rgb = cv2.cvtColor(uf["frame"], cv2.COLOR_BGR2RGB)
                 Image.fromarray(rgb).save(str(frame_path), "JPEG", quality=85)
 

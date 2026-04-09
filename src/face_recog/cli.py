@@ -180,8 +180,9 @@ def auto_merge(ctx, min_similarity, species):
 @click.pass_context
 def cleanup(ctx, min_size, min_sharpness, min_edges, dry_run):
     """Dismiss tiny and blurry faces from the database."""
-    import cv2
     from pathlib import Path
+
+    import cv2
     from PIL import Image, ImageFile, ImageOps
 
     ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -201,6 +202,7 @@ def cleanup(ctx, min_size, min_sharpness, min_edges, dry_run):
 
     import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
     import numpy as np
 
     tiny_ids = []
