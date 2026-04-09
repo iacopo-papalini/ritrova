@@ -20,7 +20,9 @@ SPECIES_MAP = {COCO_CAT: "cat", COCO_DOG: "dog"}
 
 class PetDetector:
     def __init__(
-        self, yolo_model: str = "yolo11m.pt", siglip_model: str = "google/siglip-base-patch16-224"
+        self,
+        yolo_model: str = "data/yolo11m.pt",
+        siglip_model: str = "google/siglip-base-patch16-224",
     ):
         # YOLO for detection
         self.yolo = YOLO(yolo_model)
