@@ -6,6 +6,9 @@ import numpy as np
 import pytest
 
 from face_recog.cluster import (
+    _cluster_exact,
+    _cluster_faiss,
+    _normalize_embeddings,
     auto_assign,
     auto_merge_clusters,
     cluster_faces,
@@ -341,3 +344,125 @@ class TestRankPersonsForCluster(TestCase):
 
     def test_empty_cluster(self) -> None:
         assert rank_persons_for_cluster(self.db, 999) == []
+
+
+def _make_group(n: int, seed: int, dim: int = 512) -> np.ndarray:
+    """Create n similar embeddings (same base + small noise), normalized."""
+    rng = np.random.default_rng(seed)
+    base = rng.standard_normal(dim).astype(np.float32)
+    noise = rng.standard_normal((n, dim)).astype(np.float32) * 0.05
+    embs = base + noise
+    return _normalize_embeddings(embs)
+
+
+class TestClusterExact(TestCase):
+    def test_identical_embeddings(self) -> None:
+        embs = _make_group(5, seed=1)
+        labels = _cluster_exact(embs, threshold=0.45, min_size=2)
+        assert len(set(labels) - {-1}) == 1
+
+    def test_two_distinct_groups(self) -> None:
+        group_a = _make_group(5, seed=1)
+        group_b = _make_group(5, seed=999)
+        embs = np.vstack([group_a, group_b])
+        labels = _cluster_exact(embs, threshold=0.3, min_size=2)
+        assert len(set(labels) - {-1}) >= 2
+        # Faces 0-4 should be in one cluster, 5-9 in another
+        assert labels[0] == labels[4]
+        assert labels[5] == labels[9]
+        assert labels[0] != labels[5]
+
+    def test_min_size_filters_small(self) -> None:
+        embs = _make_group(1, seed=1)
+        labels = _cluster_exact(embs, threshold=0.45, min_size=2)
+        assert all(label == -1 for label in labels)
+
+
+class TestClusterFaiss(TestCase):
+    def test_identical_embeddings(self) -> None:
+        embs = _make_group(10, seed=1)
+        labels = _cluster_faiss(embs, threshold=0.45, min_size=2)
+        assert len(set(labels) - {-1}) == 1
+
+    def test_two_distinct_groups(self) -> None:
+        group_a = _make_group(10, seed=1)
+        group_b = _make_group(10, seed=999)
+        embs = np.vstack([group_a, group_b])
+        labels = _cluster_faiss(embs, threshold=0.3, min_size=2)
+        assert len(set(labels) - {-1}) >= 2
+        # First 10 in one cluster, last 10 in another
+        assert labels[0] == labels[9]
+        assert labels[10] == labels[19]
+        assert labels[0] != labels[10]
+
+    def test_no_chaining(self) -> None:
+        """Verify complete-linkage verification prevents chaining.
+
+        Create a chain A-B-C where A~B and B~C but A is far from C.
+        Single linkage would merge all three; complete linkage should not.
+        """
+        rng = np.random.default_rng(42)
+        dim = 512
+        a = rng.standard_normal(dim).astype(np.float32)
+        a /= np.linalg.norm(a)
+
+        # B is close to A (similarity ~0.85)
+        b = a + rng.standard_normal(dim).astype(np.float32) * 0.2
+        b /= np.linalg.norm(b)
+
+        # C is close to B but far from A
+        c = b + rng.standard_normal(dim).astype(np.float32) * 0.2
+        c /= np.linalg.norm(c)
+
+        # Make groups of 3 around each anchor
+        embs_a = _normalize_embeddings(a + rng.standard_normal((3, dim)).astype(np.float32) * 0.03)
+        embs_b = _normalize_embeddings(b + rng.standard_normal((3, dim)).astype(np.float32) * 0.03)
+        embs_c = _normalize_embeddings(c + rng.standard_normal((3, dim)).astype(np.float32) * 0.03)
+
+        embs = np.vstack([embs_a, embs_b, embs_c])
+
+        # Use a threshold that allows A-B and B-C but not A-C
+        # Cosine distance between A and C should be > threshold
+        sim_ac = float(a @ c)
+        threshold = 1.0 - sim_ac + 0.05  # just above A-C distance
+
+        labels = _cluster_faiss(embs, threshold=threshold, min_size=2)
+        # A and C should NOT be in the same cluster
+        cluster_a = labels[0]
+        cluster_c = labels[6]
+        if cluster_a != -1 and cluster_c != -1:
+            assert cluster_a != cluster_c, (
+                "Chaining detected: A and C should not be in same cluster"
+            )
+
+    def test_min_size_filters(self) -> None:
+        """Single isolated face should be noise."""
+        group = _make_group(5, seed=1)
+        loner = _make_group(1, seed=999)
+        embs = np.vstack([group, loner])
+        labels = _cluster_faiss(embs, threshold=0.45, min_size=2)
+        assert labels[-1] == -1
+
+    def test_matches_exact_on_small_input(self) -> None:
+        """FAISS and exact should produce same clusters for small input."""
+        group_a = _make_group(5, seed=1)
+        group_b = _make_group(5, seed=999)
+        embs = np.vstack([group_a, group_b])
+
+        labels_exact = _cluster_exact(embs, threshold=0.3, min_size=2)
+        labels_faiss = _cluster_faiss(embs, threshold=0.3, min_size=2)
+
+        # Same number of clusters
+        n_exact = len(set(labels_exact) - {-1})
+        n_faiss = len(set(labels_faiss) - {-1})
+        assert n_exact == n_faiss
+
+        # Same groupings (labels may differ but membership should match)
+        for i in range(len(embs)):
+            for j in range(i + 1, len(embs)):
+                same_exact = labels_exact[i] == labels_exact[j] and labels_exact[i] != -1
+                same_faiss = labels_faiss[i] == labels_faiss[j] and labels_faiss[i] != -1
+                assert same_exact == same_faiss, (
+                    f"Faces {i},{j}: exact says {'same' if same_exact else 'diff'}, "
+                    f"faiss says {'same' if same_faiss else 'diff'}"
+                )

@@ -43,6 +43,8 @@ def _normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
 
 def _cluster_exact(embeddings: np.ndarray, threshold: float, min_size: int) -> np.ndarray:
     """Exact hierarchical clustering with complete linkage. O(n^2)."""
+    if len(embeddings) < 2:
+        return np.full(len(embeddings), -1, dtype=np.int64)
     logger.info("Exact clustering: computing pairwise distances for %d faces...", len(embeddings))
     distances = pdist(embeddings, metric="cosine")
     Z = linkage(distances, method="complete")
@@ -59,9 +61,12 @@ def _cluster_exact(embeddings: np.ndarray, threshold: float, min_size: int) -> n
 def _cluster_faiss(embeddings: np.ndarray, threshold: float, min_size: int) -> np.ndarray:
     """Two-phase clustering: FAISS pre-grouping + exact verification.
 
-    Phase 1: FAISS range search to find candidate neighbor pairs (O(n log n)).
+    Phase 1: FAISS brute-force range search to find neighbor pairs.
+             Still O(n^2) in theory but much faster than scipy pdist
+             due to SIMD-optimized native code.
     Phase 2: Connected components → candidate groups. For each group,
              run exact complete-linkage clustering (O(k^2) per group, k << n).
+             Avoids storing the full n×n distance matrix.
     """
     n, d = embeddings.shape
     logger.info("FAISS clustering: building index for %d faces (dim=%d)...", n, d)
@@ -168,9 +173,11 @@ def cluster_faces(
 ) -> dict[str, Any]:
     """Cluster face embeddings using FAISS-accelerated two-phase clustering.
 
-    Phase 1: FAISS range search finds candidate neighbor pairs in O(n log n).
+    Phase 1: FAISS range search finds candidate neighbor pairs (brute-force
+    but SIMD-optimized, much faster than scipy pdist).
     Phase 2: Connected components → candidate groups, then exact
     complete-linkage verification within each group (O(k^2), k << n).
+    Avoids storing the full n×n distance matrix in memory.
 
     Args:
         db: Database instance.
