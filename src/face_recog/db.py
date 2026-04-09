@@ -291,6 +291,18 @@ class FaceDB:
         return [(row[0], np.frombuffer(row[1], dtype=np.float32)) for row in rows]
 
     @_locked
+    def get_unassigned_embeddings(self, species: str = "human") -> list[tuple[int, np.ndarray]]:
+        """Return (face_id, embedding) for unassigned, non-dismissed faces only."""
+        clause, params = self.species_filter(species)
+        rows = self.conn.execute(
+            f"SELECT id, embedding FROM faces "
+            f"WHERE person_id IS NULL AND {clause} "
+            f"AND id NOT IN (SELECT face_id FROM dismissed_faces)",
+            params,
+        ).fetchall()
+        return [(row[0], np.frombuffer(row[1], dtype=np.float32)) for row in rows]
+
+    @_locked
     def update_cluster_ids(self, face_cluster_map: dict[int, int]) -> None:
         """Update cluster_id for multiple faces."""
         self.conn.executemany(
@@ -301,15 +313,19 @@ class FaceDB:
 
     @_locked
     def clear_clusters(self, species: str | None = None) -> None:
-        """Reset cluster assignments (preserves person assignments).
+        """Reset cluster assignments for unassigned faces only.
 
+        Faces already assigned to a person keep their cluster_id.
         If species is given, only clear clusters for that species group.
         """
         if species is None:
-            self.conn.execute("UPDATE faces SET cluster_id = NULL")
+            self.conn.execute("UPDATE faces SET cluster_id = NULL WHERE person_id IS NULL")
         else:
             clause, params = self.species_filter(species)
-            self.conn.execute(f"UPDATE faces SET cluster_id = NULL WHERE {clause}", params)
+            self.conn.execute(
+                f"UPDATE faces SET cluster_id = NULL WHERE person_id IS NULL AND {clause}",
+                params,
+            )
         self.conn.commit()
 
     @_locked

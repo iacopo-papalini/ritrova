@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+import faiss
 import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import pdist
@@ -12,6 +13,9 @@ from .db import Face, FaceDB
 from .embeddings import compute_centroid, cosine_similarity, normalize
 
 logger = logging.getLogger(__name__)
+
+# Below this threshold, use exact hierarchical clustering (fast enough)
+_EXACT_THRESHOLD = 20_000
 
 
 @dataclass
@@ -33,16 +37,144 @@ def _faces_centroid(faces: list[Face]) -> np.ndarray:
     return compute_centroid(embs)
 
 
+def _normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
+    norms: np.ndarray = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    result: np.ndarray = embeddings / norms
+    return result
+
+
+def _cluster_exact(embeddings: np.ndarray, threshold: float, min_size: int) -> np.ndarray:
+    """Exact hierarchical clustering with complete linkage. O(n^2)."""
+    logger.info("Exact clustering: computing pairwise distances for %d faces...", len(embeddings))
+    distances = pdist(embeddings, metric="cosine")
+    Z = linkage(distances, method="complete")
+    labels: np.ndarray = fcluster(Z, t=threshold, criterion="distance") - 1
+
+    cluster_sizes = np.bincount(labels)
+    small = set(np.where(cluster_sizes < min_size)[0])
+    for i in range(len(labels)):
+        if labels[i] in small:
+            labels[i] = -1
+    return labels
+
+
+def _cluster_faiss(embeddings: np.ndarray, threshold: float, min_size: int) -> np.ndarray:
+    """Two-phase clustering: FAISS pre-grouping + exact verification.
+
+    Phase 1: FAISS range search to find candidate neighbor pairs (O(n log n)).
+    Phase 2: Connected components → candidate groups. For each group,
+             run exact complete-linkage clustering (O(k^2) per group, k << n).
+    """
+    n, d = embeddings.shape
+    logger.info("FAISS clustering: building index for %d faces (dim=%d)...", n, d)
+
+    index = faiss.IndexFlatIP(d)
+    index.add(embeddings)
+
+    # Inner product ≥ (1 - threshold) means cosine distance ≤ threshold
+    sim_threshold = 1.0 - threshold
+    logger.info("FAISS range search (similarity >= %.2f)...", sim_threshold)
+    lims, _dists, neighbors = index.range_search(embeddings, sim_threshold)
+
+    # Build adjacency list from range search results
+    adj: list[set[int]] = [set() for _ in range(n)]
+    for i in range(n):
+        for j_idx in range(lims[i], lims[i + 1]):
+            j = int(neighbors[j_idx])
+            if i != j:
+                adj[i].add(j)
+                adj[j].add(i)
+
+    # Phase 2: connected components via BFS
+    labels = np.full(n, -1, dtype=np.int64)
+    cluster_id = 0
+    for start in range(n):
+        if labels[start] != -1:
+            continue
+        # BFS
+        component = []
+        queue = [start]
+        labels[start] = cluster_id
+        while queue:
+            node = queue.pop()
+            component.append(node)
+            for neighbor in adj[node]:
+                if labels[neighbor] == -1:
+                    labels[neighbor] = cluster_id
+                    queue.append(neighbor)
+
+        # Exact verification: run complete linkage within this component
+        # to prevent chaining (connected components = single linkage)
+        if len(component) >= min_size:
+            comp_embs = embeddings[component]
+            if len(component) <= 500:
+                sub_labels = _cluster_exact(comp_embs, threshold, min_size)
+            else:
+                # Very large component: use a tighter threshold to break it up,
+                # then recurse on sub-groups
+                sub_labels = _cluster_exact_or_split(comp_embs, threshold, min_size)
+
+            # Remap sub-labels to global labels
+            unique_sub = set(sub_labels) - {-1}
+            sub_to_global = {s: cluster_id + i for i, s in enumerate(sorted(unique_sub))}
+            for idx, sub_label in zip(component, sub_labels, strict=True):
+                if sub_label == -1:
+                    labels[idx] = -1
+                else:
+                    labels[idx] = sub_to_global[sub_label]
+            cluster_id += len(unique_sub)
+        else:
+            for idx in component:
+                labels[idx] = -1
+            cluster_id += 1
+
+    return labels
+
+
+def _cluster_exact_or_split(embeddings: np.ndarray, threshold: float, min_size: int) -> np.ndarray:
+    """For large components: split into sub-groups via k-means, then exact cluster each."""
+    n = len(embeddings)
+    n_splits = max(2, n // 300)
+    logger.info("Splitting large component (%d faces) into %d sub-groups...", n, n_splits)
+
+    kmeans = faiss.Kmeans(embeddings.shape[1], n_splits, niter=20, verbose=False)
+    kmeans.train(embeddings)
+    assert kmeans.index is not None
+    _, assignments = kmeans.index.search(embeddings, 1)
+    assignments = assignments.flatten()
+
+    labels = np.full(n, -1, dtype=np.int64)
+    next_label = 0
+    for group_id in range(n_splits):
+        mask = assignments == group_id
+        if mask.sum() < min_size:
+            continue
+        group_embs = embeddings[mask]
+        sub_labels = _cluster_exact(group_embs, threshold, min_size)
+        group_indices = np.where(mask)[0]
+        unique_sub = set(sub_labels) - {-1}
+        sub_to_global = {s: next_label + i for i, s in enumerate(sorted(unique_sub))}
+        for idx, sub_label in zip(group_indices, sub_labels, strict=True):
+            if sub_label != -1:
+                labels[idx] = sub_to_global[sub_label]
+        next_label += len(unique_sub)
+
+    return labels
+
+
 def cluster_faces(
     db: FaceDB,
     threshold: float = 0.45,
     min_size: int = 2,
     species: str = "human",
 ) -> dict[str, Any]:
-    """Cluster face embeddings using agglomerative clustering (complete linkage).
+    """Cluster unassigned face embeddings.
 
-    Complete linkage requires ALL members of a cluster to be within the
-    distance threshold of each other — no chaining.
+    Uses exact hierarchical clustering (complete linkage) for small datasets,
+    and FAISS-accelerated two-phase clustering for large ones.
+
+    Only clusters faces that aren't already assigned to a person.
 
     Args:
         db: Database instance.
@@ -52,36 +184,21 @@ def cluster_faces(
     """
     db.clear_clusters(species=species)
 
-    logger.info("Loading %s embeddings...", species)
-    data = db.get_all_embeddings(species=species)
+    logger.info("Loading unassigned %s embeddings...", species)
+    data = db.get_unassigned_embeddings(species=species)
     if not data:
         return {"total_faces": 0, "clusters": 0, "noise": 0}
 
     face_ids = [d[0] for d in data]
-    embeddings = np.array([d[1] for d in data])
+    embeddings = _normalize_embeddings(np.array([d[1] for d in data]))
+    n = len(embeddings)
 
-    logger.info("Clustering %d face embeddings...", len(embeddings))
+    logger.info("Clustering %d unassigned face embeddings...", n)
 
-    # Batch-normalize all embeddings for pairwise distance computation
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    norms[norms == 0] = 1
-    embeddings = embeddings / norms
-
-    logger.info("Computing pairwise distances...")
-    distances = pdist(embeddings, metric="cosine")
-
-    logger.info("Running hierarchical clustering (complete linkage)...")
-    Z = linkage(distances, method="complete")
-
-    labels = fcluster(Z, t=threshold, criterion="distance")
-    labels = labels - 1  # fcluster labels start at 1; shift to 0-based
-
-    # Filter out small clusters — remap them to -1 (noise)
-    cluster_sizes = np.bincount(labels)
-    small_clusters = set(np.where(cluster_sizes < min_size)[0])
-    for i in range(len(labels)):
-        if labels[i] in small_clusters:
-            labels[i] = -1
+    if n <= _EXACT_THRESHOLD:
+        labels = _cluster_exact(embeddings, threshold, min_size)
+    else:
+        labels = _cluster_faiss(embeddings, threshold, min_size)
 
     face_cluster_map = {
         fid: int(label) for fid, label in zip(face_ids, labels, strict=True) if label >= 0
