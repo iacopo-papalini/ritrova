@@ -6,7 +6,8 @@ import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import pdist
 
-from .db import FaceDB
+from .db import Face, FaceDB
+from .embeddings import compute_centroid, cosine_similarity, normalize
 
 
 @dataclass
@@ -18,6 +19,12 @@ class MergeSuggestion:
     size_b: int
     sample_face_ids_a: list[int]
     sample_face_ids_b: list[int]
+
+
+def _faces_centroid(faces: list[Face]) -> np.ndarray:
+    """Compute normalized centroid from a list of Face objects."""
+    embs = np.array([f.embedding for f in faces])
+    return compute_centroid(embs)
 
 
 def cluster_faces(
@@ -49,6 +56,7 @@ def cluster_faces(
 
     print(f"Clustering {len(embeddings)} face embeddings...")
 
+    # Batch-normalize all embeddings for pairwise distance computation
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms[norms == 0] = 1
     embeddings = embeddings / norms
@@ -60,8 +68,7 @@ def cluster_faces(
     Z = linkage(distances, method="complete")
 
     labels = fcluster(Z, t=threshold, criterion="distance")
-    # fcluster labels start at 1; shift to 0-based
-    labels = labels - 1
+    labels = labels - 1  # fcluster labels start at 1; shift to 0-based
 
     # Filter out small clusters — remap them to -1 (noise)
     cluster_sizes = np.bincount(labels)
@@ -70,7 +77,9 @@ def cluster_faces(
         if labels[i] in small_clusters:
             labels[i] = -1
 
-    face_cluster_map = {fid: int(label) for fid, label in zip(face_ids, labels) if label >= 0}
+    face_cluster_map = {
+        fid: int(label) for fid, label in zip(face_ids, labels, strict=True) if label >= 0
+    }
 
     print(f"Updating {len(face_cluster_map)} face cluster assignments...")
     db.update_cluster_ids(face_cluster_map)
@@ -98,35 +107,19 @@ def find_similar_unclustered(
     if not person_faces:
         return []
 
-    # Compute person centroid
-    embs = np.array([f.embedding for f in person_faces])
-    centroid = embs.mean(axis=0)
-    norm = np.linalg.norm(centroid)
-    if norm > 0:
-        centroid = centroid / norm
+    centroid = _faces_centroid(person_faces)
+    species = person_faces[0].species
 
-    # Get unclustered, unassigned faces
-    # Match species of the person's faces
-    species = person_faces[0].species if person_faces else "human"
-    rows = db.query(
-        "SELECT id, embedding FROM faces "
-        "WHERE person_id IS NULL AND cluster_id IS NULL AND species = ? "
-        "AND id NOT IN (SELECT face_id FROM dismissed_faces)",
-        (species,),
-    )
-
-    if not rows:
+    unclustered = db.get_unclustered_embeddings(species=species)
+    if not unclustered:
         return []
 
     candidates = []
-    for row in rows:
-        emb = np.frombuffer(row[1], dtype=np.float32)
-        emb_norm = np.linalg.norm(emb)
-        if emb_norm > 0:
-            emb = emb / emb_norm
-        sim = float(centroid @ emb)
+    for fid, emb in unclustered:
+        emb = normalize(emb)
+        sim = cosine_similarity(centroid, emb)
         if sim >= min_similarity:
-            candidates.append((row[0], round(sim * 100, 1)))
+            candidates.append((fid, round(sim * 100, 1)))
 
     candidates.sort(key=lambda x: x[1], reverse=True)
     return candidates[:limit]
@@ -151,17 +144,12 @@ def auto_assign(
 
     # Build person centroids
     print(f"Computing centroids for {len(persons)} persons...")
-    person_centroids = []
+    person_centroids: list[tuple[int, str, np.ndarray]] = []
     for person in persons:
         faces = db.get_person_faces(person.id, limit=500)
         if not faces or faces[0].species != species:
             continue
-        embs = np.array([f.embedding for f in faces])
-        c = embs.mean(axis=0)
-        norm = np.linalg.norm(c)
-        if norm > 0:
-            c = c / norm
-        person_centroids.append((person.id, person.name, c))
+        person_centroids.append((person.id, person.name, _faces_centroid(faces)))
 
     if not person_centroids:
         print("No persons with matching species.")
@@ -181,11 +169,7 @@ def auto_assign(
         faces = db.get_cluster_faces(cluster["cluster_id"], limit=500)
         if not faces:
             continue
-        embs = np.array([f.embedding for f in faces])
-        cluster_centroid = embs.mean(axis=0)
-        norm = np.linalg.norm(cluster_centroid)
-        if norm > 0:
-            cluster_centroid = cluster_centroid / norm
+        cluster_centroid = _faces_centroid(faces)
 
         sims = centroid_matrix @ cluster_centroid
         best_idx = int(sims.argmax())
@@ -210,40 +194,24 @@ def auto_assign(
     )
 
     # Also sweep unclustered singletons
-    rows = db.query(
-        "SELECT id, embedding FROM faces "
-        "WHERE person_id IS NULL AND cluster_id IS NULL AND species = ? "
-        "AND id NOT IN (SELECT face_id FROM dismissed_faces)",
-        (species,) if species != "pet" else db.PET_SPECIES[:1],
-    )
-    # Handle pet species properly
-    if species == "pet":
-        clause, params = db.species_filter(species)
-        rows = db.query(
-            f"SELECT id, embedding FROM faces "
-            f"WHERE person_id IS NULL AND cluster_id IS NULL AND {clause} "
-            f"AND id NOT IN (SELECT face_id FROM dismissed_faces)",
-            params,
-        )
+    unclustered = db.get_unclustered_embeddings(species=species)
 
     assigned_singletons = 0
-    if rows:
-        print(f"  Sweeping {len(rows)} unclustered singletons...")
-        for r in rows:
-            emb = np.frombuffer(r[1], dtype=np.float32)
-            norm = np.linalg.norm(emb)
-            if norm > 0:
-                emb = emb / norm
+    if unclustered:
+        print(f"  Sweeping {len(unclustered)} unclustered singletons...")
+        for fid, emb in unclustered:
+            emb = normalize(emb)
             sims = centroid_matrix @ emb
             best_idx = int(sims.argmax())
             best_sim = float(sims[best_idx])
             if best_sim >= min_similarity:
                 pid = person_centroids[best_idx][0]
-                db.assign_face_to_person(r[0], pid)
+                db.assign_face_to_person(fid, pid)
                 assigned_singletons += 1
 
         print(
-            f"  Singletons: assigned {assigned_singletons}, skipped {len(rows) - assigned_singletons}"
+            f"  Singletons: assigned {assigned_singletons}, "
+            f"skipped {len(unclustered) - assigned_singletons}"
         )
 
     return {
@@ -268,46 +236,28 @@ def compare_persons(
     if not faces_a or not faces_b:
         return {"swaps_a_to_b": [], "swaps_b_to_a": []}
 
-    # Compute centroids
-    embs_a = np.array([f.embedding for f in faces_a])
-    centroid_a = embs_a.mean(axis=0)
-    centroid_a = centroid_a / np.linalg.norm(centroid_a)
+    centroid_a = _faces_centroid(faces_a)
+    centroid_b = _faces_centroid(faces_b)
 
-    embs_b = np.array([f.embedding for f in faces_b])
-    centroid_b = embs_b.mean(axis=0)
-    centroid_b = centroid_b / np.linalg.norm(centroid_b)
+    def _find_swaps(
+        faces: list[Face], own_centroid: np.ndarray, other_centroid: np.ndarray
+    ) -> list[tuple[int, float, float, str]]:
+        swaps = []
+        for face in faces:
+            emb = normalize(face.embedding)
+            sim_own = cosine_similarity(emb, own_centroid)
+            sim_other = cosine_similarity(emb, other_centroid)
+            if sim_other > sim_own:
+                photo = db.get_photo(face.photo_id)
+                path = photo.file_path if photo else ""
+                swaps.append((face.id, round(sim_own * 100, 1), round(sim_other * 100, 1), path))
+        swaps.sort(key=lambda x: x[2] - x[1], reverse=True)
+        return swaps
 
-    # Find faces in A closer to B
-    swaps_a_to_b = []
-    for face, emb in zip(faces_a, embs_a):
-        norm = np.linalg.norm(emb)
-        if norm > 0:
-            emb = emb / norm
-        sim_a = float(emb @ centroid_a)
-        sim_b = float(emb @ centroid_b)
-        if sim_b > sim_a:
-            photo = db.get_photo(face.photo_id)
-            path = photo.file_path if photo else ""
-            swaps_a_to_b.append((face.id, round(sim_a * 100, 1), round(sim_b * 100, 1), path))
-
-    # Find faces in B closer to A
-    swaps_b_to_a = []
-    for face, emb in zip(faces_b, embs_b):
-        norm = np.linalg.norm(emb)
-        if norm > 0:
-            emb = emb / norm
-        sim_a = float(emb @ centroid_a)
-        sim_b = float(emb @ centroid_b)
-        if sim_a > sim_b:
-            photo = db.get_photo(face.photo_id)
-            path = photo.file_path if photo else ""
-            swaps_b_to_a.append((face.id, round(sim_b * 100, 1), round(sim_a * 100, 1), path))
-
-    # Sort by how "wrong" they are (bigger gap = more likely misassigned)
-    swaps_a_to_b.sort(key=lambda x: x[2] - x[1], reverse=True)
-    swaps_b_to_a.sort(key=lambda x: x[2] - x[1], reverse=True)
-
-    return {"swaps_a_to_b": swaps_a_to_b, "swaps_b_to_a": swaps_b_to_a}
+    return {
+        "swaps_a_to_b": _find_swaps(faces_a, centroid_a, centroid_b),
+        "swaps_b_to_a": _find_swaps(faces_b, centroid_b, centroid_a),
+    }
 
 
 def auto_merge_clusters(
@@ -318,7 +268,6 @@ def auto_merge_clusters(
     """Auto-merge unnamed cluster pairs whose centroids exceed the similarity threshold."""
     suggestions = suggest_merges(db, min_similarity=min_similarity * 100, species=species)
 
-    # Only merge unnamed clusters (skip any involving named persons)
     named_ids = {p.id for p in db.get_persons()}
 
     merged = 0
@@ -330,7 +279,7 @@ def auto_merge_clusters(
             target, source, source_size = s.cluster_a, s.cluster_b, s.size_b
         else:
             target, source, source_size = s.cluster_b, s.cluster_a, s.size_a
-        db.run("UPDATE faces SET cluster_id = ? WHERE cluster_id = ?", (target, source))
+        db.merge_clusters(source, target)
         merged += 1
         faces_moved += source_size
 
@@ -347,27 +296,16 @@ def rank_persons_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, str
     if not cluster_faces:
         return []
 
-    cluster_embs = np.array([f.embedding for f in cluster_faces])
-    centroid = cluster_embs.mean(axis=0)
-    norm = np.linalg.norm(centroid)
-    if norm > 0:
-        centroid = centroid / norm
-
-    # Only show persons that share this species
-    cluster_species = cluster_faces[0].species if cluster_faces else "human"
+    centroid = _faces_centroid(cluster_faces)
+    cluster_species = cluster_faces[0].species
 
     results = []
     for person in db.get_persons():
         pfaces = db.get_person_faces(person.id, limit=200)
-        if pfaces and pfaces[0].species != cluster_species:
+        if not pfaces or pfaces[0].species != cluster_species:
             continue
-        if not pfaces:
-            continue
-        p_centroid = np.array([f.embedding for f in pfaces]).mean(axis=0)
-        p_norm = np.linalg.norm(p_centroid)
-        if p_norm > 0:
-            p_centroid = p_centroid / p_norm
-        sim = round(float(centroid @ p_centroid) * 100, 1)
+        p_centroid = _faces_centroid(pfaces)
+        sim = round(cosine_similarity(centroid, p_centroid) * 100, 1)
         results.append((person.id, person.name, person.face_count, sim))
 
     results.sort(key=lambda x: x[3], reverse=True)
@@ -380,10 +318,7 @@ def find_similar_cluster(db: FaceDB, person_id: int, min_similarity: float = 0.3
     if not person_faces:
         return None
 
-    centroid = np.array([f.embedding for f in person_faces]).mean(axis=0)
-    norm = np.linalg.norm(centroid)
-    if norm > 0:
-        centroid = centroid / norm
+    centroid = _faces_centroid(person_faces)
 
     best_cluster = None
     best_sim = min_similarity
@@ -392,11 +327,8 @@ def find_similar_cluster(db: FaceDB, person_id: int, min_similarity: float = 0.3
         faces = db.get_cluster_faces(cluster["cluster_id"], limit=100)
         if not faces:
             continue
-        c = np.array([f.embedding for f in faces]).mean(axis=0)
-        c_norm = np.linalg.norm(c)
-        if c_norm > 0:
-            c = c / c_norm
-        sim = float(centroid @ c)
+        c = _faces_centroid(faces)
+        sim = cosine_similarity(centroid, c)
         if sim > best_sim:
             best_sim = sim
             best_cluster = cluster["cluster_id"]
@@ -447,16 +379,8 @@ def suggest_merges(
     if len(groups) < 2:
         return []
 
-    centroids = []
-    for _kind, _gid, _fids, embs in groups:
-        c = embs.mean(axis=0)
-        norm = np.linalg.norm(c)
-        if norm > 0:
-            c = c / norm
-        centroids.append(c)
-
-    centroids_matrix = np.array(centroids)
-    sim_matrix = centroids_matrix @ centroids_matrix.T
+    centroids = np.array([compute_centroid(embs) for _kind, _gid, _fids, embs in groups])
+    sim_matrix = centroids @ centroids.T
 
     suggestions = []
     n = len(groups)
@@ -465,8 +389,8 @@ def suggest_merges(
             pct = float(sim_matrix[i, j]) * 100
             if pct < min_similarity:
                 continue
-            kind_a, gid_a, fids_a, _ = groups[i]
-            kind_b, gid_b, fids_b, _ = groups[j]
+            _kind_a, gid_a, fids_a, _ = groups[i]
+            _kind_b, gid_b, fids_b, _ = groups[j]
             suggestions.append(
                 MergeSuggestion(
                     cluster_a=gid_a,
