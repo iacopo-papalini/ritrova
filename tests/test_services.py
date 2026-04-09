@@ -9,7 +9,6 @@ from face_recog.db import FaceDB
 from face_recog.services import (
     compute_cluster_hint,
     compute_singleton_hints,
-    filter_persons_by_species,
 )
 
 
@@ -100,7 +99,7 @@ class TestComputeSingletonHints(TestCase):
         person = self.db.get_person(pid)
         assert person is not None
 
-        hints = compute_singleton_hints(self.db, [face], [person], "human")
+        hints = compute_singleton_hints(self.db, [face], "human")
         assert fid2 in hints
         assert hints[fid2]["name"] == "Alice"
         assert hints[fid2]["sim"] > 90
@@ -109,11 +108,13 @@ class TestComputeSingletonHints(TestCase):
         _, fid = _add_photo_with_face(self.db)
         face = self.db.get_face(fid)
         assert face is not None
-        hints = compute_singleton_hints(self.db, [face], [], "human")
+        hints = compute_singleton_hints(self.db, [face], "human")
         assert hints == {}
 
 
-class TestFilterPersonsBySpecies(TestCase):
+class TestGetPersonsBySpecies(TestCase):
+    """Tests for db.get_persons_by_species (replaces filter_persons_by_species)."""
+
     @pytest.fixture(autouse=True)
     def _setup_db(self, db: FaceDB) -> None:
         self.db = db
@@ -127,8 +128,7 @@ class TestFilterPersonsBySpecies(TestCase):
         _, fid2 = _add_photo_with_face(self.db, path="/b.jpg", species="dog")
         self.db.assign_face_to_person(fid2, pid_dog)
 
-        all_persons = self.db.get_persons()
-        human_persons = filter_persons_by_species(self.db, all_persons, "human")
+        human_persons = self.db.get_persons_by_species("human")
         assert len(human_persons) == 1
         assert human_persons[0].name == "Alice"
 
@@ -141,7 +141,6 @@ class TestFilterPersonsBySpecies(TestCase):
         _, fid2 = _add_photo_with_face(self.db, path="/b.jpg", species="dog")
         self.db.assign_face_to_person(fid2, pid_dog)
 
-        all_persons = self.db.get_persons()
-        pet_persons = filter_persons_by_species(self.db, all_persons, "pet")
+        pet_persons = self.db.get_persons_by_species("pet")
         assert len(pet_persons) == 1
         assert pet_persons[0].name == "Figaro"

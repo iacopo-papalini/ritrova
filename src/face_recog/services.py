@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from .db import Face, FaceDB, Person
+from .db import Face, FaceDB
 from .embeddings import compute_centroid, cosine_similarity, normalize
 
 
@@ -21,28 +21,21 @@ def compute_cluster_hint(db: FaceDB, cluster_id: int) -> dict[str, Any] | None:
 
     cluster_species = faces[0].species
     pet_species = db.PET_SPECIES
+    species = "pet" if cluster_species in pet_species else cluster_species
 
     centroid = compute_centroid(np.array([f.embedding for f in faces]))
+    person_centroids = db.get_person_centroids(species=species)
 
     best_name: str | None = None
     best_sim = 0.0
     best_pid: int | None = None
 
-    for person in db.get_persons():
-        pfaces = db.get_person_faces(person.id, limit=200)
-        if not pfaces:
-            continue
-        face_sp = pfaces[0].species
-        if cluster_species in pet_species and face_sp not in pet_species:
-            continue
-        if cluster_species not in pet_species and face_sp != cluster_species:
-            continue
-        p_centroid = compute_centroid(np.array([f.embedding for f in pfaces]))
+    for pid, name, p_centroid in person_centroids:
         sim = cosine_similarity(centroid, p_centroid)
         if sim > best_sim:
             best_sim = sim
-            best_name = person.name
-            best_pid = person.id
+            best_name = name
+            best_pid = pid
 
     if best_name is None:
         return None
@@ -52,28 +45,13 @@ def compute_cluster_hint(db: FaceDB, cluster_id: int) -> dict[str, Any] | None:
 def compute_singleton_hints(
     db: FaceDB,
     faces: list[Face],
-    persons: list[Person],
     species: str,
 ) -> dict[int, dict[str, Any]]:
     """For each singleton face, find the nearest person by centroid similarity.
 
     Returns {face_id: {"person_id": int, "name": str, "sim": float}}.
     """
-    pet_species = db.PET_SPECIES
-
-    person_centroids: list[tuple[int, str, np.ndarray]] = []
-    for p in persons:
-        pfaces = db.get_person_faces(p.id, limit=200)
-        if not pfaces:
-            continue
-        face_sp = pfaces[0].species
-        if species == "pet" and face_sp not in pet_species:
-            continue
-        if species != "pet" and face_sp != species:
-            continue
-        centroid = compute_centroid(np.array([f.embedding for f in pfaces]))
-        person_centroids.append((p.id, p.name, centroid))
-
+    person_centroids = db.get_person_centroids(species=species)
     if not person_centroids:
         return {}
 
@@ -93,8 +71,3 @@ def compute_singleton_hints(
         }
 
     return hints
-
-
-def filter_persons_by_species(db: FaceDB, persons: list[Person], species: str) -> list[Person]:
-    """Filter a list of persons to those who have faces of the given species."""
-    return [p for p in persons if db.has_person_species(p.id, species)]

@@ -150,12 +150,7 @@ def auto_assign(
 
     # Build person centroids
     logger.info("Computing centroids for %d persons...", len(persons))
-    person_centroids: list[tuple[int, str, np.ndarray]] = []
-    for person in persons:
-        faces = db.get_person_faces(person.id, limit=500)
-        if not faces or faces[0].species != species:
-            continue
-        person_centroids.append((person.id, person.name, _faces_centroid(faces)))
+    person_centroids = db.get_person_centroids(species=species)
 
     if not person_centroids:
         logger.info("No persons with matching species.")
@@ -306,15 +301,14 @@ def rank_persons_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, str
 
     centroid = _faces_centroid(cluster_faces)
     cluster_species = cluster_faces[0].species
+    pet_species = db.PET_SPECIES
+    species = "pet" if cluster_species in pet_species else cluster_species
 
+    person_centroids = db.get_person_centroids(species=species)
     results = []
-    for person in db.get_persons():
-        pfaces = db.get_person_faces(person.id, limit=200)
-        if not pfaces or pfaces[0].species != cluster_species:
-            continue
-        p_centroid = _faces_centroid(pfaces)
+    for pid, name, p_centroid in person_centroids:
         sim = round(cosine_similarity(centroid, p_centroid) * 100, 1)
-        results.append((person.id, person.name, person.face_count, sim))
+        results.append((pid, name, 0, sim))
 
     results.sort(key=lambda x: x[3], reverse=True)
     return results

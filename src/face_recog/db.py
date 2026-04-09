@@ -218,6 +218,17 @@ class FaceDB:
         return Photo(**dict(row))
 
     @_locked
+    def get_photos_batch(self, photo_ids: list[int]) -> dict[int, Photo]:
+        """Return {photo_id: Photo} for multiple photos in one query."""
+        if not photo_ids:
+            return {}
+        placeholders = ",".join("?" * len(photo_ids))
+        rows = self.conn.execute(
+            f"SELECT * FROM photos WHERE id IN ({placeholders})", photo_ids
+        ).fetchall()
+        return {r["id"]: Photo(**dict(r)) for r in rows}
+
+    @_locked
     def get_photo_count(self) -> int:
         row = self.conn.execute("SELECT COUNT(*) FROM photos").fetchone()
         return int(row[0]) if row else 0
@@ -456,6 +467,54 @@ class FaceDB:
             GROUP BY p.id ORDER BY p.name
         """).fetchall()
         return [Person(id=r["id"], name=r["name"], face_count=r["face_count"]) for r in rows]
+
+    @_locked
+    def get_persons_by_species(self, species: str) -> list[Person]:
+        """Return persons that have at least one face of the given species."""
+        clause, params = self.species_filter(species)
+        rows = self.conn.execute(
+            f"""
+            SELECT p.id, p.name, COUNT(f.id) as face_count
+            FROM persons p
+            JOIN faces f ON f.person_id = p.id AND {clause}
+            GROUP BY p.id ORDER BY p.name
+            """,
+            params,
+        ).fetchall()
+        return [Person(id=r["id"], name=r["name"], face_count=r["face_count"]) for r in rows]
+
+    @_locked
+    def get_person_centroids(self, species: str = "human") -> list[tuple[int, str, np.ndarray]]:
+        """Return [(person_id, name, centroid)] for all persons of a species.
+
+        Single query for all face embeddings, grouped by person in Python.
+        """
+        clause, params = self.species_filter(species)
+        rows = self.conn.execute(
+            f"""
+            SELECT f.person_id, p.name, f.embedding
+            FROM faces f
+            JOIN persons p ON p.id = f.person_id
+            WHERE f.person_id IS NOT NULL AND {clause}
+            ORDER BY f.person_id
+            """,
+            params,
+        ).fetchall()
+
+        from .embeddings import compute_centroid
+
+        person_embs: dict[int, tuple[str, list[np.ndarray]]] = {}
+        for r in rows:
+            pid = r["person_id"]
+            if pid not in person_embs:
+                person_embs[pid] = (r["name"], [])
+            person_embs[pid][1].append(np.frombuffer(r["embedding"], dtype=np.float32))
+
+        result: list[tuple[int, str, np.ndarray]] = []
+        for pid, (name, embs) in person_embs.items():
+            centroid = compute_centroid(np.array(embs))
+            result.append((pid, name, centroid))
+        return result
 
     @_locked
     def rename_person(self, person_id: int, name: str) -> None:

@@ -21,7 +21,6 @@ from .db import FaceDB
 from .services import (
     compute_cluster_hint,
     compute_singleton_hints,
-    filter_persons_by_species,
 )
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -66,10 +65,10 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         if total == 0:
             raise HTTPException(404, "Cluster not found")
         faces = db.get_cluster_faces(cluster_id, limit=200)
-        face_paths = {}
-        for face in faces:
-            photo = db.get_photo(face.photo_id)
-            face_paths[face.id] = photo.file_path if photo else ""
+        photos = db.get_photos_batch([f.photo_id for f in faces])
+        face_paths = {
+            f.id: photos[f.photo_id].file_path if f.photo_id in photos else "" for f in faces
+        }
         ranked = rank_persons_for_cluster(db, cluster_id)
         return templates.TemplateResponse(
             name="cluster_detail.html",
@@ -87,15 +86,14 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     def singletons_page(request: Request, species: str = "human") -> HTMLResponse:
         total = db.get_singleton_count(species=species)
         faces = db.get_singleton_faces(species=species, limit=200)
-        all_persons = db.get_persons()
-        persons = filter_persons_by_species(db, all_persons, species)
+        persons = db.get_persons_by_species(species)
 
-        face_paths = {}
-        for face in faces:
-            photo = db.get_photo(face.photo_id)
-            face_paths[face.id] = photo.file_path if photo else ""
+        photos = db.get_photos_batch([f.photo_id for f in faces])
+        face_paths = {
+            f.id: photos[f.photo_id].file_path if f.photo_id in photos else "" for f in faces
+        }
 
-        face_hints = compute_singleton_hints(db, faces, persons, species)
+        face_hints = compute_singleton_hints(db, faces, species)
 
         return templates.TemplateResponse(
             name="singletons.html",
@@ -112,7 +110,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.get("/persons", response_class=HTMLResponse)
     def persons_page(request: Request, species: str = "human") -> HTMLResponse:
-        persons = filter_persons_by_species(db, db.get_persons(), species)
+        persons = db.get_persons_by_species(species)
         return templates.TemplateResponse(
             name="persons.html",
             context={"persons": persons, "species": species},
