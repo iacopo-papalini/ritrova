@@ -314,6 +314,7 @@ def create_app(db_path: str) -> FastAPI:
 
     @app.get("/api/faces/{face_id}/thumbnail")
     def face_thumbnail(face_id: int, size: int = 150) -> StreamingResponse:
+        size = min(size, 500)
         cache_path = thumbnails_dir / f"{face_id}_{size}.jpg"
         if cache_path.exists():
             data = cache_path.read_bytes()
@@ -349,6 +350,7 @@ def create_app(db_path: str) -> FastAPI:
 
     @app.get("/api/photos/{photo_id}/image")
     def photo_image(photo_id: int, max_size: int = 1600) -> StreamingResponse:
+        max_size = min(max_size, 2000)
         photo = db.get_photo(photo_id)
         if not photo:
             raise HTTPException(404)

@@ -278,12 +278,10 @@ def auto_merge_clusters(
     """Auto-merge unnamed cluster pairs whose centroids exceed the similarity threshold."""
     suggestions = suggest_merges(db, min_similarity=min_similarity * 100, species=species)
 
-    named_ids = {p.id for p in db.get_persons()}
-
     merged = 0
     faces_moved = 0
     for s in suggestions:
-        if s.cluster_a in named_ids or s.cluster_b in named_ids:
+        if s.kind_a == "person" or s.kind_b == "person":
             continue
         if s.size_a >= s.size_b:
             target, source, source_size = s.cluster_a, s.cluster_b, s.size_b

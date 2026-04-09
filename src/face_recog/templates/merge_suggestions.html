@@ -23,9 +23,12 @@ const pageSize = 20;
 let total = null;
 let loading = false;
 
-function label(id, name) {
-  if (name) return '<a href="/persons/' + id + '">' + name + '</a> (' + id + ')';
-  return '<a href="/clusters/' + id + '">Cluster #' + id + '</a>';
+function appendLabel(container, id, name, size) {
+  const a = document.createElement('a');
+  a.href = name ? '/persons/' + id : '/clusters/' + id;
+  a.textContent = name || 'Cluster #' + id;
+  container.appendChild(a);
+  container.append(' (' + id + ') (' + size + ')');
 }
 
 function simClass(pct) {
@@ -34,42 +37,80 @@ function simClass(pct) {
   return '';
 }
 
-function mergeAction(s) {
+function createMergeButton(s) {
+  const btn = document.createElement('button');
   if (s.name_a && !s.name_b) {
-    return `<button class="btn" onclick="mergeClusterIntoPerson(${s.cluster_b}, ${s.cluster_a}, this)">Merge into ${s.name_a}</button>`;
+    btn.className = 'btn';
+    btn.textContent = 'Merge into ' + s.name_a;
+    btn.onclick = function() { mergeClusterIntoPerson(s.cluster_b, s.cluster_a, btn); };
+  } else if (s.name_b && !s.name_a) {
+    btn.className = 'btn';
+    btn.textContent = 'Merge into ' + s.name_b;
+    btn.onclick = function() { mergeClusterIntoPerson(s.cluster_a, s.cluster_b, btn); };
+  } else if (!s.name_a && !s.name_b) {
+    btn.className = 'btn btn-secondary';
+    btn.textContent = 'Merge clusters';
+    btn.onclick = function() { mergeClusters(s.cluster_a, s.cluster_b, btn); };
+  } else {
+    return null;
   }
-  if (s.name_b && !s.name_a) {
-    return `<button class="btn" onclick="mergeClusterIntoPerson(${s.cluster_a}, ${s.cluster_b}, this)">Merge into ${s.name_b}</button>`;
-  }
-  if (!s.name_a && !s.name_b) {
-    return `<button class="btn btn-secondary" onclick="mergeClusters(${s.cluster_a}, ${s.cluster_b}, this)">Merge clusters</button>`;
-  }
-  return '';
+  return btn;
+}
+
+function createFaceImages(faceIds) {
+  const div = document.createElement('div');
+  div.className = 'merge-faces';
+  faceIds.forEach(function(id) {
+    const img = document.createElement('img');
+    img.src = '/api/faces/' + id + '/thumbnail?size=100';
+    img.loading = 'lazy';
+    div.appendChild(img);
+  });
+  return div;
 }
 
 function renderSuggestion(s) {
-  const div = document.createElement('div');
-  div.className = 'merge-row';
-  div.innerHTML = `
-    <div class="merge-pair">
-      <div class="merge-side">
-        <div class="merge-label">${label(s.cluster_a, s.name_a)} (${s.size_a})</div>
-        <div class="merge-faces">
-          ${s.sample_face_ids_a.map(id => '<img src="/api/faces/' + id + '/thumbnail?size=100" loading="lazy">').join('')}
-        </div>
-      </div>
-      <div class="merge-similarity">
-        <span class="sim-badge ${simClass(s.similarity_pct)}">${s.similarity_pct}%</span>
-        <div style="margin-top:0.5rem">${mergeAction(s)}</div>
-      </div>
-      <div class="merge-side">
-        <div class="merge-label">${label(s.cluster_b, s.name_b)} (${s.size_b})</div>
-        <div class="merge-faces">
-          ${s.sample_face_ids_b.map(id => '<img src="/api/faces/' + id + '/thumbnail?size=100" loading="lazy">').join('')}
-        </div>
-      </div>
-    </div>`;
-  return div;
+  const row = document.createElement('div');
+  row.className = 'merge-row';
+  const pair = document.createElement('div');
+  pair.className = 'merge-pair';
+
+  // Side A
+  const sideA = document.createElement('div');
+  sideA.className = 'merge-side';
+  const labelA = document.createElement('div');
+  labelA.className = 'merge-label';
+  appendLabel(labelA, s.cluster_a, s.name_a, s.size_a);
+  sideA.appendChild(labelA);
+  sideA.appendChild(createFaceImages(s.sample_face_ids_a));
+
+  // Similarity + action
+  const simDiv = document.createElement('div');
+  simDiv.className = 'merge-similarity';
+  const badge = document.createElement('span');
+  badge.className = 'sim-badge ' + simClass(s.similarity_pct);
+  badge.textContent = s.similarity_pct + '%';
+  simDiv.appendChild(badge);
+  const actionDiv = document.createElement('div');
+  actionDiv.style.marginTop = '0.5rem';
+  const btn = createMergeButton(s);
+  if (btn) actionDiv.appendChild(btn);
+  simDiv.appendChild(actionDiv);
+
+  // Side B
+  const sideB = document.createElement('div');
+  sideB.className = 'merge-side';
+  const labelB = document.createElement('div');
+  labelB.className = 'merge-label';
+  appendLabel(labelB, s.cluster_b, s.name_b, s.size_b);
+  sideB.appendChild(labelB);
+  sideB.appendChild(createFaceImages(s.sample_face_ids_b));
+
+  pair.appendChild(sideA);
+  pair.appendChild(simDiv);
+  pair.appendChild(sideB);
+  row.appendChild(pair);
+  return row;
 }
 
 async function loadMore() {
