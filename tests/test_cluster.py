@@ -142,6 +142,19 @@ class TestSuggestMerges(TestCase):
         suggestions = suggest_merges(self.db, min_similarity=99.0)
         assert len(suggestions) == 0
 
+    def test_skips_person_to_person_pairs(self) -> None:
+        """Two named persons with similar embeddings should NOT be suggested."""
+        pid_a = self.db.create_person("Alice")
+        fid1 = _add_face(self.db, "/a1.jpg", seed=1)
+        self.db.assign_face_to_person(fid1, pid_a)
+
+        pid_b = self.db.create_person("Alice2")
+        fid2 = _add_face(self.db, "/b1.jpg", seed=1)
+        self.db.assign_face_to_person(fid2, pid_b)
+
+        suggestions = suggest_merges(self.db, min_similarity=50.0)
+        assert len(suggestions) == 0
+
     def test_species_filter(self) -> None:
         fid1 = _add_face(self.db, "/a1.jpg", seed=1, species="human")
         fid2 = _add_face(self.db, "/a2.jpg", seed=1, species="human")

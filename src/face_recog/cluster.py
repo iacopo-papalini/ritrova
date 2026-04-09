@@ -394,11 +394,14 @@ def suggest_merges(
     n = len(groups)
     for i in range(n):
         for j in range(i + 1, n):
+            kind_a, gid_a, fids_a, _ = groups[i]
+            kind_b, gid_b, fids_b, _ = groups[j]
+            # Skip person-to-person pairs — those are intentionally different people
+            if kind_a == "person" and kind_b == "person":
+                continue
             pct = float(sim_matrix[i, j]) * 100
             if pct < min_similarity:
                 continue
-            _kind_a, gid_a, fids_a, _ = groups[i]
-            _kind_b, gid_b, fids_b, _ = groups[j]
             suggestions.append(
                 MergeSuggestion(
                     cluster_a=gid_a,
