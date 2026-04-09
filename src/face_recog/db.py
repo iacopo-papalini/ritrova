@@ -4,18 +4,23 @@ import functools
 import json
 import sqlite3
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, ParamSpec, TypeVar
 
 import numpy as np
 
+P = ParamSpec("P")
+R = TypeVar("R")
 
-def _locked(method):
+
+def _locked(method: Callable[..., R]) -> Callable[..., R]:
     """Decorator: hold the DB lock for the entire method call."""
 
     @functools.wraps(method)
-    def wrapper(self, *args, **kwargs):
+    def wrapper(self: "FaceDB", *args: Any, **kwargs: Any) -> R:
         with self._lock:
             return method(self, *args, **kwargs)
 
@@ -67,7 +72,7 @@ class FaceDB:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self._create_tables()
 
-    def _create_tables(self):
+    def _create_tables(self) -> None:
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS photos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,19 +125,19 @@ class FaceDB:
         self.conn.commit()
 
     @_locked
-    def run(self, sql, params=()):
+    def run(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         """Execute SQL and commit. For ad-hoc queries from outside."""
         self.conn.execute(sql, params)
         self.conn.commit()
 
     @_locked
-    def query(self, sql, params=()):
+    def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[Any]:
         """Execute SQL and return all rows."""
         return self.conn.execute(sql, params).fetchall()
 
     PET_SPECIES = ("dog", "cat", "other_pet")
 
-    def close(self):
+    def close(self) -> None:
         self.conn.close()
 
     def _now(self) -> str:
@@ -155,6 +160,7 @@ class FaceDB:
             (file_path, width, height, taken_at, self._now(), video_path),
         )
         self.conn.commit()
+        assert cur.lastrowid is not None
         return cur.lastrowid
 
     @_locked
@@ -187,16 +193,17 @@ class FaceDB:
 
     @_locked
     def get_photo_count(self) -> int:
-        return self.conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
+        row = self.conn.execute("SELECT COUNT(*) FROM photos").fetchone()
+        return int(row[0]) if row else 0
 
     # --- Faces ---
 
     @_locked
     def add_faces_batch(
         self,
-        faces_data: list[tuple[int, tuple, np.ndarray, float]],
+        faces_data: list[tuple[int, tuple[int, int, int, int], np.ndarray, float]],
         species: str = "human",
-    ):
+    ) -> None:
         """Add multiple faces in a single transaction."""
         now = self._now()
         self.conn.executemany(
@@ -233,7 +240,8 @@ class FaceDB:
 
     @_locked
     def get_face_count(self) -> int:
-        return self.conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
+        row = self.conn.execute("SELECT COUNT(*) FROM faces").fetchone()
+        return int(row[0]) if row else 0
 
     @_locked
     def get_all_embeddings(self, species: str = "human") -> list[tuple[int, np.ndarray]]:
@@ -246,7 +254,7 @@ class FaceDB:
         return [(row[0], np.frombuffer(row[1], dtype=np.float32)) for row in rows]
 
     @_locked
-    def update_cluster_ids(self, face_cluster_map: dict[int, int]):
+    def update_cluster_ids(self, face_cluster_map: dict[int, int]) -> None:
         """Update cluster_id for multiple faces."""
         self.conn.executemany(
             "UPDATE faces SET cluster_id = ? WHERE id = ?",
@@ -255,7 +263,7 @@ class FaceDB:
         self.conn.commit()
 
     @_locked
-    def clear_clusters(self):
+    def clear_clusters(self) -> None:
         """Reset all cluster assignments (preserves person assignments)."""
         self.conn.execute("UPDATE faces SET cluster_id = NULL")
         self.conn.commit()
@@ -268,7 +276,7 @@ class FaceDB:
         ).fetchall()
         return [row[0] for row in rows]
 
-    def _species_filter(self, species: str) -> tuple[str, tuple]:
+    def species_filter(self, species: str) -> tuple[str, tuple[str, ...]]:
         """Return SQL clause and params for species filtering."""
         if species == "pet":
             placeholders = ",".join("?" * len(self.PET_SPECIES))
@@ -276,9 +284,9 @@ class FaceDB:
         return "species = ?", (species,)
 
     @_locked
-    def get_unnamed_clusters(self, species: str = "human") -> list[dict]:
+    def get_unnamed_clusters(self, species: str = "human") -> list[dict[str, Any]]:
         """Clusters with no person assigned, ordered by size."""
-        clause, params = self._species_filter(species)
+        clause, params = self.species_filter(species)
         rows = self.conn.execute(
             f"""
             SELECT cluster_id, COUNT(*) as face_count,
@@ -308,7 +316,7 @@ class FaceDB:
         self, species: str = "human", limit: int = 200, offset: int = 0
     ) -> list[Face]:
         """Faces in clusters of size 1 or unclustered, unassigned, not dismissed."""
-        clause, params = self._species_filter(species)
+        clause, params = self.species_filter(species)
         rows = self.conn.execute(
             f"""
             SELECT f.* FROM faces f
@@ -337,8 +345,8 @@ class FaceDB:
 
     @_locked
     def get_singleton_count(self, species: str = "human") -> int:
-        clause, params = self._species_filter(species)
-        return self.conn.execute(
+        clause, params = self.species_filter(species)
+        row = self.conn.execute(
             f"""
             SELECT COUNT(*) FROM faces f
             WHERE f.person_id IS NULL AND {clause}
@@ -353,14 +361,16 @@ class FaceDB:
             )
         """,
             params,
-        ).fetchone()[0]
+        ).fetchone()
+        return int(row[0]) if row else 0
 
     @_locked
     def get_cluster_face_count(self, cluster_id: int) -> int:
-        return self.conn.execute(
+        row = self.conn.execute(
             "SELECT COUNT(*) FROM faces WHERE cluster_id = ?",
             (cluster_id,),
-        ).fetchone()[0]
+        ).fetchone()
+        return int(row[0]) if row else 0
 
     @_locked
     def get_cluster_faces(self, cluster_id: int, limit: int = 200) -> list[Face]:
@@ -382,12 +392,13 @@ class FaceDB:
         """Create a person or return existing one if name matches."""
         row = self.conn.execute("SELECT id FROM persons WHERE name = ?", (name,)).fetchone()
         if row:
-            return row[0]
+            return int(row[0])
         cur = self.conn.execute(
             "INSERT INTO persons (name, created_at) VALUES (?, ?)",
             (name, self._now()),
         )
         self.conn.commit()
+        assert cur.lastrowid is not None
         return cur.lastrowid
 
     @_locked
@@ -414,24 +425,25 @@ class FaceDB:
         return [Person(id=r["id"], name=r["name"], face_count=r["face_count"]) for r in rows]
 
     @_locked
-    def rename_person(self, person_id: int, name: str):
+    def rename_person(self, person_id: int, name: str) -> None:
         self.conn.execute("UPDATE persons SET name = ? WHERE id = ?", (name, person_id))
         self.conn.commit()
 
     @_locked
-    def assign_face_to_person(self, face_id: int, person_id: int):
+    def assign_face_to_person(self, face_id: int, person_id: int) -> None:
         self.conn.execute("UPDATE faces SET person_id = ? WHERE id = ?", (person_id, face_id))
         self.conn.commit()
 
     @_locked
-    def assign_cluster_to_person(self, cluster_id: int, person_id: int):
+    def assign_cluster_to_person(self, cluster_id: int, person_id: int) -> None:
         self.conn.execute(
             "UPDATE faces SET person_id = ? WHERE cluster_id = ? AND person_id IS NULL",
             (person_id, cluster_id),
         )
         self.conn.commit()
 
-    def merge_persons(self, source_id: int, target_id: int):
+    @_locked
+    def merge_persons(self, source_id: int, target_id: int) -> None:
         """Merge source person into target: reassign faces, delete source."""
         self.conn.execute(
             "UPDATE faces SET person_id = ? WHERE person_id = ?",
@@ -468,7 +480,7 @@ class FaceDB:
         return [Photo(**dict(r)) for r in rows]
 
     @_locked
-    def dismiss_faces(self, face_ids: list[int]):
+    def dismiss_faces(self, face_ids: list[int]) -> None:
         """Mark faces as non-faces (statues, paintings, etc.)."""
         self.conn.executemany(
             "INSERT OR IGNORE INTO dismissed_faces (face_id) VALUES (?)",
@@ -479,6 +491,74 @@ class FaceDB:
             [(fid,) for fid in face_ids],
         )
         self.conn.commit()
+
+    @_locked
+    def unassign_face(self, face_id: int) -> None:
+        """Remove person assignment from a face."""
+        self.conn.execute("UPDATE faces SET person_id = NULL WHERE id = ?", (face_id,))
+        self.conn.commit()
+
+    @_locked
+    def exclude_faces(self, face_ids: list[int], cluster_id: int) -> None:
+        """Remove faces from a cluster (set cluster_id to NULL)."""
+        placeholders = ",".join("?" * len(face_ids))
+        self.conn.execute(
+            f"UPDATE faces SET cluster_id = NULL WHERE id IN ({placeholders}) AND cluster_id = ?",
+            (*face_ids, cluster_id),
+        )
+        self.conn.commit()
+
+    @_locked
+    def merge_clusters(self, source_id: int, target_id: int) -> None:
+        """Move all faces from source cluster to target cluster."""
+        self.conn.execute(
+            "UPDATE faces SET cluster_id = ? WHERE cluster_id = ?",
+            (target_id, source_id),
+        )
+        self.conn.commit()
+
+    @_locked
+    def get_cluster_face_ids(self, cluster_id: int) -> list[int]:
+        """Return all face IDs in a cluster."""
+        rows = self.conn.execute(
+            "SELECT id FROM faces WHERE cluster_id = ?", (cluster_id,)
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    @_locked
+    def delete_person(self, person_id: int) -> None:
+        """Delete a person and unassign their faces."""
+        self.conn.execute("UPDATE faces SET person_id = NULL WHERE person_id = ?", (person_id,))
+        self.conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
+        self.conn.commit()
+
+    @_locked
+    def has_person_species(self, person_id: int, species: str) -> bool:
+        """Check if a person has any faces of the given species (or 'pet' for any pet)."""
+        if species == "pet":
+            placeholders = ",".join("?" * len(self.PET_SPECIES))
+            row = self.conn.execute(
+                f"SELECT 1 FROM faces WHERE person_id = ? AND species IN ({placeholders}) LIMIT 1",
+                (person_id, *self.PET_SPECIES),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT 1 FROM faces WHERE person_id = ? AND species = ? LIMIT 1",
+                (person_id, species),
+            ).fetchone()
+        return row is not None
+
+    @_locked
+    def get_unclustered_embeddings(self, species: str = "human") -> list[tuple[int, np.ndarray]]:
+        """Return (face_id, embedding) for unclustered, unassigned, non-dismissed faces."""
+        clause, params = self.species_filter(species)
+        rows = self.conn.execute(
+            f"SELECT id, embedding FROM faces "
+            f"WHERE person_id IS NULL AND cluster_id IS NULL AND {clause} "
+            f"AND id NOT IN (SELECT face_id FROM dismissed_faces)",
+            params,
+        ).fetchall()
+        return [(r[0], np.frombuffer(r[1], dtype=np.float32)) for r in rows]
 
     @_locked
     def search_persons(self, query: str) -> list[Person]:
@@ -495,32 +575,32 @@ class FaceDB:
 
     # --- Stats ---
 
+    def _count(self, sql: str, params: tuple[str, ...] = ()) -> int:
+        row = self.conn.execute(sql, params).fetchone()
+        return int(row[0]) if row else 0
+
     @_locked
-    def get_stats(self, species: str = "human") -> dict:
-        clause, params = self._species_filter(species)
+    def get_stats(self, species: str = "human") -> dict[str, int]:
+        clause, params = self.species_filter(species)
         return {
-            "total_photos": self.conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0],
-            "total_faces": self.conn.execute(
-                f"SELECT COUNT(*) FROM faces WHERE {clause}", params
-            ).fetchone()[0],
-            "total_persons": self.conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0],
-            "named_faces": self.conn.execute(
+            "total_photos": self._count("SELECT COUNT(*) FROM photos"),
+            "total_faces": self._count(f"SELECT COUNT(*) FROM faces WHERE {clause}", params),
+            "total_persons": self._count("SELECT COUNT(*) FROM persons"),
+            "named_faces": self._count(
                 f"SELECT COUNT(*) FROM faces WHERE person_id IS NOT NULL AND {clause}",
                 params,
-            ).fetchone()[0],
-            "unnamed_clusters": self.conn.execute(
+            ),
+            "unnamed_clusters": self._count(
                 f"SELECT COUNT(DISTINCT cluster_id) FROM faces "
                 f"WHERE cluster_id IS NOT NULL AND person_id IS NULL AND {clause}",
                 params,
-            ).fetchone()[0],
-            "unclustered_faces": self.conn.execute(
+            ),
+            "unclustered_faces": self._count(
                 f"SELECT COUNT(*) FROM faces WHERE cluster_id IS NULL AND {clause} "
                 f"AND id NOT IN (SELECT face_id FROM dismissed_faces)",
                 params,
-            ).fetchone()[0],
-            "dismissed_faces": self.conn.execute("SELECT COUNT(*) FROM dismissed_faces").fetchone()[
-                0
-            ],
+            ),
+            "dismissed_faces": self._count("SELECT COUNT(*) FROM dismissed_faces"),
         }
 
     # --- Export ---
@@ -529,11 +609,11 @@ class FaceDB:
     def export_json(self) -> str:
         """Export as JSON: person -> photos -> face rectangles."""
         persons = self.get_persons()
-        data: dict = {"persons": [], "unnamed_faces": []}
+        data: dict[str, list[Any]] = {"persons": [], "unnamed_faces": []}
 
         for person in persons:
             faces = self.get_person_faces(person.id, limit=10000)
-            photos_map: dict[str, list] = {}
+            photos_map: dict[str, list[dict[str, Any]]] = {}
             for face in faces:
                 photo = self.get_photo(face.photo_id)
                 if photo:

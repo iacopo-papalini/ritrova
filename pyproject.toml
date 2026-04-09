@@ -43,16 +43,25 @@ line-length = 100
 target-version = "py314"
 
 [tool.ruff.lint]
-select = ["E", "F", "W"]
+select = ["E", "F", "W", "I"]
 ignore = ["E501"]
 
 [tool.mypy]
 python_version = "3.14"
-warn_return_any = false
-warn_unused_configs = true
+strict = true
 ignore_missing_imports = true
-check_untyped_defs = false
-disallow_untyped_defs = false
+
+# Modules not yet refactored — will be tightened as each cycle completes
+[[tool.mypy.overrides]]
+module = [
+    "face_recog.app",
+    "face_recog.cli",
+    "face_recog.scanner",
+    "face_recog.detector",
+    "face_recog.pet_detector",
+    "face_recog.cluster",
+]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

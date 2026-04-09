@@ -218,7 +218,7 @@ def auto_assign(
     )
     # Handle pet species properly
     if species == "pet":
-        clause, params = db._species_filter(species)
+        clause, params = db.species_filter(species)
         rows = db.query(
             f"SELECT id, embedding FROM faces "
             f"WHERE person_id IS NULL AND cluster_id IS NULL AND {clause} "
