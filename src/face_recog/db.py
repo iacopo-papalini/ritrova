@@ -283,10 +283,11 @@ class FaceDB:
     @_locked
     def get_all_embeddings(self, species: str = "human") -> list[tuple[int, np.ndarray]]:
         """Return all (face_id, embedding) pairs for clustering, excluding dismissed."""
+        clause, params = self.species_filter(species)
         rows = self.conn.execute(
-            "SELECT id, embedding FROM faces "
-            "WHERE species = ? AND id NOT IN (SELECT face_id FROM dismissed_faces)",
-            (species,),
+            f"SELECT id, embedding FROM faces "
+            f"WHERE {clause} AND id NOT IN (SELECT face_id FROM dismissed_faces)",
+            params,
         ).fetchall()
         return [(row[0], np.frombuffer(row[1], dtype=np.float32)) for row in rows]
 
