@@ -30,17 +30,24 @@ def cli(ctx: click.Context, db: str, photos_dir: str | None) -> None:
     ctx.obj["photos_dir"] = photos_dir
 
 
+def _require_photos_dir(ctx: click.Context) -> str:
+    photos_dir: str | None = ctx.obj["photos_dir"]
+    if not photos_dir:
+        raise click.UsageError("Set --photos-dir or PHOTOS_DIR environment variable")
+    return photos_dir
+
+
 @cli.command()
-@click.argument("photos_dir", type=click.Path(exists=True, file_okay=False))
 @click.option("--min-confidence", default=0.65, help="Minimum detection confidence")
 @click.pass_context
-def scan(ctx: click.Context, photos_dir: str, min_confidence: float) -> None:
-    """Scan a photos directory and detect all faces."""
+def scan(ctx: click.Context, min_confidence: float) -> None:
+    """Scan photos directory and detect all faces."""
     from .db import FaceDB
     from .detector import FaceDetector
     from .scanner import scan_photos
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    photos_dir = _require_photos_dir(ctx)
+    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
     print(f"Database: {ctx.obj['db_path']}")
     print(f"Scanning: {photos_dir}")
     print("Loading face detection model (first run downloads ~300 MB)...")
@@ -57,16 +64,16 @@ def scan(ctx: click.Context, photos_dir: str, min_confidence: float) -> None:
 
 
 @cli.command()
-@click.argument("photos_dir", type=click.Path(exists=True, file_okay=False))
 @click.option("--min-confidence", default=0.5, help="Minimum YOLO detection confidence")
 @click.pass_context
-def scan_pets(ctx: click.Context, photos_dir: str, min_confidence: float) -> None:
+def scan_pets(ctx: click.Context, min_confidence: float) -> None:
     """Scan photos for dogs and cats using YOLO + SigLIP."""
     from .db import FaceDB
     from .pet_detector import PetDetector
     from .scanner import scan_pets as _scan_pets
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    photos_dir = _require_photos_dir(ctx)
+    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
     print(f"Database: {ctx.obj['db_path']}")
     print(f"Scanning for pets in: {photos_dir}")
     print("Loading YOLO + SigLIP models (first run downloads them)...")
@@ -83,19 +90,17 @@ def scan_pets(ctx: click.Context, photos_dir: str, min_confidence: float) -> Non
 
 
 @cli.command()
-@click.argument("photos_dir", type=click.Path(exists=True, file_okay=False))
 @click.option("--min-confidence", default=0.65, help="Minimum detection confidence")
 @click.option("--interval", default=2.0, help="Seconds between sampled frames")
 @click.pass_context
-def scan_videos(
-    ctx: click.Context, photos_dir: str, min_confidence: float, interval: float
-) -> None:
+def scan_videos(ctx: click.Context, min_confidence: float, interval: float) -> None:
     """Scan videos: extract frames, detect faces, one per person per clip."""
     from .db import FaceDB
     from .detector import FaceDetector
     from .scanner import scan_videos as _scan_videos
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    photos_dir = _require_photos_dir(ctx)
+    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
     frames_dir = Path(ctx.obj["db_path"]).parent / "tmp" / "frames"
     print(f"Database: {ctx.obj['db_path']}")
     print(f"Scanning videos in: {photos_dir}")
