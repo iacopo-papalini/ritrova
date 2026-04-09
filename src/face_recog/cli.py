@@ -13,7 +13,7 @@ import click
     envvar="FACE_DB",
 )
 @click.pass_context
-def cli(ctx, db):
+def cli(ctx: click.Context, db: str) -> None:
     """Face recognition and tagging for photo collections."""
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = db
@@ -23,7 +23,7 @@ def cli(ctx, db):
 @click.argument("photos_dir", type=click.Path(exists=True, file_okay=False))
 @click.option("--min-confidence", default=0.65, help="Minimum detection confidence")
 @click.pass_context
-def scan(ctx, photos_dir, min_confidence):
+def scan(ctx: click.Context, photos_dir: str, min_confidence: float) -> None:
     """Scan a photos directory and detect all faces."""
     from .db import FaceDB
     from .detector import FaceDetector
@@ -49,7 +49,7 @@ def scan(ctx, photos_dir, min_confidence):
 @click.argument("photos_dir", type=click.Path(exists=True, file_okay=False))
 @click.option("--min-confidence", default=0.5, help="Minimum YOLO detection confidence")
 @click.pass_context
-def scan_pets(ctx, photos_dir, min_confidence):
+def scan_pets(ctx: click.Context, photos_dir: str, min_confidence: float) -> None:
     """Scan photos for dogs and cats using YOLO + SigLIP."""
     from .db import FaceDB
     from .pet_detector import PetDetector
@@ -76,7 +76,9 @@ def scan_pets(ctx, photos_dir, min_confidence):
 @click.option("--min-confidence", default=0.65, help="Minimum detection confidence")
 @click.option("--interval", default=2.0, help="Seconds between sampled frames")
 @click.pass_context
-def scan_videos(ctx, photos_dir, min_confidence, interval):
+def scan_videos(
+    ctx: click.Context, photos_dir: str, min_confidence: float, interval: float
+) -> None:
     """Scan videos: extract frames, detect faces, one per person per clip."""
     from .db import FaceDB
     from .detector import FaceDetector
@@ -114,7 +116,7 @@ def scan_videos(ctx, photos_dir, min_confidence, interval):
 )
 @click.option("--min-size", default=2, help="Minimum faces per cluster")
 @click.pass_context
-def cluster(ctx, threshold, min_size):
+def cluster(ctx: click.Context, threshold: float, min_size: int) -> None:
     """Cluster all detected faces by embedding similarity (humans + pets)."""
     from .cluster import cluster_faces
     from .db import FaceDB
@@ -137,7 +139,7 @@ def cluster(ctx, threshold, min_size):
 @click.option("--min-similarity", default=50.0, help="Minimum centroid similarity %")
 @click.option("--species", default="human", help="Species to process")
 @click.pass_context
-def auto_assign(ctx, min_similarity, species):
+def auto_assign(ctx: click.Context, min_similarity: float, species: str) -> None:
     """Bulk-assign unnamed clusters to existing named persons."""
     from .cluster import auto_assign as _auto_assign
     from .db import FaceDB
@@ -157,7 +159,7 @@ def auto_assign(ctx, min_similarity, species):
 @click.option("--min-similarity", default=70.0, help="Minimum centroid similarity %")
 @click.option("--species", default="human", help="Species to process")
 @click.pass_context
-def auto_merge(ctx, min_similarity, species):
+def auto_merge(ctx: click.Context, min_similarity: float, species: str) -> None:
     """Auto-merge unnamed clusters whose centroids are highly similar."""
     from .cluster import auto_merge_clusters
     from .db import FaceDB
@@ -179,7 +181,9 @@ def auto_merge(ctx, min_similarity, species):
 @click.option("--min-edges", default=2.0, help="Minimum Canny edge density % (motion blur)")
 @click.option("--dry-run", is_flag=True, help="Show what would be dismissed without acting")
 @click.pass_context
-def cleanup(ctx, min_size, min_sharpness, min_edges, dry_run):
+def cleanup(
+    ctx: click.Context, min_size: int, min_sharpness: float, min_edges: float, dry_run: bool
+) -> None:
     """Dismiss tiny and blurry faces from the database."""
     from pathlib import Path
 
@@ -224,7 +228,7 @@ def cleanup(ctx, min_size, min_sharpness, min_edges, dry_run):
     focus_blur = [0]
     motion_blur = [0]
 
-    def check_quality(row):
+    def check_quality(row: tuple[int, ...]) -> tuple[int | None, str | None]:
         fid, pid, bx, by, bw, bh = row
         photo = db.get_photo(pid)
         if not photo:
@@ -233,9 +237,9 @@ def cleanup(ctx, min_size, min_sharpness, min_edges, dry_run):
         if not Path(real_path).exists():
             return None, None
         try:
-            img = Image.open(real_path)
-            img = ImageOps.exif_transpose(img)
-            crop = img.crop((bx, by, bx + bw, by + bh))
+            raw_img = Image.open(real_path)
+            oriented = ImageOps.exif_transpose(raw_img)
+            crop = oriented.crop((bx, by, bx + bw, by + bh))
             gray = np.array(crop.convert("L"))
             lap = cv2.Laplacian(gray, cv2.CV_64F).var()
             if lap < min_sharpness:
@@ -285,7 +289,7 @@ def cleanup(ctx, min_size, min_sharpness, min_edges, dry_run):
 @click.option("--host", default="0.0.0.0", help="Host to bind to")
 @click.option("--port", default=8787, type=int, help="Port to listen on")
 @click.pass_context
-def serve(ctx, host, port):
+def serve(ctx: click.Context, host: str, port: int) -> None:
     """Start the web UI for browsing and naming faces."""
     import uvicorn
 
@@ -299,7 +303,7 @@ def serve(ctx, host, port):
 @cli.command()
 @click.option("--output", "-o", default="-", help="Output file (- for stdout)")
 @click.pass_context
-def export(ctx, output):
+def export(ctx: click.Context, output: str) -> None:
     """Export database as JSON."""
     from .db import FaceDB
 
@@ -316,7 +320,7 @@ def export(ctx, output):
 
 @cli.command()
 @click.pass_context
-def stats(ctx):
+def stats(ctx: click.Context) -> None:
     """Show database statistics."""
     from .db import FaceDB
 

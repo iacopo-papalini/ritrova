@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from PIL import Image, ImageFile, ImageOps
-from ultralytics import YOLO
+from ultralytics import YOLO  # type: ignore[attr-defined]
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -28,7 +28,7 @@ class PetDetector:
         # SigLIP for embeddings
         from transformers import AutoModel, AutoProcessor
 
-        self.processor = AutoProcessor.from_pretrained(siglip_model)
+        self.processor = AutoProcessor.from_pretrained(siglip_model)  # type: ignore[no-untyped-call]
         self.siglip = AutoModel.from_pretrained(siglip_model)
         self.siglip.eval()
         if torch.backends.mps.is_available():
@@ -37,15 +37,15 @@ class PetDetector:
         else:
             self.device = "cpu"
 
-    def detect(self, image_path: Path) -> list[dict]:
+    def detect(self, image_path: Path) -> list[dict[str, object]]:
         """Detect dogs and cats in an image.
 
         Returns list of dicts with keys:
             species (str), bbox (x, y, w, h), embedding (np.ndarray), confidence (float)
         """
         try:
-            img = Image.open(image_path)
-            img = ImageOps.exif_transpose(img)
+            img_raw = Image.open(image_path)
+            img = ImageOps.exif_transpose(img_raw)
             img_rgb = img.convert("RGB")
         except OSError:
             logger.warning("Could not read image: %s", image_path)
@@ -100,4 +100,4 @@ class PetDetector:
         norm = np.linalg.norm(emb)
         if norm > 0:
             emb = emb / norm
-        return emb
+        return emb  # type: ignore[no-any-return]

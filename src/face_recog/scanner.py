@@ -3,6 +3,7 @@
 import hashlib
 import logging
 from pathlib import Path
+from typing import Any, cast
 
 import cv2
 import numpy as np
@@ -34,7 +35,7 @@ def get_exif_date(image_path: Path) -> str | None:
 
 def find_images(photos_dir: Path) -> list[Path]:
     """Find all image files in directory tree."""
-    images = []
+    images: list[Path] = []
     for ext in IMAGE_EXTENSIONS:
         images.extend(photos_dir.rglob(f"*{ext}"))
         images.extend(photos_dir.rglob(f"*{ext.upper()}"))
@@ -50,7 +51,7 @@ def find_images(photos_dir: Path) -> list[Path]:
 
 def find_videos(photos_dir: Path) -> list[Path]:
     """Find all video files in directory tree."""
-    videos = []
+    videos: list[Path] = []
     for ext in VIDEO_EXTENSIONS:
         videos.extend(photos_dir.rglob(f"*{ext}"))
         videos.extend(photos_dir.rglob(f"*{ext.upper()}"))
@@ -69,7 +70,7 @@ def scan_photos(
     photos_dir: Path,
     detector: FaceDetector,
     min_confidence: float = 0.65,
-) -> dict:
+) -> dict[str, int]:
     """Scan all photos, detect faces, store in DB. Returns stats dict."""
     images = find_images(photos_dir)
     total = len(images)
@@ -106,7 +107,7 @@ def scan_photos(
             batch = [
                 (photo_id, face["bbox"], face["embedding"], face["confidence"])
                 for face in detected_faces
-                if face["confidence"] >= min_confidence
+                if cast(float, face["confidence"]) >= min_confidence
             ]
 
             if batch:
@@ -143,7 +144,7 @@ def _is_duplicate(embedding: np.ndarray, seen: list[np.ndarray], threshold: floa
 
 
 def _update_or_add_face(
-    unique_faces: list[dict],
+    unique_faces: list[dict[str, Any]],
     emb: np.ndarray,
     bbox: tuple[int, int, int, int],
     conf: float,
@@ -185,7 +186,7 @@ def _extract_video_faces(
     min_confidence: float,
     interval_sec: float,
     dedup_threshold: float,
-) -> list[dict] | None:
+) -> list[dict[str, Any]] | None:
     """Extract unique faces from a video. Returns None on error."""
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -194,7 +195,7 @@ def _extract_video_faces(
         return None
 
     frame_interval = max(1, int(fps * interval_sec))
-    unique_faces: list[dict] = []
+    unique_faces: list[dict[str, Any]] = []
     frame_idx = 0
 
     while True:
@@ -233,7 +234,7 @@ def scan_videos(
     min_confidence: float = 0.65,
     interval_sec: float = 2.0,
     dedup_threshold: float = 0.6,
-) -> dict:
+) -> dict[str, int]:
     """Scan videos: extract frames, detect faces, deduplicate per video."""
     videos = find_videos(photos_dir)
     total = len(videos)
@@ -320,9 +321,9 @@ def scan_videos(
 def scan_pets(
     db: FaceDB,
     photos_dir: Path,
-    pet_detector,
+    pet_detector: Any,
     min_confidence: float = 0.5,
-) -> dict:
+) -> dict[str, int]:
     """Scan all photos for dogs and cats using YOLO + SigLIP."""
     from PIL import Image as _Image
     from PIL import ImageOps as _ImageOps
@@ -355,8 +356,8 @@ def scan_pets(
             good = [p for p in detected if p["confidence"] >= min_confidence]
 
             with _Image.open(image_path) as img:
-                img = _ImageOps.exif_transpose(img)
-                w, h = img.size
+                oriented = _ImageOps.exif_transpose(img)
+                w, h = oriented.size
 
             photo_id = db.add_photo(abs_path + "__pets", w, h)
 

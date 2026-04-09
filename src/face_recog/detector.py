@@ -31,15 +31,15 @@ class FaceDetector:
     def _load_image(self, image_path: Path) -> np.ndarray | None:
         """Load image with EXIF orientation applied, return BGR array."""
         try:
-            img = Image.open(image_path)
-            img = ImageOps.exif_transpose(img)
-            img = img.convert("RGB")
+            raw: Image.Image = Image.open(image_path)
+            oriented: Image.Image = ImageOps.exif_transpose(raw)
+            img = oriented.convert("RGB")
             return np.array(img)[:, :, ::-1]  # RGB -> BGR for insightface
         except OSError:
             logger.warning("Could not read image: %s", image_path)
             return None
 
-    def detect(self, image_path: Path) -> tuple[list[dict], int, int]:
+    def detect(self, image_path: Path) -> tuple[list[dict[str, object]], int, int]:
         """Detect faces in an image.
 
         Returns:

@@ -41,7 +41,7 @@ def create_app(db_path: str) -> FastAPI:
     # ── Pages ──────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
-    def index(request: Request, species: str = "human"):
+    def index(request: Request, species: str = "human") -> HTMLResponse:
         stats = db.get_stats(species=species)
         return templates.TemplateResponse(
             name="index.html",
@@ -50,7 +50,7 @@ def create_app(db_path: str) -> FastAPI:
         )
 
     @app.get("/clusters", response_class=HTMLResponse)
-    def clusters_page(request: Request, species: str = "human"):
+    def clusters_page(request: Request, species: str = "human") -> HTMLResponse:
         clusters = db.get_unnamed_clusters(species=species)
         return templates.TemplateResponse(
             name="clusters.html",
@@ -59,7 +59,9 @@ def create_app(db_path: str) -> FastAPI:
         )
 
     @app.get("/clusters/{cluster_id}", response_class=HTMLResponse)
-    def cluster_detail(request: Request, cluster_id: int, suggested_person: int | None = None):
+    def cluster_detail(
+        request: Request, cluster_id: int, suggested_person: int | None = None
+    ) -> HTMLResponse:
         total = db.get_cluster_face_count(cluster_id)
         if total == 0:
             raise HTTPException(404, "Cluster not found")
@@ -82,7 +84,7 @@ def create_app(db_path: str) -> FastAPI:
         )
 
     @app.get("/singletons", response_class=HTMLResponse)
-    def singletons_page(request: Request, species: str = "human"):
+    def singletons_page(request: Request, species: str = "human") -> HTMLResponse:
         total = db.get_singleton_count(species=species)
         faces = db.get_singleton_faces(species=species, limit=200)
         all_persons = db.get_persons()
@@ -109,7 +111,7 @@ def create_app(db_path: str) -> FastAPI:
         )
 
     @app.get("/persons", response_class=HTMLResponse)
-    def persons_page(request: Request, species: str = "human"):
+    def persons_page(request: Request, species: str = "human") -> HTMLResponse:
         persons = filter_persons_by_species(db, db.get_persons(), species)
         return templates.TemplateResponse(
             name="persons.html",
@@ -118,7 +120,7 @@ def create_app(db_path: str) -> FastAPI:
         )
 
     @app.get("/persons/{person_id}", response_class=HTMLResponse)
-    def person_detail(request: Request, person_id: int):
+    def person_detail(request: Request, person_id: int) -> HTMLResponse:
         person = db.get_person(person_id)
         if not person:
             raise HTTPException(404, "Person not found")
@@ -137,7 +139,7 @@ def create_app(db_path: str) -> FastAPI:
         )
 
     @app.get("/photos/{photo_id}", response_class=HTMLResponse)
-    def photo_page(request: Request, photo_id: int):
+    def photo_page(request: Request, photo_id: int) -> HTMLResponse:
         photo = db.get_photo(photo_id)
         if not photo:
             raise HTTPException(404, "Photo not found")
@@ -172,7 +174,9 @@ def create_app(db_path: str) -> FastAPI:
         )
 
     @app.get("/merge-suggestions", response_class=HTMLResponse)
-    def merge_suggestions_page(request: Request, min_sim: float = 40.0, species: str = "human"):
+    def merge_suggestions_page(
+        request: Request, min_sim: float = 40.0, species: str = "human"
+    ) -> HTMLResponse:
         persons_map = {p.id: p.name for p in db.get_persons()}
         return templates.TemplateResponse(
             name="merge_suggestions.html",
@@ -190,7 +194,7 @@ def create_app(db_path: str) -> FastAPI:
         offset: int = 0,
         limit: int = 20,
         species: str = "human",
-    ):
+    ) -> JSONResponse:
         suggestions = suggest_merges(db, min_similarity=min_sim, species=species)
         persons_map = {p.id: p.name for p in db.get_persons()}
         page = suggestions[offset : offset + limit]
@@ -220,7 +224,7 @@ def create_app(db_path: str) -> FastAPI:
         request: Request,
         a: int | None = None,
         b: int | None = None,
-    ):
+    ) -> HTMLResponse:
         persons = db.get_persons()
         result = None
         person_a = None
@@ -246,20 +250,20 @@ def create_app(db_path: str) -> FastAPI:
     def swap_faces(
         face_ids: list[int] = Body(...),
         target_person_id: int = Body(...),
-    ):
+    ) -> JSONResponse:
         for fid in face_ids:
             db.assign_face_to_person(fid, target_person_id)
         return JSONResponse({"ok": True, "swapped": len(face_ids)})
 
     @app.get("/search", response_class=HTMLResponse)
-    def search_page(request: Request, q: str = ""):
+    def search_page(request: Request, q: str = "") -> HTMLResponse:
         results = db.search_persons(q) if q else []
         return templates.TemplateResponse(
             name="search.html", context={"query": q, "results": results}, request=request
         )
 
     @app.get("/persons/{person_id}/find-similar", response_class=HTMLResponse)
-    def find_similar_page(request: Request, person_id: int, min_sim: float = 55.0):
+    def find_similar_page(request: Request, person_id: int, min_sim: float = 55.0) -> HTMLResponse:
         person = db.get_person(person_id)
         if not person:
             raise HTTPException(404, "Person not found")
@@ -275,13 +279,13 @@ def create_app(db_path: str) -> FastAPI:
         )
 
     @app.post("/api/persons/{person_id}/claim-faces")
-    def claim_faces(person_id: int, face_ids: list[int] = Body(..., embed=True)):
+    def claim_faces(person_id: int, face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
         for fid in face_ids:
             db.assign_face_to_person(fid, person_id)
         return JSONResponse({"ok": True, "claimed": len(face_ids)})
 
     @app.get("/api/clusters/{cluster_id}/hint")
-    def cluster_hint_api(cluster_id: int):
+    def cluster_hint_api(cluster_id: int) -> JSONResponse:
         """Return the best matching person for a cluster."""
         hint = compute_cluster_hint(db, cluster_id)
         if hint is None:
@@ -291,7 +295,7 @@ def create_app(db_path: str) -> FastAPI:
     # ── API: pagination ─────────────────────────────────────
 
     @app.get("/api/clusters/{cluster_id}/faces")
-    def cluster_faces_api(cluster_id: int, offset: int = 0, limit: int = 200):
+    def cluster_faces_api(cluster_id: int, offset: int = 0, limit: int = 200) -> JSONResponse:
         rows = db.query(
             "SELECT id, photo_id FROM faces WHERE cluster_id = ? LIMIT ? OFFSET ?",
             (cluster_id, limit, offset),
@@ -299,7 +303,7 @@ def create_app(db_path: str) -> FastAPI:
         return JSONResponse([{"id": r[0], "photo_id": r[1]} for r in rows])
 
     @app.get("/api/persons/{person_id}/faces")
-    def person_faces_api(person_id: int, offset: int = 0, limit: int = 200):
+    def person_faces_api(person_id: int, offset: int = 0, limit: int = 200) -> JSONResponse:
         rows = db.query(
             "SELECT id, photo_id FROM faces WHERE person_id = ? LIMIT ? OFFSET ?",
             (person_id, limit, offset),
@@ -309,7 +313,7 @@ def create_app(db_path: str) -> FastAPI:
     # ── API: images ────────────────────────────────────────
 
     @app.get("/api/faces/{face_id}/thumbnail")
-    def face_thumbnail(face_id: int, size: int = 150):
+    def face_thumbnail(face_id: int, size: int = 150) -> StreamingResponse:
         cache_path = thumbnails_dir / f"{face_id}_{size}.jpg"
         if cache_path.exists():
             data = cache_path.read_bytes()
@@ -325,15 +329,15 @@ def create_app(db_path: str) -> FastAPI:
         if not Path(real_path).exists():
             raise HTTPException(404)
 
-        with Image.open(real_path) as img:
-            img = ImageOps.exif_transpose(img)
+        with Image.open(real_path) as raw_img:
+            oriented = ImageOps.exif_transpose(raw_img)
             pad_w = face.bbox_w * 0.3
             pad_h = face.bbox_h * 0.3
             x1 = max(0, face.bbox_x - pad_w)
             y1 = max(0, face.bbox_y - pad_h)
-            x2 = min(img.width, face.bbox_x + face.bbox_w + pad_w)
-            y2 = min(img.height, face.bbox_y + face.bbox_h + pad_h)
-            crop = img.crop((int(x1), int(y1), int(x2), int(y2)))
+            x2 = min(oriented.width, face.bbox_x + face.bbox_w + pad_w)
+            y2 = min(oriented.height, face.bbox_y + face.bbox_h + pad_h)
+            crop = oriented.crop((int(x1), int(y1), int(x2), int(y2)))
 
         crop.thumbnail((size, size))
         crop.save(cache_path, "JPEG", quality=85)
@@ -344,7 +348,7 @@ def create_app(db_path: str) -> FastAPI:
         return StreamingResponse(buf, media_type="image/jpeg")
 
     @app.get("/api/photos/{photo_id}/image")
-    def photo_image(photo_id: int, max_size: int = 1600):
+    def photo_image(photo_id: int, max_size: int = 1600) -> StreamingResponse:
         photo = db.get_photo(photo_id)
         if not photo:
             raise HTTPException(404)
@@ -352,11 +356,11 @@ def create_app(db_path: str) -> FastAPI:
         if not Path(real_path).exists():
             raise HTTPException(404)
 
-        with Image.open(real_path) as img:
-            img = ImageOps.exif_transpose(img)
-            img.thumbnail((max_size, max_size))
+        with Image.open(real_path) as raw_img:
+            oriented = ImageOps.exif_transpose(raw_img)
+            oriented.thumbnail((max_size, max_size))
             buf = io.BytesIO()
-            img.save(buf, "JPEG", quality=90)
+            oriented.save(buf, "JPEG", quality=90)
 
         buf.seek(0)
         return StreamingResponse(buf, media_type="image/jpeg")
@@ -371,13 +375,13 @@ def create_app(db_path: str) -> FastAPI:
         return "/clusters"
 
     @app.post("/api/clusters/{cluster_id}/name")
-    def name_cluster(cluster_id: int, name: str = Form(...)):
+    def name_cluster(cluster_id: int, name: str = Form(...)) -> RedirectResponse:
         person_id = db.create_person(name)
         db.assign_cluster_to_person(cluster_id, person_id)
         return RedirectResponse(_next_similar_cluster(person_id), status_code=303)
 
     @app.post("/api/clusters/{cluster_id}/assign")
-    def assign_cluster_to_existing(cluster_id: int, person_id: int = Form(...)):
+    def assign_cluster_to_existing(cluster_id: int, person_id: int = Form(...)) -> RedirectResponse:
         person = db.get_person(person_id)
         if not person:
             raise HTTPException(404, "Person not found")
@@ -385,7 +389,7 @@ def create_app(db_path: str) -> FastAPI:
         return RedirectResponse(_next_similar_cluster(person_id), status_code=303)
 
     @app.post("/api/clusters/{cluster_id}/dismiss")
-    def dismiss_cluster(cluster_id: int):
+    def dismiss_cluster(cluster_id: int) -> JSONResponse:
         """Dismiss all faces in a cluster as non-faces."""
         face_ids = db.get_cluster_face_ids(cluster_id)
         if face_ids:
@@ -393,13 +397,15 @@ def create_app(db_path: str) -> FastAPI:
         return JSONResponse({"ok": True, "dismissed": len(face_ids)})
 
     @app.post("/api/clusters/merge")
-    def merge_clusters_api(source_cluster: int = Body(...), target_cluster: int = Body(...)):
+    def merge_clusters_api(
+        source_cluster: int = Body(...), target_cluster: int = Body(...)
+    ) -> JSONResponse:
         """Move all faces from source cluster into target cluster."""
         db.merge_clusters(source_cluster, target_cluster)
         return JSONResponse({"ok": True})
 
     @app.post("/api/faces/dismiss")
-    def dismiss_faces(face_ids: list[int] = Body(..., embed=True)):
+    def dismiss_faces(face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
         """Mark faces as non-faces (statues, paintings, dogs, etc.)."""
         db.dismiss_faces(face_ids)
         return JSONResponse({"ok": True, "dismissed": len(face_ids)})
@@ -408,41 +414,41 @@ def create_app(db_path: str) -> FastAPI:
     def exclude_faces(
         face_ids: list[int] = Body(..., embed=True),
         cluster_id: int = Body(..., embed=True),
-    ):
+    ) -> JSONResponse:
         if face_ids:
             db.exclude_faces(face_ids, cluster_id=cluster_id)
         return JSONResponse({"ok": True, "excluded": len(face_ids)})
 
     @app.post("/api/faces/{face_id}/assign")
-    def assign_face(face_id: int, person_id: int = Form(...)):
+    def assign_face(face_id: int, person_id: int = Form(...)) -> JSONResponse:
         db.assign_face_to_person(face_id, person_id)
         return JSONResponse({"ok": True})
 
     @app.post("/api/faces/{face_id}/unassign")
-    def unassign_face(face_id: int):
+    def unassign_face(face_id: int) -> JSONResponse:
         db.unassign_face(face_id)
         return JSONResponse({"ok": True})
 
     @app.post("/api/persons/{person_id}/rename")
-    def rename_person(person_id: int, name: str = Form(...)):
+    def rename_person(person_id: int, name: str = Form(...)) -> RedirectResponse:
         db.rename_person(person_id, name)
         return RedirectResponse(f"/persons/{person_id}", status_code=303)
 
     @app.post("/api/persons/merge")
-    def merge_persons(source_id: int = Form(...), target_id: int = Form(...)):
+    def merge_persons(source_id: int = Form(...), target_id: int = Form(...)) -> RedirectResponse:
         if source_id == target_id:
             raise HTTPException(400, "Cannot merge person with themselves")
         db.merge_persons(source_id, target_id)
         return RedirectResponse(f"/persons/{target_id}", status_code=303)
 
     @app.post("/api/persons/{person_id}/delete")
-    def delete_person(person_id: int):
+    def delete_person(person_id: int) -> RedirectResponse:
         """Unassign all faces and delete the person."""
         db.delete_person(person_id)
         return RedirectResponse("/persons", status_code=303)
 
     @app.get("/api/export")
-    def export_db():
+    def export_db() -> JSONResponse:
         data = json.loads(db.export_json())
         return JSONResponse(content=data)
 
