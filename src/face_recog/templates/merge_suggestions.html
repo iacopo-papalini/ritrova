@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Merge Suggestions{% endblock %}
+{% block content %}
+<h1>Merge Suggestions</h1>
+<p class="photo-meta">
+  Showing pairs with centroid similarity &ge; <span id="current-sim">{{ min_sim }}</span>%.
+  <a href="/merge-suggestions?min_sim=30&species={{ species }}">30%</a> |
+  <a href="/merge-suggestions?min_sim=40&species={{ species }}">40%</a> |
+  <a href="/merge-suggestions?min_sim=50&species={{ species }}">50%</a> |
+  <a href="/merge-suggestions?min_sim=60&species={{ species }}">60%</a>
+</p>
+
+<p class="photo-meta" id="status">Loading...</p>
+
+<div id="suggestions-list"></div>
+
+<script>
+const minSim = {{ min_sim }};
+const species = '{{ species }}';
+const personsMap = {{ persons_map | tojson }};
+let offset = 0;
+const pageSize = 20;
+let total = null;
+let loading = false;
+
+function label(id, name) {
+  if (name) return '<a href="/persons/' + id + '">' + name + '</a> (' + id + ')';
+  return '<a href="/clusters/' + id + '">Cluster #' + id + '</a>';
+}
+
+function simClass(pct) {
+  if (pct >= 60) return 'sim-high';
+  if (pct >= 50) return 'sim-medium';
+  return '';
+}
+
+function mergeAction(s) {
+  if (s.name_a && !s.name_b) {
+    return `<button class="btn" onclick="mergeClusterIntoPerson(${s.cluster_b}, ${s.cluster_a}, this)">Merge into ${s.name_a}</button>`;
+  }
+  if (s.name_b && !s.name_a) {
+    return `<button class="btn" onclick="mergeClusterIntoPerson(${s.cluster_a}, ${s.cluster_b}, this)">Merge into ${s.name_b}</button>`;
+  }
+  if (!s.name_a && !s.name_b) {
+    return `<button class="btn btn-secondary" onclick="mergeClusters(${s.cluster_a}, ${s.cluster_b}, this)">Merge clusters</button>`;
+  }
+  return '';
+}
+
+function renderSuggestion(s) {
+  const div = document.createElement('div');
+  div.className = 'merge-row';
+  div.innerHTML = `
+    <div class="merge-pair">
+      <div class="merge-side">
+        <div class="merge-label">${label(s.cluster_a, s.name_a)} (${s.size_a})</div>
+        <div class="merge-faces">
+          ${s.sample_face_ids_a.map(id => '<img src="/api/faces/' + id + '/thumbnail?size=100" loading="lazy">').join('')}
+        </div>
+      </div>
+      <div class="merge-similarity">
+        <span class="sim-badge ${simClass(s.similarity_pct)}">${s.similarity_pct}%</span>
+        <div style="margin-top:0.5rem">${mergeAction(s)}</div>
+      </div>
+      <div class="merge-side">
+        <div class="merge-label">${label(s.cluster_b, s.name_b)} (${s.size_b})</div>
+        <div class="merge-faces">
+          ${s.sample_face_ids_b.map(id => '<img src="/api/faces/' + id + '/thumbnail?size=100" loading="lazy">').join('')}
+        </div>
+      </div>
+    </div>`;
+  return div;
+}
+
+async function loadMore() {
+  if (loading || (total !== null && offset >= total)) return;
+  loading = true;
+  const resp = await fetch('/api/merge-suggestions?min_sim=' + minSim + '&offset=' + offset + '&limit=' + pageSize + '&species=' + species);
+  const data = await resp.json();
+  total = data.total;
+  const list = document.getElementById('suggestions-list');
+  data.suggestions.forEach(s => list.appendChild(renderSuggestion(s)));
+  offset += data.suggestions.length;
+  document.getElementById('status').textContent =
+    'Showing ' + offset + ' of ' + total + ' suggestions';
+  if (total === 0) document.getElementById('status').textContent = 'No suggestions above ' + minSim + '%.';
+  loading = false;
+}
+
+window.addEventListener('scroll', function() {
+  if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) {
+    loadMore();
+  }
+});
+
+async function mergeClusterIntoPerson(clusterId, personId, btn) {
+  const body = new FormData();
+  body.append('person_id', personId);
+  const resp = await fetch('/api/clusters/' + clusterId + '/assign', {method: 'POST', body});
+  if (resp.ok) removeRow(btn);
+}
+
+async function mergeClusters(clusterA, clusterB, btn) {
+  const resp = await fetch('/api/clusters/merge', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({source_cluster: clusterB, target_cluster: clusterA})
+  });
+  if (resp.ok) removeRow(btn);
+}
+
+function removeRow(btn) {
+  btn.closest('.merge-row').remove();
+  if (document.querySelectorAll('.merge-row').length === 0) {
+    location.reload();
+  }
+}
+
+loadMore();
+</script>
+{% endblock %}

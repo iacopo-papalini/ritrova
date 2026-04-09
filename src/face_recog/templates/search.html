@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Search{% endblock %}
+{% block content %}
+<h1>Search</h1>
+<form action="/search" method="get" class="search-page-form">
+  <input type="text" name="q" value="{{ query }}" placeholder="Search by name..." autofocus>
+  <button type="submit" class="btn">Search</button>
+</form>
+
+{% if query %}
+<p>{{ results|length }} result{{ 's' if results|length != 1 }} for "{{ query }}"</p>
+{% endif %}
+
+<div class="person-grid">
+  {% for person in results %}
+  <a href="/persons/{{ person.id }}" class="person-card">
+    <div class="person-name">{{ person.name }}</div>
+    <div class="person-count">{{ person.face_count }} faces</div>
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}

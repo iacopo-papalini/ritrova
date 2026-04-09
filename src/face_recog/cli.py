@@ -1,0 +1,329 @@
+"""CLI entry point for face-recog."""
+
+from pathlib import Path
+
+import click
+
+
+@click.group()
+@click.option(
+    "--db",
+    default="./faces.db",
+    help="Path to SQLite database",
+    envvar="FACE_DB",
+)
+@click.pass_context
+def cli(ctx, db):
+    """Face recognition and tagging for photo collections."""
+    ctx.ensure_object(dict)
+    ctx.obj["db_path"] = db
+
+
+@cli.command()
+@click.argument("photos_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--min-confidence", default=0.65, help="Minimum detection confidence")
+@click.pass_context
+def scan(ctx, photos_dir, min_confidence):
+    """Scan a photos directory and detect all faces."""
+    from .db import FaceDB
+    from .detector import FaceDetector
+    from .scanner import scan_photos
+
+    db = FaceDB(ctx.obj["db_path"])
+    print(f"Database: {ctx.obj['db_path']}")
+    print(f"Scanning: {photos_dir}")
+    print("Loading face detection model (first run downloads ~300 MB)...")
+
+    detector = FaceDetector()
+    result = scan_photos(db, Path(photos_dir), detector, min_confidence)
+
+    print(
+        f"\nDone! processed={result['processed']}  "
+        f"faces={result['faces_found']}  "
+        f"skipped={result['skipped']}  errors={result['errors']}"
+    )
+    db.close()
+
+
+@cli.command()
+@click.argument("photos_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--min-confidence", default=0.5, help="Minimum YOLO detection confidence")
+@click.pass_context
+def scan_pets(ctx, photos_dir, min_confidence):
+    """Scan photos for dogs and cats using YOLO + SigLIP."""
+    from .db import FaceDB
+    from .pet_detector import PetDetector
+    from .scanner import scan_pets as _scan_pets
+
+    db = FaceDB(ctx.obj["db_path"])
+    print(f"Database: {ctx.obj['db_path']}")
+    print(f"Scanning for pets in: {photos_dir}")
+    print("Loading YOLO + SigLIP models (first run downloads them)...")
+
+    detector = PetDetector()
+    result = _scan_pets(db, Path(photos_dir), detector, min_confidence)
+
+    print(
+        f"\nDone! processed={result['processed']}  "
+        f"pets={result['pets_found']}  "
+        f"skipped={result['skipped']}  errors={result['errors']}"
+    )
+    db.close()
+
+
+@cli.command()
+@click.argument("photos_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--min-confidence", default=0.65, help="Minimum detection confidence")
+@click.option("--interval", default=2.0, help="Seconds between sampled frames")
+@click.pass_context
+def scan_videos(ctx, photos_dir, min_confidence, interval):
+    """Scan videos: extract frames, detect faces, one per person per clip."""
+    from .db import FaceDB
+    from .detector import FaceDetector
+    from .scanner import scan_videos as _scan_videos
+
+    db = FaceDB(ctx.obj["db_path"])
+    frames_dir = Path(ctx.obj["db_path"]).parent / "tmp" / "frames"
+    print(f"Database: {ctx.obj['db_path']}")
+    print(f"Scanning videos in: {photos_dir}")
+    print("Loading face detection model...")
+
+    detector = FaceDetector()
+    result = _scan_videos(
+        db,
+        Path(photos_dir),
+        detector,
+        frames_dir,
+        min_confidence=min_confidence,
+        interval_sec=interval,
+    )
+
+    print(
+        f"\nDone! processed={result['processed']}  "
+        f"faces={result['faces_found']}  "
+        f"skipped={result['skipped']}  errors={result['errors']}"
+    )
+    db.close()
+
+
+@cli.command()
+@click.option(
+    "--threshold",
+    default=0.45,
+    help="Max cosine distance within a cluster (complete linkage)",
+)
+@click.option("--min-size", default=2, help="Minimum faces per cluster")
+@click.option("--species", default="human", help="Species to cluster (human/dog/cat/other_pet)")
+@click.pass_context
+def cluster(ctx, threshold, min_size, species):
+    """Cluster detected faces by embedding similarity (agglomerative, complete linkage)."""
+    from .cluster import cluster_faces
+    from .db import FaceDB
+
+    db = FaceDB(ctx.obj["db_path"])
+    result = cluster_faces(db, threshold=threshold, min_size=min_size, species=species)
+
+    print("\nClustering results:")
+    print(f"  Total faces:      {result['total_faces']}")
+    print(f"  Clusters formed:  {result['clusters']}")
+    print(f"  Noise (outliers): {result['noise']}")
+    if result.get("largest_cluster"):
+        print(f"  Largest cluster:  {result['largest_cluster']} faces")
+    db.close()
+
+
+@cli.command()
+@click.option("--min-similarity", default=50.0, help="Minimum centroid similarity %")
+@click.option("--species", default="human", help="Species to process")
+@click.pass_context
+def auto_assign(ctx, min_similarity, species):
+    """Bulk-assign unnamed clusters to existing named persons."""
+    from .cluster import auto_assign as _auto_assign
+    from .db import FaceDB
+
+    db = FaceDB(ctx.obj["db_path"])
+    result = _auto_assign(db, min_similarity=min_similarity / 100, species=species)
+
+    print(
+        f"\nAssigned {result['assigned_clusters']} clusters "
+        f"({result['assigned_faces']} faces), "
+        f"{result['unmatched']} unmatched"
+    )
+    db.close()
+
+
+@cli.command()
+@click.option("--min-similarity", default=70.0, help="Minimum centroid similarity %")
+@click.option("--species", default="human", help="Species to process")
+@click.pass_context
+def auto_merge(ctx, min_similarity, species):
+    """Auto-merge unnamed clusters whose centroids are highly similar."""
+    from .cluster import auto_merge_clusters
+    from .db import FaceDB
+
+    db = FaceDB(ctx.obj["db_path"])
+    result = auto_merge_clusters(db, min_similarity=min_similarity / 100, species=species)
+
+    print(
+        f"\nMerged {result['merged']} cluster pairs "
+        f"({result['faces_moved']} faces moved), "
+        f"{result['remaining_clusters']} clusters remaining"
+    )
+    db.close()
+
+
+@cli.command()
+@click.option("--min-size", default=50, help="Minimum face width/height in pixels")
+@click.option("--min-sharpness", default=30.0, help="Minimum Laplacian variance (focus blur)")
+@click.option("--min-edges", default=2.0, help="Minimum Canny edge density % (motion blur)")
+@click.option("--dry-run", is_flag=True, help="Show what would be dismissed without acting")
+@click.pass_context
+def cleanup(ctx, min_size, min_sharpness, min_edges, dry_run):
+    """Dismiss tiny and blurry faces from the database."""
+    import cv2
+    from pathlib import Path
+    from PIL import Image, ImageFile, ImageOps
+
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
+    from .db import FaceDB
+
+    db = FaceDB(ctx.obj["db_path"])
+
+    # Find unassigned, non-dismissed faces
+    rows = db.query(
+        "SELECT f.id, f.photo_id, f.bbox_x, f.bbox_y, f.bbox_w, f.bbox_h "
+        "FROM faces f "
+        "WHERE f.person_id IS NULL "
+        "AND f.id NOT IN (SELECT face_id FROM dismissed_faces)"
+    )
+    total = len(rows)
+    print(f"Checking {total} unassigned faces...")
+
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import numpy as np
+
+    tiny_ids = []
+    check_rows = []
+    for r in rows:
+        fid, pid, bx, by, bw, bh = r[0], r[1], r[2], r[3], r[4], r[5]
+        if bw < min_size or bh < min_size:
+            tiny_ids.append(fid)
+        else:
+            check_rows.append((fid, pid, bx, by, bw, bh))
+
+    print(f"  Tiny (<{min_size}px): {len(tiny_ids)} — instant dismiss")
+    print(f"  Checking sharpness on {len(check_rows)} faces...")
+
+    bad_quality_ids = []
+    lock = threading.Lock()
+    done = [0]
+    focus_blur = [0]
+    motion_blur = [0]
+
+    def check_quality(row):
+        fid, pid, bx, by, bw, bh = row
+        photo = db.get_photo(pid)
+        if not photo:
+            return None, None
+        real_path = photo.file_path.removesuffix("__pets")
+        if not Path(real_path).exists():
+            return None, None
+        try:
+            img = Image.open(real_path)
+            img = ImageOps.exif_transpose(img)
+            crop = img.crop((bx, by, bx + bw, by + bh))
+            gray = np.array(crop.convert("L"))
+            lap = cv2.Laplacian(gray, cv2.CV_64F).var()
+            if lap < min_sharpness:
+                return fid, "focus"
+            edge_pct = (cv2.Canny(gray, 50, 150) > 0).mean() * 100
+            if edge_pct < min_edges:
+                return fid, "motion"
+            return None, None
+        except OSError:
+            return None, None
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(check_quality, r): r for r in check_rows}
+        for future in as_completed(futures):
+            fid, reason = future.result()
+            if fid is not None:
+                bad_quality_ids.append(fid)
+                if reason == "focus":
+                    focus_blur[0] += 1
+                else:
+                    motion_blur[0] += 1
+            with lock:
+                done[0] += 1
+                if done[0] % 500 == 0:
+                    print(
+                        f"\r  [{done[0]}/{len(check_rows)}] out_of_focus={focus_blur[0]} featureless={motion_blur[0]}",
+                        end="",
+                        flush=True,
+                    )
+
+    to_dismiss = tiny_ids + bad_quality_ids
+    print(f"\n  Tiny (<{min_size}px): {len(tiny_ids)}")
+    print(f"  Out of focus (laplacian <{min_sharpness}): {focus_blur[0]}")
+    print(f"  Featureless (edges <{min_edges}%): {motion_blur[0]}")
+    print(f"  Total to dismiss: {len(to_dismiss)}")
+
+    if dry_run:
+        print("Dry run — no changes made.")
+    elif to_dismiss:
+        db.dismiss_faces(to_dismiss)
+        print(f"Dismissed {len(to_dismiss)} faces.")
+
+    db.close()
+
+
+@cli.command()
+@click.option("--host", default="0.0.0.0", help="Host to bind to")
+@click.option("--port", default=8787, type=int, help="Port to listen on")
+@click.pass_context
+def serve(ctx, host, port):
+    """Start the web UI for browsing and naming faces."""
+    import uvicorn
+
+    from .app import create_app
+
+    app = create_app(ctx.obj["db_path"])
+    print(f"Face recognition UI → http://localhost:{port}")
+    uvicorn.run(app, host=host, port=port)
+
+
+@cli.command()
+@click.option("--output", "-o", default="-", help="Output file (- for stdout)")
+@click.pass_context
+def export(ctx, output):
+    """Export database as JSON."""
+    from .db import FaceDB
+
+    db = FaceDB(ctx.obj["db_path"])
+    data = db.export_json()
+
+    if output == "-":
+        print(data)
+    else:
+        Path(output).write_text(data)
+        print(f"Exported to {output}")
+    db.close()
+
+
+@cli.command()
+@click.pass_context
+def stats(ctx):
+    """Show database statistics."""
+    from .db import FaceDB
+
+    db = FaceDB(ctx.obj["db_path"])
+    s = db.get_stats()
+
+    print(f"Photos scanned:    {s['total_photos']}")
+    print(f"Faces detected:    {s['total_faces']}")
+    print(f"Persons named:     {s['total_persons']}")
+    print(f"Named faces:       {s['named_faces']}")
+    print(f"Unnamed clusters:  {s['unnamed_clusters']}")
+    print(f"Unclustered faces: {s['unclustered_faces']}")
+    db.close()

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}FaceRecog{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav>
+    <a href="/" class="logo">FaceRecog</a>
+    <div class="nav-links">
+      <a href="/clusters">Clusters</a>
+      <a href="/persons">Persons</a>
+      <a href="/merge-suggestions">Merge suggestions</a>
+      <a href="/compare">Compare</a>
+      <span class="nav-sep">|</span>
+      <a href="/clusters?species=pet">Pets</a>
+      <a href="/persons?species=pet">Pet names</a>
+      <form action="/search" method="get" class="nav-search">
+        <input type="text" name="q" placeholder="Search..." value="{{ query|default('') }}">
+      </form>
+    </div>
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

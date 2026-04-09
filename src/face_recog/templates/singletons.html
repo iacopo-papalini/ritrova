@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Singles{% endblock %}
+{% block content %}
+<h1>Unmatched singles <span class="subtitle">({{ total }}{% if total > faces|length %}, showing {{ faces|length }}{% endif %})</span></h1>
+<p class="photo-meta">Faces that didn't match any cluster. Select to dismiss or assign.</p>
+
+<div class="select-bar" id="select-bar" style="display:none;">
+  <span id="select-count">0</span> selected
+  <select id="assign-person">
+    <option value="">-- assign to --</option>
+    {% for p in persons %}
+    <option value="{{ p.id }}">{{ p.name }} ({{ p.face_count }})</option>
+    {% endfor %}
+  </select>
+  <button class="btn" onclick="assignSelected()">Assign</button>
+  <button class="btn btn-danger" onclick="dismissSelected()" style="background:#86868b">Not a face</button>
+  <button class="btn btn-secondary" onclick="clearSelection()">Cancel</button>
+</div>
+
+<div class="face-grid-large">
+  {% for face in faces %}
+  {% set hint = face_hints.get(face.id) %}
+  <div class="face-thumb selectable" data-face-id="{{ face.id }}" onclick="toggleSelect(this)">
+    <img src="/api/faces/{{ face.id }}/thumbnail?size=180" loading="lazy" title="{{ face_paths.get(face.id, '') }}">
+    {% if hint %}
+    <div class="face-hint"
+         onclick="event.stopPropagation(); quickAssign({{ face.id }}, {{ hint.person_id }}, this)">{{ hint.name }} {{ hint.sim }}% — click to assign</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<script>
+function toggleSelect(el) {
+  el.classList.toggle('selected');
+  const count = document.querySelectorAll('.face-thumb.selected').length;
+  document.getElementById('select-count').textContent = count;
+  document.getElementById('select-bar').style.display = count > 0 ? 'flex' : 'none';
+}
+
+function clearSelection() {
+  document.querySelectorAll('.face-thumb.selected').forEach(el => el.classList.remove('selected'));
+  document.getElementById('select-bar').style.display = 'none';
+}
+
+async function quickAssign(faceId, personId, el) {
+  const resp = await fetch('/api/persons/' + personId + '/claim-faces', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({face_ids: [faceId]})
+  });
+  if (resp.ok) el.closest('.face-thumb').remove();
+}
+
+async function assignSelected() {
+  const sel = document.getElementById('assign-person');
+  if (!sel.value) return;
+  const ids = [...document.querySelectorAll('.face-thumb.selected')].map(el => Number(el.dataset.faceId));
+  if (!ids.length) return;
+  const resp = await fetch('/api/persons/' + sel.value + '/claim-faces', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({face_ids: ids})
+  });
+  if (resp.ok) location.reload();
+}
+
+async function dismissSelected() {
+  const ids = [...document.querySelectorAll('.face-thumb.selected')].map(el => Number(el.dataset.faceId));
+  if (!ids.length) return;
+  if (!confirm('Dismiss ' + ids.length + ' as non-faces?')) return;
+  const resp = await fetch('/api/faces/dismiss', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({face_ids: ids})
+  });
+  if (resp.ok) location.reload();
+}
+</script>
+{% endblock %}

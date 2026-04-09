@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Find similar — {{ person.name }}{% endblock %}
+{% block content %}
+<h1>Find similar faces for {{ person.name }}</h1>
+<p class="photo-meta">
+  Showing unclustered faces with similarity &ge; {{ min_sim }}%.
+  <a href="/persons/{{ person.id }}/find-similar?min_sim=40">40%</a> |
+  <a href="/persons/{{ person.id }}/find-similar?min_sim=50">50%</a> |
+  <a href="/persons/{{ person.id }}/find-similar?min_sim=55">55%</a> |
+  <a href="/persons/{{ person.id }}/find-similar?min_sim=60">60%</a> |
+  <a href="/persons/{{ person.id }}/find-similar?min_sim=70">70%</a>
+</p>
+
+{% if not candidates %}
+<p class="empty">No similar unclustered faces found above {{ min_sim }}%.</p>
+{% else %}
+
+<div class="select-bar" id="select-bar">
+  <button class="btn" onclick="claimAll()">Claim all {{ candidates|length }} faces</button>
+  <button class="btn btn-secondary" onclick="claimSelected()">Claim selected (<span id="select-count">0</span>)</button>
+</div>
+
+<div class="face-grid-large">
+  {% for face_id, sim in candidates %}
+  <div class="face-thumb selectable selected" data-face-id="{{ face_id }}" onclick="toggleSelect(this)">
+    <img src="/api/faces/{{ face_id }}/thumbnail?size=180" loading="lazy" alt="face">
+    <div class="face-assign">
+      <span class="sim-badge {% if sim >= 60 %}sim-high{% elif sim >= 50 %}sim-medium{% endif %}">{{ sim }}%</span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<p><a href="/persons/{{ person.id }}">&larr; Back to {{ person.name }}</a></p>
+
+<script>
+function toggleSelect(el) {
+  el.classList.toggle('selected');
+  document.getElementById('select-count').textContent =
+    document.querySelectorAll('.face-thumb.selected').length;
+}
+
+async function claimSelected() {
+  const ids = [...document.querySelectorAll('.face-thumb.selected')].map(el => Number(el.dataset.faceId));
+  if (!ids.length) return;
+  const resp = await fetch('/api/persons/{{ person.id }}/claim-faces', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({face_ids: ids})
+  });
+  if (resp.ok) location.href = '/persons/{{ person.id }}';
+}
+
+async function claimAll() {
+  const ids = [...document.querySelectorAll('.face-thumb')].map(el => Number(el.dataset.faceId));
+  if (!ids.length) return;
+  const resp = await fetch('/api/persons/{{ person.id }}/claim-faces', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({face_ids: ids})
+  });
+  if (resp.ok) location.href = '/persons/{{ person.id }}';
+}
+
+// Initialize count
+document.getElementById('select-count').textContent =
+  document.querySelectorAll('.face-thumb.selected').length;
+</script>
+{% endblock %}

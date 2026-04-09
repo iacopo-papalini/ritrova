@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Compare Persons{% endblock %}
+{% block content %}
+<h1>Compare Persons</h1>
+
+<form action="/compare" method="get" class="action-bar">
+  <select name="a">
+    <option value="">-- Person A --</option>
+    {% for p in persons %}
+    <option value="{{ p.id }}" {% if selected_a == p.id %}selected{% endif %}>{{ p.name }} ({{ p.face_count }})</option>
+    {% endfor %}
+  </select>
+  <span>vs</span>
+  <select name="b">
+    <option value="">-- Person B --</option>
+    {% for p in persons %}
+    <option value="{{ p.id }}" {% if selected_b == p.id %}selected{% endif %}>{{ p.name }} ({{ p.face_count }})</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="btn">Compare</button>
+</form>
+
+{% if result %}
+
+{% if result.swaps_a_to_b %}
+<h2>In {{ person_a.name }} but looks more like {{ person_b.name }} ({{ result.swaps_a_to_b|length }})</h2>
+<div class="select-bar" id="bar-atob">
+  <span id="count-atob">0</span> selected
+  <button class="btn" onclick="swapSelected('atob', {{ person_b.id }})">Move to {{ person_b.name }}</button>
+  <button class="btn btn-secondary" onclick="selectAll('atob')">Select all</button>
+</div>
+<div class="face-grid-large" id="grid-atob">
+  {% for face_id, sim_own, sim_other, path in result.swaps_a_to_b %}
+  <div class="face-thumb selectable" data-face-id="{{ face_id }}" onclick="toggleSel(this, 'atob')">
+    <img src="/api/faces/{{ face_id }}/thumbnail?size=180" loading="lazy" title="{{ path }}">
+    <div class="face-assign">
+      <span class="tag">{{ sim_own }}%</span> &rarr; <span class="sim-badge sim-high">{{ sim_other }}%</span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="photo-meta">No faces in {{ person_a.name }} look more like {{ person_b.name }}.</p>
+{% endif %}
+
+{% if result.swaps_b_to_a %}
+<h2>In {{ person_b.name }} but looks more like {{ person_a.name }} ({{ result.swaps_b_to_a|length }})</h2>
+<div class="select-bar" id="bar-btoa">
+  <span id="count-btoa">0</span> selected
+  <button class="btn" onclick="swapSelected('btoa', {{ person_a.id }})">Move to {{ person_a.name }}</button>
+  <button class="btn btn-secondary" onclick="selectAll('btoa')">Select all</button>
+</div>
+<div class="face-grid-large" id="grid-btoa">
+  {% for face_id, sim_own, sim_other, path in result.swaps_b_to_a %}
+  <div class="face-thumb selectable" data-face-id="{{ face_id }}" onclick="toggleSel(this, 'btoa')">
+    <img src="/api/faces/{{ face_id }}/thumbnail?size=180" loading="lazy" title="{{ path }}">
+    <div class="face-assign">
+      <span class="tag">{{ sim_own }}%</span> &rarr; <span class="sim-badge sim-high">{{ sim_other }}%</span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="photo-meta">No faces in {{ person_b.name }} look more like {{ person_a.name }}.</p>
+{% endif %}
+
+<script>
+function toggleSel(el, group) {
+  el.classList.toggle('selected');
+  const count = document.querySelectorAll('#grid-' + group + ' .selected').length;
+  document.getElementById('count-' + group).textContent = count;
+  document.getElementById('bar-' + group).style.display = count > 0 ? 'flex' : 'none';
+}
+
+function selectAll(group) {
+  document.querySelectorAll('#grid-' + group + ' .face-thumb').forEach(el => el.classList.add('selected'));
+  const count = document.querySelectorAll('#grid-' + group + ' .selected').length;
+  document.getElementById('count-' + group).textContent = count;
+  document.getElementById('bar-' + group).style.display = count > 0 ? 'flex' : 'none';
+}
+
+async function swapSelected(group, targetPersonId) {
+  const ids = [...document.querySelectorAll('#grid-' + group + ' .selected')]
+    .map(el => Number(el.dataset.faceId));
+  if (!ids.length) return;
+  const resp = await fetch('/api/faces/swap', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({face_ids: ids, target_person_id: targetPersonId})
+  });
+  if (resp.ok) location.reload();
+}
+</script>
+
+{% endif %}
+{% endblock %}

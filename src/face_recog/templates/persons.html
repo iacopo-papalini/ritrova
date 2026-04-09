@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Persons{% endblock %}
+{% block content %}
+<h1>{% if species == 'pet' %}Pets{% else %}Persons{% endif %} ({{ persons|length }})</h1>
+
+{% if not persons %}
+<p class="empty">No persons named yet. <a href="/clusters">Start by naming clusters</a>.</p>
+{% endif %}
+
+<div class="person-grid">
+  {% for person in persons %}
+  <a href="/persons/{{ person.id }}" class="person-card">
+    <div class="person-name">{{ person.name }}</div>
+    <div class="person-count">{{ person.face_count }} faces</div>
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,58 @@
+[project]
+name = "face-recog"
+version = "0.1.0"
+description = "Face recognition and tagging for photo collections"
+requires-python = ">=3.14"
+dependencies = [
+    "insightface>=0.7.3",
+    "onnxruntime>=1.17.0",
+    "numpy>=1.24.0",
+    "opencv-python-headless>=4.8.0",
+    "scikit-learn>=1.3.0",
+    "scipy>=1.11.0",
+    "pillow>=10.0.0",
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "jinja2>=3.1.0",
+    "python-multipart>=0.0.6",
+    "click>=8.1.0",
+    "ultralytics>=8.1.0",
+    "transformers>=4.30.0",
+    "torch>=2.0.0",
+    "sentencepiece>=0.2.1",
+    "pi-heif>=1.3.0",
+]
+
+[project.scripts]
+face-recog = "face_recog.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.20.0",
+    "pre-commit>=4.5.1",
+    "pytest>=9.0.3",
+    "ruff>=0.15.9",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.14"
+warn_return_any = false
+warn_unused_configs = true
+ignore_missing_imports = true
+check_untyped_defs = false
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

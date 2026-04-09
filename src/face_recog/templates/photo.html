@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Photo{% endblock %}
+{% block content %}
+<h1>Photo <span class="subtitle">{{ photo.file_path.split('/')[-1] }}</span></h1>
+{% if photo.taken_at %}
+<p class="photo-meta">Taken: {{ photo.taken_at }} &mdash; {{ photo.width }}x{{ photo.height }}</p>
+{% endif %}
+
+<div class="photo-viewer">
+  <div class="photo-container">
+    <img src="/api/photos/{{ photo.id }}/image" id="photo-img" alt="photo">
+    {% for face in faces_data %}
+    <a href="#face-{{ face.id }}"
+       class="face-box {% if face.person_name %}identified{% endif %}"
+       style="left:{{ face.bbox_x_pct }}%; top:{{ face.bbox_y_pct }}%;
+              width:{{ face.bbox_w_pct }}%; height:{{ face.bbox_h_pct }}%;"
+       title="{{ face.person_name or 'Unknown' }} ({{ '%.0f'|format(face.confidence * 100) }}%)">
+      {% if face.person_name %}
+      <span class="face-label">{{ face.person_name }}</span>
+      {% endif %}
+    </a>
+    {% endfor %}
+  </div>
+</div>
+
+<h2>Faces in this photo</h2>
+<div class="face-grid-large">
+  {% for face in faces_data %}
+  <div class="face-thumb" id="face-{{ face.id }}">
+    <img src="/api/faces/{{ face.id }}/thumbnail?size=180" alt="face">
+    <div class="face-assign">
+      {% if face.person_name %}
+        <span class="tag">{{ face.person_name }}</span>
+        <button class="btn-small btn-danger" onclick="unassignFace({{ face.id }})">x</button>
+      {% else %}
+        <form onsubmit="return assignFace(event, {{ face.id }})" class="inline-form">
+          <select name="person_id">
+            <option value="">-- assign --</option>
+            {% for p in persons %}
+            <option value="{{ p.id }}">{{ p.name }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="btn-small">OK</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if photo.video_path %}
+<p class="photo-meta">
+  From video: <small>{{ photo.video_path }}</small>
+</p>
+{% endif %}
+<p class="photo-meta">
+  <small>{{ photo.file_path }}</small>
+</p>
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}FaceRecog — Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.total_photos }}</div>
+    <div class="stat-label">Photos scanned</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.total_faces }}</div>
+    <div class="stat-label">Faces detected</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.total_persons }}</div>
+    <div class="stat-label">Persons named</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.named_faces }}</div>
+    <div class="stat-label">Faces identified</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.unnamed_clusters }}</div>
+    <div class="stat-label">Unnamed clusters</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.unclustered_faces }}</div>
+    <div class="stat-label">Unclustered faces</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.dismissed_faces }}</div>
+    <div class="stat-label">Dismissed (non-faces)</div>
+  </div>
+</div>
+
+<div class="actions">
+  {% if stats.unnamed_clusters > 0 %}
+  <a href="/clusters" class="btn">Review unnamed clusters</a>
+  {% endif %}
+  {% if stats.total_persons > 0 %}
+  <a href="/persons" class="btn btn-secondary">Browse persons</a>
+  {% endif %}
+</div>
+{% endblock %}
