@@ -64,7 +64,7 @@ def scan(ctx: click.Context, min_confidence: float) -> None:
 
 
 @cli.command()
-@click.option("--min-confidence", default=0.5, help="Minimum YOLO detection confidence")
+@click.option("--min-confidence", default=0.7, help="Minimum YOLO detection confidence")
 @click.pass_context
 def scan_pets(ctx: click.Context, min_confidence: float) -> None:
     """Scan photos for dogs and cats using YOLO + SigLIP."""
@@ -124,24 +124,33 @@ def scan_videos(ctx: click.Context, min_confidence: float, interval: float) -> N
     db.close()
 
 
+SPECIES_THRESHOLDS = {
+    "human": 0.45,  # ArcFace 512-dim: well-separated
+    "dog": 0.20,  # SigLIP 768-dim: much denser, needs tighter threshold
+    "cat": 0.20,
+}
+
+
 @cli.command()
 @click.option(
     "--threshold",
-    default=0.45,
-    help="Max cosine distance within a cluster (complete linkage)",
+    default=None,
+    type=float,
+    help="Override cosine distance threshold (default: per-species)",
 )
 @click.option("--min-size", default=2, help="Minimum faces per cluster")
 @click.pass_context
-def cluster(ctx: click.Context, threshold: float, min_size: int) -> None:
+def cluster(ctx: click.Context, threshold: float | None, min_size: int) -> None:
     """Cluster all detected faces by embedding similarity (humans + pets)."""
     from .cluster import cluster_faces
     from .db import FaceDB
 
     db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
 
-    for species in ("human", "dog", "cat"):
-        print(f"\n── {species} ──")
-        result = cluster_faces(db, threshold=threshold, min_size=min_size, species=species)
+    for species, default_thresh in SPECIES_THRESHOLDS.items():
+        t = threshold if threshold is not None else default_thresh
+        print(f"\n── {species} (threshold={t}) ──")
+        result = cluster_faces(db, threshold=t, min_size=min_size, species=species)
         print(f"  Total faces:      {result['total_faces']}")
         print(f"  Clusters formed:  {result['clusters']}")
         print(f"  Noise (outliers): {result['noise']}")
