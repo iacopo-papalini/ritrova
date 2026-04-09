@@ -1,6 +1,8 @@
 """Face clustering and similarity search."""
 
+import logging
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
@@ -8,6 +10,8 @@ from scipy.spatial.distance import pdist
 
 from .db import Face, FaceDB
 from .embeddings import compute_centroid, cosine_similarity, normalize
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,7 +36,7 @@ def cluster_faces(
     threshold: float = 0.45,
     min_size: int = 2,
     species: str = "human",
-) -> dict:
+) -> dict[str, Any]:
     """Cluster face embeddings using agglomerative clustering (complete linkage).
 
     Complete linkage requires ALL members of a cluster to be within the
@@ -46,7 +50,7 @@ def cluster_faces(
     """
     db.clear_clusters()
 
-    print(f"Loading {species} embeddings...")
+    logger.info("Loading %s embeddings...", species)
     data = db.get_all_embeddings(species=species)
     if not data:
         return {"total_faces": 0, "clusters": 0, "noise": 0}
@@ -54,17 +58,17 @@ def cluster_faces(
     face_ids = [d[0] for d in data]
     embeddings = np.array([d[1] for d in data])
 
-    print(f"Clustering {len(embeddings)} face embeddings...")
+    logger.info("Clustering %d face embeddings...", len(embeddings))
 
     # Batch-normalize all embeddings for pairwise distance computation
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms[norms == 0] = 1
     embeddings = embeddings / norms
 
-    print("Computing pairwise distances...")
+    logger.info("Computing pairwise distances...")
     distances = pdist(embeddings, metric="cosine")
 
-    print("Running hierarchical clustering (complete linkage)...")
+    logger.info("Running hierarchical clustering (complete linkage)...")
     Z = linkage(distances, method="complete")
 
     labels = fcluster(Z, t=threshold, criterion="distance")
@@ -81,7 +85,7 @@ def cluster_faces(
         fid: int(label) for fid, label in zip(face_ids, labels, strict=True) if label >= 0
     }
 
-    print(f"Updating {len(face_cluster_map)} face cluster assignments...")
+    logger.info("Updating %d face cluster assignments...", len(face_cluster_map))
     db.update_cluster_ids(face_cluster_map)
 
     n_clusters = len(set(labels) - {-1})
@@ -129,7 +133,7 @@ def auto_assign(
     db: FaceDB,
     min_similarity: float = 0.50,
     species: str = "human",
-) -> dict:
+) -> dict[str, Any]:
     """Bulk-assign unnamed clusters to existing named persons by centroid similarity.
 
     For each unnamed cluster, find the best-matching person. If similarity
@@ -139,11 +143,11 @@ def auto_assign(
     """
     persons = db.get_persons()
     if not persons:
-        print("No named persons to match against.")
+        logger.info("No named persons to match against.")
         return {"assigned_clusters": 0, "assigned_faces": 0, "unmatched": 0}
 
     # Build person centroids
-    print(f"Computing centroids for {len(persons)} persons...")
+    logger.info("Computing centroids for %d persons...", len(persons))
     person_centroids: list[tuple[int, str, np.ndarray]] = []
     for person in persons:
         faces = db.get_person_faces(person.id, limit=500)
@@ -152,14 +156,14 @@ def auto_assign(
         person_centroids.append((person.id, person.name, _faces_centroid(faces)))
 
     if not person_centroids:
-        print("No persons with matching species.")
+        logger.info("No persons with matching species.")
         return {"assigned_clusters": 0, "assigned_faces": 0, "unmatched": 0}
 
     centroid_matrix = np.array([pc[2] for pc in person_centroids])
 
     # Process unnamed clusters
     unnamed = db.get_unnamed_clusters(species=species)
-    print(f"Matching {len(unnamed)} unnamed clusters...")
+    logger.info("Matching %d unnamed clusters...", len(unnamed))
 
     assigned_clusters = 0
     assigned_faces = 0
@@ -181,16 +185,19 @@ def auto_assign(
             assigned_clusters += 1
             assigned_faces += cluster["face_count"]
             if assigned_clusters % 100 == 0:
-                print(
-                    f"\r  assigned {assigned_clusters} clusters, {assigned_faces} faces...",
-                    end="",
-                    flush=True,
+                logger.info(
+                    "  assigned %d clusters, %d faces...",
+                    assigned_clusters,
+                    assigned_faces,
                 )
         else:
             unmatched += 1
 
-    print(
-        f"\n  Clusters: assigned {assigned_clusters} ({assigned_faces} faces), unmatched {unmatched}"
+    logger.info(
+        "Clusters: assigned %d (%d faces), unmatched %d",
+        assigned_clusters,
+        assigned_faces,
+        unmatched,
     )
 
     # Also sweep unclustered singletons
@@ -198,7 +205,7 @@ def auto_assign(
 
     assigned_singletons = 0
     if unclustered:
-        print(f"  Sweeping {len(unclustered)} unclustered singletons...")
+        logger.info("Sweeping %d unclustered singletons...", len(unclustered))
         for fid, emb in unclustered:
             emb = normalize(emb)
             sims = centroid_matrix @ emb
@@ -209,9 +216,10 @@ def auto_assign(
                 db.assign_face_to_person(fid, pid)
                 assigned_singletons += 1
 
-        print(
-            f"  Singletons: assigned {assigned_singletons}, "
-            f"skipped {len(unclustered) - assigned_singletons}"
+        logger.info(
+            "Singletons: assigned %d, skipped %d",
+            assigned_singletons,
+            len(unclustered) - assigned_singletons,
         )
 
     return {
@@ -226,7 +234,7 @@ def compare_persons(
     db: FaceDB,
     person_a_id: int,
     person_b_id: int,
-) -> dict:
+) -> dict[str, Any]:
     """Compare two persons and find faces that might be misassigned.
 
     Returns faces from A that are closer to B's centroid, and vice versa.
@@ -264,7 +272,7 @@ def auto_merge_clusters(
     db: FaceDB,
     min_similarity: float = 0.70,
     species: str = "human",
-) -> dict:
+) -> dict[str, Any]:
     """Auto-merge unnamed cluster pairs whose centroids exceed the similarity threshold."""
     suggestions = suggest_merges(db, min_similarity=min_similarity * 100, species=species)
 

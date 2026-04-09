@@ -43,11 +43,12 @@ line-length = 100
 target-version = "py314"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "RET"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RET", "T20", "LOG"]
 ignore = ["E501", "UP047"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/face_recog/app.py" = ["B008"]
+"src/face_recog/cli.py" = ["T20"]
 
 [tool.mypy]
 python_version = "3.14"
@@ -62,7 +63,6 @@ module = [
     "face_recog.scanner",
     "face_recog.detector",
     "face_recog.pet_detector",
-    "face_recog.cluster",
 ]
 ignore_errors = true
 
