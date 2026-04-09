@@ -28,9 +28,9 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 
 
-def create_app(db_path: str) -> FastAPI:
+def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     app = FastAPI(title="Face Recognition")
-    db = FaceDB(db_path)
+    db = FaceDB(db_path, base_dir=photos_dir)
 
     thumbnails_dir = Path(db_path).parent / "tmp" / "thumbnails"
     thumbnails_dir.mkdir(parents=True, exist_ok=True)
@@ -326,11 +326,11 @@ def create_app(db_path: str) -> FastAPI:
         photo = db.get_photo(face.photo_id)
         if not photo:
             raise HTTPException(404)
-        real_path = photo.file_path.removesuffix("__pets")
-        if not Path(real_path).exists():
+        resolved = db.resolve_path(photo.file_path)
+        if not resolved.exists():
             raise HTTPException(404)
 
-        with Image.open(real_path) as raw_img:
+        with Image.open(resolved) as raw_img:
             oriented = ImageOps.exif_transpose(raw_img)
             pad_w = face.bbox_w * 0.3
             pad_h = face.bbox_h * 0.3
@@ -354,11 +354,11 @@ def create_app(db_path: str) -> FastAPI:
         photo = db.get_photo(photo_id)
         if not photo:
             raise HTTPException(404)
-        real_path = photo.file_path.removesuffix("__pets")
-        if not Path(real_path).exists():
+        resolved = db.resolve_path(photo.file_path)
+        if not resolved.exists():
             raise HTTPException(404)
 
-        with Image.open(real_path) as raw_img:
+        with Image.open(resolved) as raw_img:
             oriented = ImageOps.exif_transpose(raw_img)
             oriented.thumbnail((max_size, max_size))
             buf = io.BytesIO()

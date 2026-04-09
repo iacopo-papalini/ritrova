@@ -63,9 +63,10 @@ class Person:
 
 
 class FaceDB:
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, base_dir: str | Path | None = None):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.base_dir: Path | None = Path(base_dir).resolve() if base_dir else None
         self._lock = threading.RLock()
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -138,6 +139,32 @@ class FaceDB:
 
     def close(self) -> None:
         self.conn.close()
+
+    def resolve_path(self, stored_path: str) -> Path:
+        """Resolve a DB-stored path to an absolute filesystem path.
+
+        Handles both relative paths (joined with base_dir) and legacy
+        absolute paths (returned as-is for backwards compatibility).
+        Strips the __pets suffix before resolving.
+        """
+        clean = stored_path.removesuffix("__pets")
+        if clean.startswith("/"):
+            return Path(clean)
+        if self.base_dir is None:
+            return Path(clean)
+        if ".." in clean.split("/"):
+            msg = f"Path contains '..': {clean}"
+            raise ValueError(msg)
+        return self.base_dir / clean
+
+    def to_relative(self, absolute_path: str) -> str:
+        """Convert an absolute path to a relative path (stripping base_dir prefix)."""
+        if self.base_dir is None:
+            return absolute_path
+        try:
+            return str(Path(absolute_path).resolve().relative_to(self.base_dir))
+        except ValueError:
+            return absolute_path
 
     def _now(self) -> str:
         return datetime.now(UTC).isoformat()

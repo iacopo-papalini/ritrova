@@ -82,9 +82,9 @@ def scan_photos(
     errors = 0
 
     for i, image_path in enumerate(images, 1):
-        abs_path = str(image_path.resolve())
+        stored_path = db.to_relative(str(image_path.resolve()))
 
-        if db.is_photo_scanned(abs_path):
+        if db.is_photo_scanned(stored_path):
             skipped += 1
             if i % 500 == 0 or i == total:
                 print(
@@ -102,7 +102,7 @@ def scan_photos(
                 continue
 
             taken_at = get_exif_date(image_path)
-            photo_id = db.add_photo(abs_path, width, height, taken_at)
+            photo_id = db.add_photo(stored_path, width, height, taken_at)
 
             batch = [
                 (photo_id, face["bbox"], face["embedding"], face["confidence"])
@@ -249,8 +249,9 @@ def scan_videos(
 
     for i, video_path in enumerate(videos, 1):
         abs_video = str(video_path.resolve())
+        stored_video = db.to_relative(abs_video)
 
-        if db.is_video_scanned(abs_video):
+        if db.is_video_scanned(stored_video):
             skipped += 1
             if i % 50 == 0 or i == total:
                 print(
@@ -275,7 +276,7 @@ def scan_videos(
 
             if not unique_faces:
                 vid_hash = hashlib.md5(abs_video.encode()).hexdigest()[:10]
-                db.add_photo(f"__nofaces_{vid_hash}", 0, 0, video_path=abs_video)
+                db.add_photo(f"__nofaces_{vid_hash}", 0, 0, video_path=stored_video)
                 processed += 1
                 continue
 
@@ -286,10 +287,10 @@ def scan_videos(
                 Image.fromarray(rgb).save(str(frame_path), "JPEG", quality=85)
 
                 photo_id = db.add_photo(
-                    str(frame_path),
+                    db.to_relative(str(frame_path)),
                     uf["width"],
                     uf["height"],
-                    video_path=abs_video,
+                    video_path=stored_video,
                 )
                 db.add_faces_batch([(photo_id, uf["bbox"], uf["embedding"], uf["confidence"])])
                 faces_found += 1
@@ -338,9 +339,9 @@ def scan_pets(
     errors = 0
 
     for i, image_path in enumerate(images, 1):
-        abs_path = str(image_path.resolve())
+        stored_path = db.to_relative(str(image_path.resolve()))
 
-        if db.is_pet_scanned(abs_path):
+        if db.is_pet_scanned(stored_path):
             skipped += 1
             if i % 500 == 0 or i == total:
                 print(
@@ -359,7 +360,7 @@ def scan_pets(
                 oriented = _ImageOps.exif_transpose(img)
                 w, h = oriented.size
 
-            photo_id = db.add_photo(abs_path + "__pets", w, h)
+            photo_id = db.add_photo(stored_path + "__pets", w, h)
 
             for pet in good:
                 db.add_faces_batch(

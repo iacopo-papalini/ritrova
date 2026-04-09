@@ -12,11 +12,19 @@ import click
     help="Path to SQLite database",
     envvar="FACE_DB",
 )
+@click.option(
+    "--photos-dir",
+    default=None,
+    help="Root directory for photos (paths stored relative to this)",
+    envvar="PHOTOS_DIR",
+    type=click.Path(file_okay=False),
+)
 @click.pass_context
-def cli(ctx: click.Context, db: str) -> None:
+def cli(ctx: click.Context, db: str, photos_dir: str | None) -> None:
     """Face recognition and tagging for photo collections."""
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = db
+    ctx.obj["photos_dir"] = photos_dir
 
 
 @cli.command()
@@ -29,7 +37,7 @@ def scan(ctx: click.Context, photos_dir: str, min_confidence: float) -> None:
     from .detector import FaceDetector
     from .scanner import scan_photos
 
-    db = FaceDB(ctx.obj["db_path"])
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
     print(f"Database: {ctx.obj['db_path']}")
     print(f"Scanning: {photos_dir}")
     print("Loading face detection model (first run downloads ~300 MB)...")
@@ -55,7 +63,7 @@ def scan_pets(ctx: click.Context, photos_dir: str, min_confidence: float) -> Non
     from .pet_detector import PetDetector
     from .scanner import scan_pets as _scan_pets
 
-    db = FaceDB(ctx.obj["db_path"])
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
     print(f"Database: {ctx.obj['db_path']}")
     print(f"Scanning for pets in: {photos_dir}")
     print("Loading YOLO + SigLIP models (first run downloads them)...")
@@ -84,7 +92,7 @@ def scan_videos(
     from .detector import FaceDetector
     from .scanner import scan_videos as _scan_videos
 
-    db = FaceDB(ctx.obj["db_path"])
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
     frames_dir = Path(ctx.obj["db_path"]).parent / "tmp" / "frames"
     print(f"Database: {ctx.obj['db_path']}")
     print(f"Scanning videos in: {photos_dir}")
@@ -121,7 +129,7 @@ def cluster(ctx: click.Context, threshold: float, min_size: int) -> None:
     from .cluster import cluster_faces
     from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"])
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
 
     for species in ("human", "pet"):
         print(f"\n── {species} ──")
@@ -144,7 +152,7 @@ def auto_assign(ctx: click.Context, min_similarity: float, species: str) -> None
     from .cluster import auto_assign as _auto_assign
     from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"])
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
     result = _auto_assign(db, min_similarity=min_similarity / 100, species=species)
 
     print(
@@ -164,7 +172,7 @@ def auto_merge(ctx: click.Context, min_similarity: float, species: str) -> None:
     from .cluster import auto_merge_clusters
     from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"])
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
     result = auto_merge_clusters(db, min_similarity=min_similarity / 100, species=species)
 
     print(
@@ -185,15 +193,13 @@ def cleanup(
     ctx: click.Context, min_size: int, min_sharpness: float, min_edges: float, dry_run: bool
 ) -> None:
     """Dismiss tiny and blurry faces from the database."""
-    from pathlib import Path
-
     import cv2
     from PIL import Image, ImageFile, ImageOps
 
     ImageFile.LOAD_TRUNCATED_IMAGES = True
     from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"])
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
 
     # Find unassigned, non-dismissed faces
     rows = db.query(
@@ -233,11 +239,11 @@ def cleanup(
         photo = db.get_photo(pid)
         if not photo:
             return None, None
-        real_path = photo.file_path.removesuffix("__pets")
-        if not Path(real_path).exists():
+        resolved = db.resolve_path(photo.file_path)
+        if not resolved.exists():
             return None, None
         try:
-            raw_img = Image.open(real_path)
+            raw_img = Image.open(resolved)
             oriented = ImageOps.exif_transpose(raw_img)
             crop = oriented.crop((bx, by, bx + bw, by + bh))
             gray = np.array(crop.convert("L"))
@@ -295,7 +301,7 @@ def serve(ctx: click.Context, host: str, port: int) -> None:
 
     from .app import create_app
 
-    app = create_app(ctx.obj["db_path"])
+    app = create_app(ctx.obj["db_path"], photos_dir=ctx.obj["photos_dir"])
     print(f"Face recognition UI → http://localhost:{port}")
     uvicorn.run(app, host=host, port=port)
 
@@ -307,7 +313,7 @@ def export(ctx: click.Context, output: str) -> None:
     """Export database as JSON."""
     from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"])
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
     data = db.export_json()
 
     if output == "-":
@@ -324,7 +330,7 @@ def stats(ctx: click.Context) -> None:
     """Show database statistics."""
     from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"])
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
     s = db.get_stats()
 
     print(f"Photos scanned:    {s['total_photos']}")
@@ -333,4 +339,41 @@ def stats(ctx: click.Context) -> None:
     print(f"Named faces:       {s['named_faces']}")
     print(f"Unnamed clusters:  {s['unnamed_clusters']}")
     print(f"Unclustered faces: {s['unclustered_faces']}")
+    db.close()
+
+
+@cli.command("migrate-paths")
+@click.pass_context
+def migrate_paths(ctx: click.Context) -> None:
+    """Rewrite absolute paths in the DB to relative (using --photos-dir as base)."""
+    from .db import FaceDB
+
+    photos_dir = ctx.obj["photos_dir"]
+    if not photos_dir:
+        print("Error: --photos-dir is required for migration")
+        raise SystemExit(1)
+
+    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
+    base = str(db.base_dir) + "/"
+
+    rows = db.query("SELECT id, file_path, video_path FROM photos")
+    migrated = 0
+    for r in rows:
+        pid, fp, vp = r[0], r[1], r[2]
+        new_fp = fp
+        new_vp = vp
+
+        if fp and fp.startswith(base):
+            new_fp = fp[len(base) :]
+        if vp and vp.startswith(base):
+            new_vp = vp[len(base) :]
+
+        if new_fp != fp or new_vp != vp:
+            db.run(
+                "UPDATE photos SET file_path = ?, video_path = ? WHERE id = ?",
+                (new_fp, new_vp, pid),
+            )
+            migrated += 1
+
+    print(f"Migrated {migrated} of {len(rows)} photo paths to relative.")
     db.close()

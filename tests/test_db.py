@@ -1,5 +1,6 @@
 """Comprehensive tests for face_recog.db module."""
 
+from pathlib import Path
 from unittest import TestCase
 
 import numpy as np
@@ -484,3 +485,44 @@ class TestExport(TestCase):
         data = json.loads(self.db.export_json())
         assert data["persons"] == []
         assert data["unnamed_faces"] == []
+
+
+class TestPathResolution(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path: Path) -> None:
+        self.base = tmp_path / "photos"
+        self.base.mkdir()
+        self.db = FaceDB(tmp_path / "test.db", base_dir=self.base)
+
+    def test_resolve_relative_path(self) -> None:
+        resolved = self.db.resolve_path("subfolder/photo.jpg")
+        assert resolved == self.base / "subfolder" / "photo.jpg"
+
+    def test_resolve_strips_pets_suffix(self) -> None:
+        resolved = self.db.resolve_path("photo.jpg__pets")
+        assert resolved == self.base / "photo.jpg"
+
+    def test_resolve_rejects_dotdot(self) -> None:
+        with pytest.raises(ValueError, match="\\.\\."):
+            self.db.resolve_path("../etc/passwd")
+
+    def test_resolve_absolute_path_passthrough(self) -> None:
+        """Legacy absolute paths are returned as-is."""
+        resolved = self.db.resolve_path("/absolute/path/photo.jpg")
+        assert resolved == Path("/absolute/path/photo.jpg")
+
+    def test_to_relative(self) -> None:
+        abs_path = str(self.base / "subfolder" / "photo.jpg")
+        rel = self.db.to_relative(abs_path)
+        assert rel == "subfolder/photo.jpg"
+
+    def test_to_relative_outside_base(self) -> None:
+        """Paths outside base_dir are returned as-is."""
+        rel = self.db.to_relative("/somewhere/else/photo.jpg")
+        assert rel == "/somewhere/else/photo.jpg"
+
+    def test_no_base_dir_passthrough(self) -> None:
+        db_no_base = FaceDB(self.db.db_path.parent / "test2.db")
+        assert db_no_base.resolve_path("photo.jpg") == Path("photo.jpg")
+        assert db_no_base.to_relative("/abs/photo.jpg") == "/abs/photo.jpg"
+        db_no_base.close()
