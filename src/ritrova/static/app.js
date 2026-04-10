@@ -35,12 +35,14 @@ document.addEventListener('alpine:init', () => {
     photoPath: null,
     latitude: null,
     longitude: null,
+    rotation: 0,
 
     show(photoId) {
       this.photoId = photoId;
       this.photoPath = null;
       this.latitude = null;
       this.longitude = null;
+      this.rotation = 0;
       this.open = true;
       fetch(`/api/photos/${photoId}/info`)
         .then(r => r.json())
@@ -51,12 +53,15 @@ document.addEventListener('alpine:init', () => {
         });
     },
 
+    rotate() { this.rotation = (this.rotation + 90) % 360; },
+
     close() {
       this.open = false;
       this.photoId = null;
       this.photoPath = null;
       this.latitude = null;
       this.longitude = null;
+      this.rotation = 0;
     }
   });
 });
