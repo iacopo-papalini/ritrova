@@ -561,6 +561,10 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             request=request,
         )
 
+    @app.get("/favicon.ico")
+    def favicon() -> JSONResponse:
+        raise HTTPException(404)
+
     @app.get("/api/together")
     def together_api(person_ids: str = "") -> JSONResponse:
         """Find photos containing ALL given person IDs (comma-separated)."""
