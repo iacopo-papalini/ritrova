@@ -28,6 +28,75 @@ document.addEventListener('alpine:init', () => {
     get ids() { return [...this.selected]; }
   }));
 
+  // --------------- Alpine: person picker (typeahead) ---------------
+  // Usage: x-data="personPicker({ multi: false, onSelect(person) { ... } })"
+  //   or:  x-data="personPicker({ multi: true })"  then read .selected
+  let _personsCache = null;
+
+  Alpine.data('personPicker', (opts = {}) => ({
+    query: '',
+    items: [],
+    open: false,
+    selected: [],        // multi-select: array of {id, name}
+    multi: opts.multi || false,
+
+    async init() {
+      if (!_personsCache) {
+        const r = await fetch('/api/persons/all');
+        _personsCache = await r.json();
+      }
+      this.items = _personsCache;
+    },
+
+    get filtered() {
+      const q = this.query.toLowerCase().trim();
+      if (!q) return this.items.slice(0, 10);
+      return this.items.filter(p => p.name.toLowerCase().includes(q)).slice(0, 10);
+    },
+
+    get showCreate() {
+      const q = this.query.trim();
+      return q && !this.items.some(p => p.name.toLowerCase() === q.toLowerCase());
+    },
+
+    pick(person) {
+      if (this.multi) {
+        const idx = this.selected.findIndex(s => s.id === person.id);
+        if (idx >= 0) this.selected.splice(idx, 1);
+        else this.selected.push(person);
+        this.query = '';
+      } else {
+        this.query = person.name;
+        this.open = false;
+        if (opts.onSelect) opts.onSelect(person);
+      }
+    },
+
+    isSelected(id) {
+      return this.selected.some(s => s.id === id);
+    },
+
+    removeSelected(id) {
+      this.selected = this.selected.filter(s => s.id !== id);
+    },
+
+    async create() {
+      const name = this.query.trim();
+      if (!name) return;
+      const r = await fetch('/api/persons/create', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name})
+      });
+      if (!r.ok) return;
+      const person = await r.json();
+      // Invalidate cache
+      _personsCache = null;
+      await this.init();
+      this.pick(person);
+    }
+  }));
+
   // --------------- Alpine: lightbox store ---------------
   Alpine.store('lightbox', {
     open: false,

@@ -1,0 +1,58 @@
+{# Reusable person/pet typeahead picker.
+   Must be inside an x-data="personPicker({...})" scope.
+   Supports single-select and multi-select modes. #}
+
+{# Multi-select: show selected as chips #}
+<template x-if="multi && selected.length > 0">
+  <div class="flex flex-wrap gap-1.5 mb-2">
+    <template x-for="s in selected" :key="s.id">
+      <span class="inline-flex items-center gap-1 rounded-full bg-gallery-accent/20 px-3 py-1 text-sm text-gallery-accent">
+        <span x-text="s.name"></span>
+        <button @click="removeSelected(s.id)" class="hover:text-gallery-text cursor-pointer">&times;</button>
+      </span>
+    </template>
+  </div>
+</template>
+
+{# Search input #}
+<div class="relative">
+  <input type="text"
+         x-model="query"
+         @focus="open = true"
+         @input="open = true"
+         @keydown.escape="open = false"
+         placeholder="Type to search..."
+         class="w-full rounded-lg border border-gallery-border bg-gallery-card px-3 py-2 text-sm text-gallery-text
+                placeholder-gallery-muted outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+
+  {# Dropdown results #}
+  <div x-show="open && (filtered.length > 0 || showCreate)"
+       x-cloak
+       @click.outside="open = false"
+       class="absolute z-50 mt-1 w-full rounded-lg border border-gallery-border bg-gallery-card shadow-xl
+              max-h-60 overflow-y-auto">
+    <template x-for="p in filtered" :key="p.id">
+      <button @click="pick(p)"
+              class="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gallery-text
+                     transition-colors hover:bg-gallery-accent/10 cursor-pointer"
+              :class="isSelected(p.id) ? 'bg-gallery-accent/10 text-gallery-accent' : ''">
+        <img x-show="p.face_id" :src="p.face_id ? `/api/faces/${p.face_id}/thumbnail?size=60` : ''"
+             class="h-7 w-7 shrink-0 rounded-full object-cover">
+        <div x-show="!p.face_id"
+             class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gallery-border text-xs font-bold text-gallery-muted"
+             x-text="p.name[0].toUpperCase()"></div>
+        <span class="flex-1 truncate" x-text="p.name"></span>
+        <span class="text-xs text-gallery-muted" x-text="'(' + p.face_count + ')'"></span>
+      </button>
+    </template>
+    {# Create new option #}
+    <template x-if="showCreate">
+      <button @click="create()"
+              class="flex w-full items-center gap-2 border-t border-gallery-border px-3 py-2 text-sm
+                     text-gallery-accent transition-colors hover:bg-gallery-accent/10 cursor-pointer">
+        <span>+</span>
+        <span>Create "<span x-text="query.trim()"></span>"</span>
+      </button>
+    </template>
+  </div>
+</div>

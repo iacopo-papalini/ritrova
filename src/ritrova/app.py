@@ -528,6 +528,31 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         db.delete_person(person_id)
         return RedirectResponse(f"/{kind}", status_code=303)
 
+    @app.post("/api/persons/create")
+    def create_person_api(name: str = Body(..., embed=True)) -> JSONResponse:
+        """Create a person and return its data. Used by typeahead picker."""
+        person_id = db.create_person(name)
+        person = db.get_person(person_id)
+        assert person is not None
+        return JSONResponse({"id": person.id, "name": person.name, "face_count": person.face_count})
+
+    @app.get("/api/persons/all")
+    def all_persons_api() -> JSONResponse:
+        """All persons and pets for typeahead components, with avatar face ID."""
+        persons = db.get_persons()
+        avatars = db.get_random_avatars([p.id for p in persons])
+        return JSONResponse(
+            [
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "face_count": p.face_count,
+                    "face_id": avatars.get(p.id),
+                }
+                for p in persons
+            ]
+        )
+
     @app.get("/api/export")
     def export_db() -> JSONResponse:
         data = json.loads(db.export_json())

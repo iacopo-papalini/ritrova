@@ -21,44 +21,27 @@
     </div>
   </div>
 
-  <!-- Assign form -->
-  <div class="mb-6 flex flex-wrap items-start gap-3" x-data="{ createNew: {{ 'true' if not ranked_persons else 'false' }}, personId: '{{ ranked_persons[0][0] if ranked_persons else '__new__' }}' }">
-    <form class="flex flex-wrap items-center gap-2"
-          @submit.prevent="
-            const isNew = personId === '__new__';
-            if (isNew && !$refs.newNameInput.value.trim()) { $refs.newNameInput.focus(); return; }
-            const fd = new FormData();
-            if (isNew) { fd.append('name', $refs.newNameInput.value.trim()); }
-            else { fd.append('person_id', personId); }
-            const url = isNew
-              ? '/api/clusters/{{ cluster_id }}/name'
-              : '/api/clusters/{{ cluster_id }}/assign';
-            fetch(url, { method: 'POST', body: fd, redirect: 'follow' })
-              .then(r => { if (r.ok) location.href = r.url; })
-          ">
-      <select name="person_id"
-              x-model="personId"
-              @change="createNew = (personId === '__new__')"
-              class="rounded-lg border border-gallery-border bg-gallery-card px-3 py-2 text-sm text-gallery-text
-                     outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
-        {% for pid, name, count, sim in ranked_persons %}
-        <option value="{{ pid }}">{{ name }} ({{ count }}) &mdash; {{ sim }}%</option>
-        {% endfor %}
-        <option value="__new__">+ Create new {{ 'pet' if kind == 'pets' else 'person' }}</option>
-      </select>
-      <input type="text"
-             x-show="createNew"
-             x-cloak
-             x-ref="newNameInput"
-             placeholder="Name..."
-             class="rounded-lg border border-gallery-border bg-gallery-card px-3 py-2 text-sm text-gallery-text
-                    placeholder-gallery-muted outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
-      <button type="submit"
-              class="rounded-lg bg-gallery-accent px-4 py-2 text-sm font-medium text-gallery-bg
-                     transition-colors hover:bg-gallery-accent/80 cursor-pointer">
-        Assign
-      </button>
-    </form>
+  <!-- Assign via typeahead -->
+  <div class="mb-6 flex flex-wrap items-start gap-3"
+       x-data="personPicker({
+         onSelect(person) {
+           const fd = new FormData();
+           fd.append('person_id', person.id);
+           fetch('/api/clusters/{{ cluster_id }}/assign', { method: 'POST', body: fd, redirect: 'follow' })
+             .then(r => { if (r.ok) location.href = r.url; });
+         }
+       })">
+    {% if ranked_persons %}
+    <p class="text-xs text-gallery-muted self-center">Suggested:
+      {% for pid, name, count, sim in ranked_persons[:3] %}
+      <button @click="pick({id: {{ pid }}, name: '{{ name }}', face_count: {{ count }}})"
+              class="text-gallery-accent hover:underline cursor-pointer">{{ name }} {{ sim }}%</button>{% if not loop.last %},{% endif %}
+      {% endfor %}
+    </p>
+    {% endif %}
+    <div class="w-64">
+      {% include "partials/person_picker.html" %}
+    </div>
 
     <div class="flex-1"></div>
 
