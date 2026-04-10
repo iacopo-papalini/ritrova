@@ -29,6 +29,22 @@
 **Status:** Open
 **Description:** Given a set of persons/pets (e.g. "Figaro AND Eva AND Teresa"), find all photos that contain ALL of them. Useful for finding family group photos or photos of a specific person with a specific pet. Should support cross-kind queries (person + pet in same photo). UI: multi-select picker for persons/pets, results as a photo grid.
 
+### FEAT-7: Generic search/filter across all metadata
+**Reported:** 2026-04-10
+**Status:** Open
+**Description:** Unified search that queries across person/pet names, photo paths, dates, and (when available) tags/descriptions. Filter results by date range, person, location. Currently search only matches person names via `db.search_persons()`.
+
+### FEAT-9: Trigger background tasks from web UI
+**Reported:** 2026-04-10
+**Status:** Open
+**Description:** Run scan, scan-pets, cluster, auto-assign, cleanup, backfill-gps, and describe as background tasks from the web UI instead of requiring CLI access. Dashboard should show a "Tasks" panel with buttons to launch jobs, a running indicator, and a log tail. Tasks run in a background thread/process so the UI stays responsive. Progress reported via SSE (Server-Sent Events) or polling. Only one task at a time (queue or reject if busy).
+
+### FEAT-8: Photo scene descriptions and tags via computer vision
+**Reported:** 2026-04-10
+**Status:** Open
+**Description:** Use a vision-language model (e.g. SigLIP, BLIP-2, or LLaVA) to generate natural language descriptions and tags for photos ("people at a table", "christmas tree", "beach sunset", "birthday cake"). Store as searchable text in DB. Enables FEAT-7 to search by scene content, not just faces. Should run on Apple Silicon GPU (MPS/CoreML). Could reuse the SigLIP model already loaded for pet embeddings, or use a dedicated captioning model.
+**Design notes:** New DB table `photo_tags(photo_id, tag, source)` + `photo_descriptions(photo_id, description)`. New CLI command `ritrova describe` to batch-process. Tags surfaced in photo view and searchable via FEAT-7.
+
 ### BUG-14: Pet cluster assign dropdown shows 0 face count for all persons
 **Page:** /clusters/{id} (pet clusters)
 **Reported:** 2026-04-10
