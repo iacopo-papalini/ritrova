@@ -1,0 +1,27 @@
+{# Together results — photo grid grouped by month #}
+{% if total == 0 %}
+<p class="text-gallery-muted text-sm py-8 text-center">No photos found with all selected people/pets together.</p>
+{% else %}
+<p class="text-gallery-muted text-sm mb-4">{{ total }} photo{{ 's' if total != 1 else '' }} found</p>
+{% for group in photo_groups %}
+<h3 class="mt-4 mb-2 text-sm font-medium text-gallery-muted first:mt-0">{{ group.month }}</h3>
+<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+  {% for photo in group.photos %}
+  <a href="/photos/{{ photo.id }}"
+     class="group relative overflow-hidden rounded-xl bg-gallery-card transition-all duration-200
+            hover:ring-2 hover:ring-gallery-accent/40 hover:ring-offset-2 hover:ring-offset-gallery-bg">
+    <img src="/api/photos/{{ photo.id }}/image"
+         loading="lazy"
+         alt="photo"
+         class="aspect-[4/3] w-full object-cover">
+    {% if photo.taken_at %}
+    <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent
+                px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+      <span class="text-xs text-gallery-text/90">{{ photo.taken_at[:10] }}</span>
+    </div>
+    {% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% endfor %}
+{% endif %}

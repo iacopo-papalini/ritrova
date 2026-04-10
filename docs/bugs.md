@@ -26,8 +26,9 @@
 
 ### FEAT-6: Find photos containing multiple specific people/pets
 **Reported:** 2026-04-10
-**Status:** Open
-**Description:** Given a set of persons/pets (e.g. "Figaro AND Eva AND Teresa"), find all photos that contain ALL of them. Useful for finding family group photos or photos of a specific person with a specific pet. Should support cross-kind queries (person + pet in same photo). UI: multi-select picker for persons/pets, results as a photo grid.
+**Status:** Fixed
+**Description:** /together page — multi-select typeahead picker, cross-kind (human + pet). DB query intersects photo_ids across all selected persons. Results grouped by month. Nav link added.
+**Fix:** `db.get_photos_with_all_persons()`, `/together` page, `/api/together` + `/api/together-html` endpoints.
 
 ### FEAT-7: Generic search/filter across all metadata
 **Reported:** 2026-04-10

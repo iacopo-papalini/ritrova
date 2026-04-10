@@ -212,6 +212,63 @@ class TestPersonsAPI(TestCase):
         assert data["longitude"] is None
 
 
+class TestTogetherAPI(TestCase):
+    """Test /api/together endpoint for multi-person photo search."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path: Path) -> None:
+        self.db = FaceDB(tmp_path / "test.db")
+        self.app = create_app(str(tmp_path / "test.db"))
+        self.client = TestClient(self.app)
+
+    def test_empty_query(self) -> None:
+        resp = self.client.get("/api/together")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+    def test_finds_photo_with_both_persons(self) -> None:
+        pid_a = self.db.create_person("Alice")
+        pid_b = self.db.create_person("Bob")
+        # One photo with both faces
+        photo_id = self.db.add_photo("/group.jpg", 100, 100)
+        self.db.add_faces_batch([(photo_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
+        self.db.add_faces_batch([(photo_id, (50, 50, 30, 30), _emb(2), 0.9)], species="human")
+        faces = self.db.get_photo_faces(photo_id)
+        self.db.assign_face_to_person(faces[0].id, pid_a)
+        self.db.assign_face_to_person(faces[1].id, pid_b)
+
+        resp = self.client.get(f"/api/together?person_ids={pid_a},{pid_b}")
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["photos"][0]["id"] == photo_id
+
+    def test_excludes_photo_with_only_one(self) -> None:
+        pid_a = self.db.create_person("Alice")
+        pid_b = self.db.create_person("Bob")
+        # Photo with only Alice
+        photo_id = self.db.add_photo("/solo.jpg", 100, 100)
+        self.db.add_faces_batch([(photo_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
+        faces = self.db.get_photo_faces(photo_id)
+        self.db.assign_face_to_person(faces[0].id, pid_a)
+
+        resp = self.client.get(f"/api/together?person_ids={pid_a},{pid_b}")
+        assert resp.json()["total"] == 0
+
+    def test_cross_kind_human_and_pet(self) -> None:
+        pid_human = self.db.create_person("Eva")
+        pid_pet = self.db.create_person("Figaro")
+        photo_id = self.db.add_photo("/family.jpg", 100, 100)
+        self.db.add_faces_batch([(photo_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
+        self.db.add_faces_batch([(photo_id, (50, 50, 30, 30), _emb(2), 0.9)], species="dog")
+        faces = self.db.get_photo_faces(photo_id)
+        self.db.assign_face_to_person(faces[0].id, pid_human)
+        self.db.assign_face_to_person(faces[1].id, pid_pet)
+
+        resp = self.client.get(f"/api/together?person_ids={pid_human},{pid_pet}")
+        data = resp.json()
+        assert data["total"] == 1
+
+
 class TestNamespaceCollision(TestCase):
     """Verify person IDs and cluster IDs don't collide in merge suggestions."""
 

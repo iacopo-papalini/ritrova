@@ -619,6 +619,24 @@ class FaceDB:
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
+    def get_photos_with_all_persons(self, person_ids: list[int]) -> list[Photo]:
+        """Find photos that contain ALL given persons (intersection)."""
+        if not person_ids:
+            return []
+        placeholders = ",".join("?" * len(person_ids))
+        rows = self.conn.execute(
+            f"""
+            SELECT p.* FROM photos p
+            WHERE (
+                SELECT COUNT(DISTINCT f.person_id) FROM faces f
+                WHERE f.photo_id = p.id AND f.person_id IN ({placeholders})
+            ) = ?
+            ORDER BY p.file_path DESC
+            """,
+            (*person_ids, len(person_ids)),
+        ).fetchall()
+        return [Photo(**dict(r)) for r in rows]
+
     @_locked
     def get_person_photos(self, person_id: int) -> list[Photo]:
         """All unique photos containing a person, newest first (by path)."""

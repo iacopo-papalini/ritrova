@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Ritrova — Together{% endblock %}
+{% block content %}
+<div class="space-y-6">
+
+  <div>
+    <h1 class="font-display text-2xl font-bold tracking-tight">Together</h1>
+    <p class="text-gallery-muted text-sm mt-1">Find photos where specific people and pets appear together.</p>
+  </div>
+
+  {# ── Multi-select person picker ───────────────────────────── #}
+  <div x-data="personPicker({ multi: true })"
+       class="rounded-xl border border-gallery-border bg-gallery-card p-4 space-y-3">
+    <div class="w-72">
+      {% include "partials/person_picker.html" %}
+    </div>
+
+    <button @click="
+              if (selected.length < 2) return;
+              const ids = selected.map(s => s.id).join(',');
+              htmx.ajax('GET', '/api/together-html?person_ids=' + ids, '#results');
+            "
+            :disabled="selected.length < 2"
+            class="rounded-lg bg-gallery-accent px-5 py-2 text-sm font-medium text-gallery-bg
+                   transition-colors hover:bg-gallery-accent/80 cursor-pointer
+                   disabled:opacity-40 disabled:cursor-not-allowed">
+      Find photos together
+    </button>
+  </div>
+
+  {# ── Results (loaded via htmx) ────────────────────────────── #}
+  <div id="results"></div>
+
+</div>
+{% endblock %}

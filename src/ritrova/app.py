@@ -553,6 +553,44 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             ]
         )
 
+    @app.get("/together", response_class=HTMLResponse)
+    def together_page(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            name="together.html",
+            context={"kind": "people"},
+            request=request,
+        )
+
+    @app.get("/api/together")
+    def together_api(person_ids: str = "") -> JSONResponse:
+        """Find photos containing ALL given person IDs (comma-separated)."""
+        if not person_ids.strip():
+            return JSONResponse({"photos": [], "total": 0})
+        ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
+        photos = db.get_photos_with_all_persons(ids)
+        return JSONResponse(
+            {
+                "total": len(photos),
+                "photos": [
+                    {"id": p.id, "file_path": p.file_path, "taken_at": p.taken_at}
+                    for p in photos[:200]
+                ],
+            }
+        )
+
+    @app.get("/api/together-html", response_class=HTMLResponse)
+    def together_html(request: Request, person_ids: str = "") -> HTMLResponse:
+        if not person_ids.strip():
+            return HTMLResponse("")
+        ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
+        photos = db.get_photos_with_all_persons(ids)
+        groups = _group_by_month([(p, p.file_path) for p in photos], key="photos")
+        return templates.TemplateResponse(
+            name="partials/together_results.html",
+            context={"photo_groups": groups, "total": len(photos)},
+            request=request,
+        )
+
     @app.get("/api/export")
     def export_db() -> JSONResponse:
         data = json.loads(db.export_json())
