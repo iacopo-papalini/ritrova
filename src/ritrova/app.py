@@ -382,15 +382,18 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         if not resolved.exists():
             raise HTTPException(404)
 
-        with Image.open(resolved) as raw_img:
-            oriented = ImageOps.exif_transpose(raw_img)
-            pad_w = face.bbox_w * 0.3
-            pad_h = face.bbox_h * 0.3
-            x1 = max(0, face.bbox_x - pad_w)
-            y1 = max(0, face.bbox_y - pad_h)
-            x2 = min(oriented.width, face.bbox_x + face.bbox_w + pad_w)
-            y2 = min(oriented.height, face.bbox_y + face.bbox_h + pad_h)
-            crop = oriented.crop((int(x1), int(y1), int(x2), int(y2)))
+        try:
+            with Image.open(resolved) as raw_img:
+                oriented = ImageOps.exif_transpose(raw_img)
+                pad_w = face.bbox_w * 0.3
+                pad_h = face.bbox_h * 0.3
+                x1 = max(0, face.bbox_x - pad_w)
+                y1 = max(0, face.bbox_y - pad_h)
+                x2 = min(oriented.width, face.bbox_x + face.bbox_w + pad_w)
+                y2 = min(oriented.height, face.bbox_y + face.bbox_h + pad_h)
+                crop = oriented.crop((int(x1), int(y1), int(x2), int(y2)))
+        except OSError:
+            raise HTTPException(404, "Corrupt image file") from None
 
         crop.thumbnail((size, size))
         crop.save(cache_path, "JPEG", quality=85)
@@ -410,11 +413,14 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         if not resolved.exists():
             raise HTTPException(404)
 
-        with Image.open(resolved) as raw_img:
-            oriented = ImageOps.exif_transpose(raw_img)
-            oriented.thumbnail((max_size, max_size))
-            buf = io.BytesIO()
-            oriented.save(buf, "JPEG", quality=90)
+        try:
+            with Image.open(resolved) as raw_img:
+                oriented = ImageOps.exif_transpose(raw_img)
+                oriented.thumbnail((max_size, max_size))
+                buf = io.BytesIO()
+                oriented.save(buf, "JPEG", quality=90)
+        except OSError:
+            raise HTTPException(404, "Corrupt image file") from None
 
         buf.seek(0)
         return StreamingResponse(buf, media_type="image/jpeg")
