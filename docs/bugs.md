@@ -45,6 +45,11 @@
 **Description:** Use a vision-language model (e.g. SigLIP, BLIP-2, or LLaVA) to generate natural language descriptions and tags for photos ("people at a table", "christmas tree", "beach sunset", "birthday cake"). Store as searchable text in DB. Enables FEAT-7 to search by scene content, not just faces. Should run on Apple Silicon GPU (MPS/CoreML). Could reuse the SigLIP model already loaded for pet embeddings, or use a dedicated captioning model.
 **Design notes:** New DB table `photo_tags(photo_id, tag, source)` + `photo_descriptions(photo_id, description)`. New CLI command `ritrova describe` to batch-process. Tags surfaced in photo view and searchable via FEAT-7.
 
+### FEAT-10: Person/pet avatar thumbnail + contextual label in directory
+**Reported:** 2026-04-10
+**Status:** Open
+**Description:** The Names directory (/{kind}) should show a representative face thumbnail for each person/pet, not just name + count. Pick a random (or best-quality) face sample as avatar. Also rename the nav label from "Names" to match the context: "Persons" when in people mode, "Pets" when in pets mode.
+
 ### BUG-14: Pet cluster assign dropdown shows 0 face count for all persons
 **Page:** /clusters/{id} (pet clusters)
 **Reported:** 2026-04-10

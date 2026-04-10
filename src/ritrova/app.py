@@ -247,6 +247,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "limit": limit,
                 "min_sim": min_sim,
                 "species": species,
+                "kind": _kind_for_species(species),
             },
             request=request,
         )
@@ -263,9 +264,17 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     @app.get("/search", response_class=HTMLResponse)
     def search_page(request: Request, q: str = "") -> HTMLResponse:
         results = db.search_persons(q) if q else []
+        result_kinds = {
+            p.id: "pets" if db.has_person_species(p.id, "pet") else "people" for p in results
+        }
         return templates.TemplateResponse(
             name="search.html",
-            context={"query": q, "results": results, "kind": "people"},
+            context={
+                "query": q,
+                "results": results,
+                "result_kinds": result_kinds,
+                "kind": "people",
+            },
             request=request,
         )
 

@@ -7,7 +7,7 @@
     <div class="flex-1 min-w-0">
       <div class="text-sm font-medium mb-2">
         {% if s.name_a %}
-        <a href="/persons/{{ s.cluster_a }}" class="text-gallery-accent hover:underline">{{ s.name_a }}</a>
+        <a href="/{{ kind }}/{{ s.cluster_a }}" class="text-gallery-accent hover:underline">{{ s.name_a }}</a>
         {% else %}
         <a href="/clusters/{{ s.cluster_a }}" class="text-gallery-text hover:underline">Cluster #{{ s.cluster_a }}</a>
         {% endif %}
@@ -70,7 +70,7 @@
     <div class="flex-1 min-w-0">
       <div class="text-sm font-medium mb-2">
         {% if s.name_b %}
-        <a href="/persons/{{ s.cluster_b }}" class="text-gallery-accent hover:underline">{{ s.name_b }}</a>
+        <a href="/{{ kind }}/{{ s.cluster_b }}" class="text-gallery-accent hover:underline">{{ s.name_b }}</a>
         {% else %}
         <a href="/clusters/{{ s.cluster_b }}" class="text-gallery-text hover:underline">Cluster #{{ s.cluster_b }}</a>
         {% endif %}
