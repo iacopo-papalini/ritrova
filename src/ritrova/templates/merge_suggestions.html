@@ -5,7 +5,10 @@
 
   {# ── Header + similarity filter pills ─────────────────── #}
   <div class="flex flex-col gap-3 sm:flex-row sm:items-baseline sm:justify-between">
-    <h1 class="font-display text-2xl font-bold tracking-tight">Merge Suggestions</h1>
+    <div>
+      <h1 class="font-display text-2xl font-bold tracking-tight">Merge Suggestions</h1>
+      <p class="text-gallery-muted text-sm mt-1">Pairs of clusters or identities that look similar and may be the same {{ 'pet' if kind == 'pets' else 'person' }}.</p>
+    </div>
 
     <div class="flex items-center gap-1 text-sm">
       <span class="text-gallery-muted mr-1">Min similarity:</span>

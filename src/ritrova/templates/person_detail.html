@@ -45,6 +45,26 @@
       Find similar unclustered
     </a>
 
+    {# Merge into another person #}
+    <form action="/api/persons/merge" method="post"
+          class="flex items-center gap-2"
+          onsubmit="return confirm('Merge all faces from {{ person.name }} into the selected identity? This cannot be undone yet.')">
+      <input type="hidden" name="source_id" value="{{ person.id }}">
+      <select name="target_id"
+              class="rounded-lg border border-gallery-border bg-gallery-card px-3 py-2 text-sm text-gallery-text
+                     outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+        <option value="">Merge into...</option>
+        {% for p in all_persons if p.id != person.id %}
+        <option value="{{ p.id }}">{{ p.name }} ({{ p.face_count }})</option>
+        {% endfor %}
+      </select>
+      <button type="submit"
+              class="rounded-lg border border-gallery-border px-4 py-2 text-sm font-medium text-gallery-text
+                     transition-colors hover:bg-gallery-card cursor-pointer">
+        Merge
+      </button>
+    </form>
+
     <div class="flex-1"></div>
 
     {# Delete #}

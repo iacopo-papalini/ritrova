@@ -56,7 +56,7 @@
         </a>
         <a href="/{{ k }}"
            class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
-          Names
+          {{ 'Pets' if k == 'pets' else 'Persons' }}
         </a>
         <a href="/{{ k }}/merge-suggestions"
            class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
