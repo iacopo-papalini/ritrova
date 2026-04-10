@@ -45,6 +45,13 @@
 **Description:** Use a vision-language model (e.g. SigLIP, BLIP-2, or LLaVA) to generate natural language descriptions and tags for photos ("people at a table", "christmas tree", "beach sunset", "birthday cake"). Store as searchable text in DB. Enables FEAT-7 to search by scene content, not just faces. Should run on Apple Silicon GPU (MPS/CoreML). Could reuse the SigLIP model already loaded for pet embeddings, or use a dedicated captioning model.
 **Design notes:** New DB table `photo_tags(photo_id, tag, source)` + `photo_descriptions(photo_id, description)`. New CLI command `ritrova describe` to batch-process. Tags surfaced in photo view and searchable via FEAT-7.
 
+### BUG-16: Person card inconsistent between directory and search results
+**Page:** /search
+**Reported:** 2026-04-10
+**Status:** Fixed
+**Description:** Person cards in the directory show face avatar + name + count, but search results show only name + count (no avatar). Same entity, different rendering — violates UI consistency.
+**Fix:** Extract person card into a shared partial, use it in both persons.html and search.html.
+
 ### FEAT-11: Browser-side image rotation in lightbox
 **Reported:** 2026-04-10
 **Status:** Fixed

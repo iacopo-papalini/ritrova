@@ -604,6 +604,21 @@ class FaceDB:
             result.append((Face(**d), path))
         return result
 
+    def get_random_avatars(self, person_ids: list[int]) -> dict[int, int]:
+        """Pick one random face ID per person for avatar thumbnails."""
+        if not person_ids:
+            return {}
+        placeholders = ",".join("?" * len(person_ids))
+        rows = self.conn.execute(
+            f"""SELECT person_id, id FROM (
+                    SELECT person_id, id, ROW_NUMBER() OVER (
+                        PARTITION BY person_id ORDER BY RANDOM()
+                    ) AS rn FROM faces WHERE person_id IN ({placeholders})
+                ) WHERE rn = 1""",
+            tuple(person_ids),
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
     @_locked
     def get_person_photos(self, person_id: int) -> list[Photo]:
         """All unique photos containing a person, newest first (by path)."""

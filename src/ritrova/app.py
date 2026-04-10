@@ -269,12 +269,14 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         result_kinds = {
             p.id: "pets" if db.has_person_species(p.id, "pet") else "people" for p in results
         }
+        avatars = db.get_random_avatars([p.id for p in results])
         return templates.TemplateResponse(
             name="search.html",
             context={
                 "query": q,
                 "results": results,
                 "result_kinds": result_kinds,
+                "avatars": avatars,
                 "kind": "people",
             },
             request=request,
@@ -655,21 +657,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     def persons_page(request: Request, kind: KindType) -> HTMLResponse:
         species = _species_for_kind(kind)
         persons = db.get_persons_by_species(species)
-        # Pick one random face per person for avatar thumbnails
-        person_ids = [p.id for p in persons]
-        avatars: dict[int, int] = {}
-        if person_ids:
-            placeholders = ",".join("?" * len(person_ids))
-            rows = db.query(
-                f"""SELECT person_id, id FROM (
-                        SELECT person_id, id, ROW_NUMBER() OVER (
-                            PARTITION BY person_id ORDER BY RANDOM()
-                        ) AS rn FROM faces
-                        WHERE person_id IN ({placeholders})
-                    ) WHERE rn = 1""",
-                tuple(person_ids),
-            )
-            avatars = {r[0]: r[1] for r in rows}
+        avatars = db.get_random_avatars([p.id for p in persons])
         return templates.TemplateResponse(
             name="persons.html",
             context={"persons": persons, "kind": kind, "avatars": avatars},
