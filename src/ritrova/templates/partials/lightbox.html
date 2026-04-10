@@ -35,7 +35,7 @@
 
 <!-- Photo + path -->
 <div class="flex flex-col items-center gap-3">
-  <img :src="$store.lightbox.photoId ? `/api/photos/${$store.lightbox.photoId}/image` : ''"
+  <img :src="$store.lightbox.photoId ? `/api/photos/${$store.lightbox.photoId}/image?max_size=1600` : ''"
        :style="`transform: rotate(${$store.lightbox.rotation}deg); transition: transform 0.3s ease`"
        alt="Full resolution photo"
        class="max-h-[85vh] max-w-[95vw] object-contain rounded-lg shadow-2xl">

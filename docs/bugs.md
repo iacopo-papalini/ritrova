@@ -51,6 +51,12 @@
 **Status:** Open
 **Description:** The /api/persons/all endpoint should include a representative face_id per person so the typeahead picker can show a small face thumbnail next to each name. Makes it much easier to pick the right person when names are similar.
 
+### BUG-17: Person picker needs keyboard navigation
+**Page:** All pages with person picker
+**Reported:** 2026-04-10
+**Status:** Open
+**Description:** The typeahead search dropdown only supports mouse clicks. Should support arrow keys (up/down) to navigate results and Enter to select the highlighted item. Essential for high-volume curation work per the design guide's keyboard shortcuts principle.
+
 ### BUG-16: Person card inconsistent between directory and search results
 **Page:** /search
 **Reported:** 2026-04-10

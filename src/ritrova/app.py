@@ -20,7 +20,7 @@ from .cluster import (
     suggest_merges,
 )
 from .db import FaceDB
-from .images import crop_face_thumbnail, resize_photo, stream_raw
+from .images import crop_face_thumbnail, resize_photo
 from .services import (
     compute_cluster_hint,
     compute_singleton_hints,
@@ -390,16 +390,13 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         return StreamingResponse(buf, media_type="image/jpeg")
 
     @app.get("/api/photos/{photo_id}/image")
-    def photo_image(photo_id: int, max_size: int | None = None) -> StreamingResponse:
+    def photo_image(photo_id: int, max_size: int = 1600) -> StreamingResponse:
         photo = db.get_photo(photo_id)
         if not photo:
             raise HTTPException(404)
         resolved = db.resolve_path(photo.file_path)
         if not resolved.exists():
             raise HTTPException(404)
-        if max_size is None:
-            handle, media = stream_raw(resolved)
-            return StreamingResponse(handle, media_type=media)
         buf = resize_photo(resolved, min(max_size, 2000))
         return StreamingResponse(buf, media_type="image/jpeg")
 
