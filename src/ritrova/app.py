@@ -1,4 +1,4 @@
-"""FastAPI web application for browsing, naming, and searching faces."""
+"""Ritrova — web application for browsing, naming, and searching faces."""
 
 import io
 import json
@@ -75,7 +75,7 @@ def _group_by_month(
 
 
 def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
-    app = FastAPI(title="Face Recognition")
+    app = FastAPI(title="Ritrova")
     db = FaceDB(db_path, base_dir=photos_dir)
 
     thumbnails_dir = Path(db_path).parent / "tmp" / "thumbnails"

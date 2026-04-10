@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from face_recog.db import FaceDB
+from ritrova.db import FaceDB
 
 
 @pytest.fixture

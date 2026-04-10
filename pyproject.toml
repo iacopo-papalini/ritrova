@@ -1,7 +1,7 @@
 [project]
-name = "face-recog"
-version = "0.1.0"
-description = "Face recognition and tagging for photo collections"
+name = "ritrova"
+version = "0.2.0"
+description = "Ritrova — find again: face and pet recognition for personal photo archives"
 requires-python = ">=3.14"
 dependencies = [
     "insightface>=0.7.3",
@@ -26,7 +26,7 @@ dependencies = [
 ]
 
 [project.scripts]
-face-recog = "face_recog.cli:cli"
+ritrova = "ritrova.cli:cli"
 
 [build-system]
 requires = ["hatchling"]
@@ -52,9 +52,9 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RET", "T20", "LOG"]
 ignore = ["E501", "UP047"]
 
 [tool.ruff.lint.per-file-ignores]
-"src/face_recog/app.py" = ["B008"]
-"src/face_recog/cli.py" = ["T20"]
-"src/face_recog/scanner.py" = ["T20"]
+"src/ritrova/app.py" = ["B008"]
+"src/ritrova/cli.py" = ["T20"]
+"src/ritrova/scanner.py" = ["T20"]
 
 [tool.mypy]
 python_version = "3.14"

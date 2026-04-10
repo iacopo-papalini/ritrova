@@ -1,11 +1,11 @@
-"""Integration tests for face_recog.cluster module (real db, no mocking)."""
+"""Integration tests for ritrova.cluster module (real db, no mocking)."""
 
 from unittest import TestCase
 
 import numpy as np
 import pytest
 
-from face_recog.cluster import (
+from ritrova.cluster import (
     _cluster_exact,
     _cluster_faiss,
     _normalize_embeddings,
@@ -18,7 +18,7 @@ from face_recog.cluster import (
     rank_persons_for_cluster,
     suggest_merges,
 )
-from face_recog.db import FaceDB
+from ritrova.db import FaceDB
 
 
 def _emb(seed: int, dim: int = 512) -> np.ndarray:

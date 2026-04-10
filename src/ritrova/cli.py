@@ -1,4 +1,4 @@
-"""CLI entry point for face-recog."""
+"""CLI entry point for ritrova."""
 
 from pathlib import Path
 
@@ -24,7 +24,7 @@ load_dotenv()
 )
 @click.pass_context
 def cli(ctx: click.Context, db: str, photos_dir: str | None) -> None:
-    """Face recognition and tagging for photo collections."""
+    """Ritrova — find again: face and pet recognition for photo collections."""
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = db
     ctx.obj["photos_dir"] = photos_dir
@@ -319,7 +319,7 @@ def serve(ctx: click.Context, host: str, port: int) -> None:
     from .app import create_app
 
     app = create_app(ctx.obj["db_path"], photos_dir=ctx.obj["photos_dir"])
-    print(f"Face recognition UI → http://localhost:{port}")
+    print(f"Ritrova → http://localhost:{port}")
     uvicorn.run(app, host=host, port=port)
 
 

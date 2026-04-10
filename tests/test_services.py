@@ -1,12 +1,12 @@
-"""Tests for face_recog.services module."""
+"""Tests for ritrova.services module."""
 
 from unittest import TestCase
 
 import numpy as np
 import pytest
 
-from face_recog.db import FaceDB
-from face_recog.services import (
+from ritrova.db import FaceDB
+from ritrova.services import (
     compute_cluster_hint,
     compute_singleton_hints,
 )

@@ -1,4 +1,4 @@
-"""Tests for face_recog.app routes and API endpoints."""
+"""Tests for ritrova.app routes and API endpoints."""
 
 from pathlib import Path
 from unittest import TestCase
@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from face_recog.app import create_app
-from face_recog.db import FaceDB
+from ritrova.app import create_app
+from ritrova.db import FaceDB
 
 
 def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:

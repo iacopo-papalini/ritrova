@@ -1,4 +1,4 @@
-"""Comprehensive tests for face_recog.db module."""
+"""Comprehensive tests for ritrova.db module."""
 
 from pathlib import Path
 from unittest import TestCase
@@ -6,7 +6,7 @@ from unittest import TestCase
 import numpy as np
 import pytest
 
-from face_recog.db import FaceDB
+from ritrova.db import FaceDB
 
 
 class TestPhotoOperations(TestCase):

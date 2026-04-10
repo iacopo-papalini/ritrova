@@ -1,10 +1,10 @@
-"""Tests for face_recog.embeddings module."""
+"""Tests for ritrova.embeddings module."""
 
 from unittest import TestCase
 
 import numpy as np
 
-from face_recog.embeddings import (
+from ritrova.embeddings import (
     compute_centroid,
     cosine_similarity,
     normalize,

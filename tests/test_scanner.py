@@ -1,4 +1,4 @@
-"""Tests for face_recog.scanner module."""
+"""Tests for ritrova.scanner module."""
 
 from pathlib import Path
 from unittest import TestCase
@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from face_recog.db import FaceDB
-from face_recog.scanner import _is_duplicate, find_images, find_videos, scan_pets, scan_photos
+from ritrova.db import FaceDB
+from ritrova.scanner import _is_duplicate, find_images, find_videos, scan_pets, scan_photos
 
 
 def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
