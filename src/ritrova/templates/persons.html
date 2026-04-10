@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}{% if kind == 'pets' %}Pets{% else %}Names{% endif %}{% endblock %}
+{% block title %}{% if kind == 'pets' %}Pets{% else %}Persons{% endif %}{% endblock %}
 {% block content %}
 
 <div class="mb-6 flex items-baseline justify-between">
   <h1 class="font-display text-2xl font-bold tracking-tight text-gallery-text">
-    {% if kind == 'pets' %}Pets{% else %}Names{% endif %}
+    {% if kind == 'pets' %}Pets{% else %}Persons{% endif %}
     <span class="text-gallery-muted">({{ persons|length }})</span>
   </h1>
   <a href="/search"
@@ -27,16 +27,27 @@
 <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
   {% for person in persons %}
   <a href="/{{ kind }}/{{ person.id }}"
-     class="group rounded-xl border border-gallery-border bg-gallery-card p-5
+     class="group flex items-center gap-4 rounded-xl border border-gallery-border bg-gallery-card p-4
             transition-all duration-200 hover:border-gallery-accent/40
             hover:ring-1 hover:ring-gallery-accent/20">
-    <p class="font-display text-lg font-semibold text-gallery-text
-              group-hover:text-gallery-accent transition-colors">
-      {{ person.name }}
-    </p>
-    <p class="mt-1 text-sm text-gallery-muted">
-      {{ person.face_count }} face{{ 's' if person.face_count != 1 else '' }}
-    </p>
+    {% if avatars.get(person.id) %}
+    <img src="/api/faces/{{ avatars[person.id] }}/thumbnail?size=120"
+         alt="{{ person.name }}"
+         class="h-14 w-14 shrink-0 rounded-full object-cover">
+    {% else %}
+    <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gallery-border text-gallery-muted text-lg font-bold">
+      {{ person.name[0]|upper }}
+    </div>
+    {% endif %}
+    <div class="min-w-0">
+      <p class="font-display text-lg font-semibold text-gallery-text truncate
+                group-hover:text-gallery-accent transition-colors">
+        {{ person.name }}
+      </p>
+      <p class="text-sm text-gallery-muted">
+        {{ person.face_count }} face{{ 's' if person.face_count != 1 else '' }}
+      </p>
+    </div>
   </a>
   {% endfor %}
 </div>
