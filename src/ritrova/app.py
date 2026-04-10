@@ -583,15 +583,25 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         )
 
     @app.get("/api/together-html", response_class=HTMLResponse)
-    def together_html(request: Request, person_ids: str = "") -> HTMLResponse:
+    def together_html(
+        request: Request, person_ids: str = "", offset: int = 0, limit: int = 60
+    ) -> HTMLResponse:
         if not person_ids.strip():
             return HTMLResponse("")
         ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
-        photos = db.get_photos_with_all_persons(ids)
+        total = db.count_photos_with_all_persons(ids)
+        photos = db.get_photos_with_all_persons(ids, limit=limit, offset=offset)
         groups = _group_by_month([(p, p.file_path) for p in photos], key="photos")
         return templates.TemplateResponse(
             name="partials/together_results.html",
-            context={"photo_groups": groups, "total": len(photos)},
+            context={
+                "photo_groups": groups,
+                "total": total,
+                "person_ids": person_ids,
+                "offset": offset,
+                "limit": limit,
+                "page_count": len(photos),
+            },
             request=request,
         )
 

@@ -619,7 +619,9 @@ class FaceDB:
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
-    def get_photos_with_all_persons(self, person_ids: list[int]) -> list[Photo]:
+    def get_photos_with_all_persons(
+        self, person_ids: list[int], limit: int = 0, offset: int = 0
+    ) -> list[Photo]:
         """Find photos that contain ALL given persons (intersection).
 
         Uses faces index: filter by person_ids first, group by photo, keep
@@ -628,6 +630,11 @@ class FaceDB:
         if not person_ids:
             return []
         placeholders = ",".join("?" * len(person_ids))
+        pagination = ""
+        params: tuple[int | str, ...] = (*person_ids, len(person_ids))
+        if limit > 0:
+            pagination = " LIMIT ? OFFSET ?"
+            params = (*params, limit, offset)
         rows = self.conn.execute(
             f"""
             SELECT p.* FROM photos p
@@ -637,11 +644,29 @@ class FaceDB:
                 GROUP BY photo_id
                 HAVING COUNT(DISTINCT person_id) = ?
             ) matched ON matched.photo_id = p.id
-            ORDER BY p.file_path DESC
+            ORDER BY p.file_path DESC{pagination}
             """,
-            (*person_ids, len(person_ids)),
+            params,
         ).fetchall()
         return [Photo(**dict(r)) for r in rows]
+
+    def count_photos_with_all_persons(self, person_ids: list[int]) -> int:
+        """Count photos containing ALL given persons."""
+        if not person_ids:
+            return 0
+        placeholders = ",".join("?" * len(person_ids))
+        row = self.conn.execute(
+            f"""
+            SELECT COUNT(*) FROM (
+                SELECT photo_id FROM faces
+                WHERE person_id IN ({placeholders})
+                GROUP BY photo_id
+                HAVING COUNT(DISTINCT person_id) = ?
+            )
+            """,
+            (*person_ids, len(person_ids)),
+        ).fetchone()
+        return int(row[0]) if row else 0
 
     @_locked
     def get_person_photos(self, person_id: int) -> list[Photo]:
