@@ -70,6 +70,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             f.id: photos[f.photo_id].file_path if f.photo_id in photos else "" for f in faces
         }
         ranked = rank_persons_for_cluster(db, cluster_id)
+        species = faces[0].species if faces else "human"
+        is_pet = species in db.PET_SPECIES
         return templates.TemplateResponse(
             name="cluster_detail.html",
             context={
@@ -78,6 +80,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "face_paths": face_paths,
                 "total": total,
                 "ranked_persons": ranked,
+                "is_pet": is_pet,
             },
             request=request,
         )
@@ -367,18 +370,24 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     # ── API: actions ───────────────────────────────────────
 
-    def _next_similar_cluster(person_id: int) -> str:
+    def _next_similar_cluster(person_id: int, cluster_id: int) -> str:
         """Find the unnamed cluster most similar to this person, return redirect URL."""
+        # Determine species from the cluster we just assigned
+        faces = db.get_cluster_faces(cluster_id, limit=1)
+        species = faces[0].species if faces else "human"
+        is_pet = species in db.PET_SPECIES
+        fallback = "/clusters?species=pet" if is_pet else "/clusters"
+
         next_cluster = find_similar_cluster(db, person_id)
         if next_cluster:
             return f"/clusters/{next_cluster}?suggested_person={person_id}"
-        return "/clusters"
+        return fallback
 
     @app.post("/api/clusters/{cluster_id}/name")
     def name_cluster(cluster_id: int, name: str = Form(...)) -> RedirectResponse:
         person_id = db.create_person(name)
         db.assign_cluster_to_person(cluster_id, person_id)
-        return RedirectResponse(_next_similar_cluster(person_id), status_code=303)
+        return RedirectResponse(_next_similar_cluster(person_id, cluster_id), status_code=303)
 
     @app.post("/api/clusters/{cluster_id}/assign")
     def assign_cluster_to_existing(cluster_id: int, person_id: int = Form(...)) -> RedirectResponse:
@@ -386,7 +395,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         if not person:
             raise HTTPException(404, "Person not found")
         db.assign_cluster_to_person(cluster_id, person_id)
-        return RedirectResponse(_next_similar_cluster(person_id), status_code=303)
+        return RedirectResponse(_next_similar_cluster(person_id, cluster_id), status_code=303)
 
     @app.post("/api/clusters/{cluster_id}/dismiss")
     def dismiss_cluster(cluster_id: int) -> JSONResponse:
