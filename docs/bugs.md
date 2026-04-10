@@ -20,14 +20,28 @@
 ### BUG-12: Video frame photos return 404
 **Page:** /persons/{id} (photos tab), any page showing video-sourced photos
 **Reported:** 2026-04-10
-**Status:** Open
-**Description:** Photos extracted from videos have paths like `tmp/frames/vid_xxx.jpg` in the DB. After moving data to `data/`, `resolve_path` tries `PHOTOS_DIR/tmp/frames/...` which doesn't exist. Actual files are at `data/tmp/frames/...`. Needs a path migration or a resolve_path fallback for frame paths.
+**Status:** Fixed
+**Description:** Photos extracted from videos have paths like `tmp/frames/vid_xxx.jpg` in the DB. After moving data to `data/`, `resolve_path` tries `PHOTOS_DIR/tmp/frames/...` which doesn't exist. Actual files are at `data/tmp/frames/...`.
+**Fix:** `resolve_path()` now falls back to `db_path.parent / path` when `base_dir / path` doesn't exist, covering locally-generated files (video frames, etc.).
 
-### FEAT-4: "Not this person" button on face samples
-**Page:** /persons/{id}
+### FEAT-6: Find photos containing multiple specific people/pets
 **Reported:** 2026-04-10
 **Status:** Open
-**Description:** In the face samples tab, need a way to unassign individual faces that were incorrectly attributed to this person. A per-face "x" or "not this person" button (similar to the remove-from-cluster button on cluster detail) that calls `/api/faces/{id}/unassign` and removes the face from the grid.
+**Description:** Given a set of persons/pets (e.g. "Figaro AND Eva AND Teresa"), find all photos that contain ALL of them. Useful for finding family group photos or photos of a specific person with a specific pet. Should support cross-kind queries (person + pet in same photo). UI: multi-select picker for persons/pets, results as a photo grid.
+
+### BUG-14: Pet cluster assign dropdown shows 0 face count for all persons
+**Page:** /clusters/{id} (pet clusters)
+**Reported:** 2026-04-10
+**Status:** Fixed
+**Description:** The person dropdown in cluster detail showed "Figaro (0)" for all pet persons.
+**Root cause:** `rank_persons_for_cluster()` hardcoded face_count to 0 instead of fetching actual counts.
+**Fix:** Fetch counts from `get_persons_by_species()` and populate the tuple.
+
+### FEAT-4: "Not this person" button on face samples
+**Page:** /{kind}/{id}
+**Reported:** 2026-04-10
+**Status:** Fixed
+**Description:** Per-face "x" button on hover in face samples tab, calls `/api/faces/{id}/unassign` and removes the face from the grid. Works on both initial and htmx-loaded faces.
 
 ### FEAT-5: Global single-step UNDO for all write operations
 **Reported:** 2026-04-10

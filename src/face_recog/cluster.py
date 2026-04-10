@@ -428,10 +428,11 @@ def rank_persons_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, str
     species = "pet" if cluster_species in pet_species else cluster_species
 
     person_centroids = db.get_person_centroids(species=species)
+    persons_by_species = {p.id: p.face_count for p in db.get_persons_by_species(species)}
     results = []
     for pid, name, p_centroid in person_centroids:
         sim = round(cosine_similarity(centroid, p_centroid) * 100, 1)
-        results.append((pid, name, 0, sim))
+        results.append((pid, name, persons_by_species.get(pid, 0), sim))
 
     results.sort(key=lambda x: x[3], reverse=True)
     return results

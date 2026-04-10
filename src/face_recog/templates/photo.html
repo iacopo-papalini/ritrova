@@ -74,7 +74,7 @@
         {% if face.person_name %}
         {# ── Assigned face ─────────────────────────────────── #}
         <div class="flex items-center gap-2">
-          <a href="/persons/{{ face.person_id }}"
+          <a href="/{{ kind }}/{{ face.person_id }}"
              class="flex-1 truncate rounded-lg bg-gallery-accent/15 px-2.5 py-1.5 text-sm
                     font-medium text-gallery-accent hover:bg-gallery-accent/25 transition-colors">
             {{ face.person_name }}

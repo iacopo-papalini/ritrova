@@ -6,7 +6,7 @@
   <!-- Page heading -->
   <div class="mb-6">
     <div class="flex items-center gap-3">
-      <a href="/clusters{% if species == 'pet' %}?species=pet{% endif %}"
+      <a href="/{{ kind }}/clusters"
          class="text-gallery-muted hover:text-gallery-text transition-colors">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
@@ -122,7 +122,7 @@
     </div>
     {% endfor %}
     {% if total > faces|length %}
-    <div hx-get="/api/singletons/faces-html?species={{ species }}&offset={{ faces|length }}&limit=200"
+    <div hx-get="/api/singletons/faces-html?species={{ 'pet' if kind == 'pets' else 'human' }}&offset={{ faces|length }}&limit=200"
          hx-trigger="revealed"
          hx-swap="outerHTML"
          class="col-span-full flex justify-center py-8">

@@ -4,10 +4,10 @@
 
 <div class="mb-6 flex items-baseline justify-between">
   <h1 class="font-display text-2xl font-bold tracking-tight text-gallery-text">
-    {% if species == 'pet' %}Pet{% else %}Unnamed{% endif %} Clusters
+    {% if kind == 'pets' %}Pet{% else %}Unnamed{% endif %} Clusters
     <span class="text-gallery-muted">({{ clusters|length }})</span>
   </h1>
-  <a href="/singletons?species={{ species }}"
+  <a href="/{{ kind }}/singletons"
      class="text-sm text-gallery-accent transition-colors hover:text-gallery-accent/80">
     View unmatched singles &rarr;
   </a>

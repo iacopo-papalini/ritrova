@@ -10,7 +10,7 @@
     <div class="flex items-center gap-1 text-sm">
       <span class="text-gallery-muted mr-1">Min similarity:</span>
       {% for t in [30, 40, 50, 60] %}
-      <a href="/merge-suggestions?min_sim={{ t }}&species={{ species }}"
+      <a href="/{{ kind }}/merge-suggestions?min_sim={{ t }}"
          class="rounded-full px-3 py-1 transition-colors
                 {% if min_sim == t %}bg-gallery-accent text-gallery-bg font-semibold
                 {% else %}bg-gallery-card text-gallery-muted hover:text-gallery-text{% endif %}">
@@ -22,7 +22,7 @@
 
   {# ── htmx-loaded suggestion list ──────────────────────── #}
   <div id="suggestions-list"
-       hx-get="/api/merge-suggestions-html?min_sim={{ min_sim }}&species={{ species }}"
+       hx-get="/api/merge-suggestions-html?min_sim={{ min_sim }}&species={{ 'pet' if kind == 'pets' else 'human' }}"
        hx-trigger="load"
        hx-swap="innerHTML">
     <div class="flex justify-center py-12">

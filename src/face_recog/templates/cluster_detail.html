@@ -6,7 +6,7 @@
   <!-- Page heading -->
   <div class="mb-6">
     <div class="flex items-center gap-3">
-      <a href="/clusters{% if is_pet %}?species=pet{% endif %}"
+      <a href="/{{ kind }}/clusters"
          class="text-gallery-muted hover:text-gallery-text transition-colors">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
@@ -44,7 +44,7 @@
         {% for pid, name, count, sim in ranked_persons %}
         <option value="{{ pid }}">{{ name }} ({{ count }}) &mdash; {{ sim }}%</option>
         {% endfor %}
-        <option value="__new__">+ Create new {{ 'pet' if is_pet else 'person' }}</option>
+        <option value="__new__">+ Create new {{ 'pet' if kind == 'pets' else 'person' }}</option>
       </select>
       <input type="text"
              x-show="createNew"
@@ -65,7 +65,7 @@
     <!-- Dismiss entire cluster -->
     <button @click="if (confirm('Dismiss all {{ total }} faces in this cluster as non-faces?'))
                       fetch('/api/clusters/{{ cluster_id }}/dismiss', { method: 'POST' })
-                        .then(r => { if (r.ok) location.href = '/clusters{% if is_pet %}?species=pet{% endif %}'; })"
+                        .then(r => { if (r.ok) location.href = '/{{ kind }}/clusters'; })"
             class="rounded-lg border border-gallery-danger/30 px-4 py-2 text-sm font-medium text-gallery-danger
                    transition-colors hover:bg-gallery-danger/10 cursor-pointer">
       Dismiss entire cluster

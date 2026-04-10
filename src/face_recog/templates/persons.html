@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}{% if species == 'pet' %}Pets{% else %}Persons{% endif %}{% endblock %}
+{% block title %}{% if kind == 'pets' %}Pets{% else %}Names{% endif %}{% endblock %}
 {% block content %}
 
 <div class="mb-6 flex items-baseline justify-between">
   <h1 class="font-display text-2xl font-bold tracking-tight text-gallery-text">
-    {% if species == 'pet' %}Pets{% else %}Persons{% endif %}
+    {% if kind == 'pets' %}Pets{% else %}Names{% endif %}
     <span class="text-gallery-muted">({{ persons|length }})</span>
   </h1>
   <a href="/search"
@@ -17,7 +17,7 @@
 <div class="rounded-xl border border-gallery-border bg-gallery-card px-6 py-12 text-center">
   <p class="text-gallery-muted">
     No persons named yet.
-    <a href="/clusters{% if species == 'pet' %}?species=pet{% endif %}"
+    <a href="/{{ kind }}/clusters"
        class="text-gallery-accent transition-colors hover:text-gallery-accent/80">
       Start by naming clusters
     </a>.
@@ -26,7 +26,7 @@
 {% else %}
 <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
   {% for person in persons %}
-  <a href="/persons/{{ person.id }}"
+  <a href="/{{ kind }}/{{ person.id }}"
      class="group rounded-xl border border-gallery-border bg-gallery-card p-5
             transition-all duration-200 hover:border-gallery-accent/40
             hover:ring-1 hover:ring-gallery-accent/20">

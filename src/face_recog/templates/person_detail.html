@@ -6,7 +6,7 @@
   {# ── Header ──────────────────────────────────────────────── #}
   <div class="mb-6">
     <div class="flex items-center gap-3">
-      <a href="/persons"
+      <a href="/{{ kind }}"
          class="text-gallery-muted hover:text-gallery-text transition-colors">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
@@ -39,7 +39,7 @@
     </form>
 
     {# Find similar #}
-    <a href="/persons/{{ person.id }}/find-similar"
+    <a href="/{{ kind }}/{{ person.id }}/find-similar"
        class="rounded-lg bg-gallery-accent px-4 py-2 text-sm font-medium text-gallery-bg
               transition-colors hover:bg-gallery-accent/80">
       Find similar unclustered
@@ -50,7 +50,7 @@
     {# Delete #}
     <button @click="if (confirm('Delete this person? All faces will become unassigned.'))
                       fetch('/api/persons/{{ person.id }}/delete', { method: 'POST' })
-                        .then(r => { if (r.redirected) location.href = r.url; else location.href = '/persons'; })"
+                        .then(r => { if (r.redirected) location.href = r.url; else location.href = '/{{ kind }}'; })"
             class="rounded-lg border border-gallery-danger/30 px-4 py-2 text-sm font-medium text-gallery-danger
                    transition-colors hover:bg-gallery-danger/10 cursor-pointer">
       Delete person
@@ -78,12 +78,22 @@
       <h3 class="mt-4 mb-2 text-sm font-medium text-gallery-muted first:mt-0">{{ group.month }}</h3>
       <div class="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-14 gap-1.5">
         {% for face in group.faces %}
-        <div class="relative overflow-hidden rounded-lg transition-all duration-150 hover:scale-[1.03]">
+        <div class="group relative overflow-hidden rounded-lg transition-all duration-150 hover:scale-[1.03]">
           <img src="/api/faces/{{ face.id }}/thumbnail?size=180"
                loading="lazy"
                alt="face"
                @click="$store.lightbox.show({{ face.photo_id }})"
                class="aspect-square w-full cursor-pointer object-cover">
+          <button @click.stop="if(confirm('Remove this face from {{ person.name }}?'))
+                    fetch('/api/faces/{{ face.id }}/unassign', { method: 'POST' })
+                      .then(r => { if(r.ok) $el.closest('.group').remove() })"
+                  class="absolute top-1 right-1 z-10 hidden group-hover:flex h-6 w-6 items-center justify-center
+                         rounded-full bg-black/60 text-gallery-text transition-colors hover:bg-gallery-danger hover:text-white"
+                  title="Not this person">
+            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+            </svg>
+          </button>
         </div>
         {% endfor %}
       </div>

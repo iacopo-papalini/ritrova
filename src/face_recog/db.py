@@ -147,19 +147,22 @@ class FaceDB:
     def resolve_path(self, stored_path: str) -> Path:
         """Resolve a DB-stored path to an absolute filesystem path.
 
-        Handles both relative paths (joined with base_dir) and legacy
-        absolute paths (returned as-is for backwards compatibility).
-        Strips the __pets suffix before resolving.
+        Strips the __pets suffix, then searches base_dir and db_path.parent
+        for the file. Returns the first existing match, or the primary
+        candidate for error reporting.
         """
         clean = stored_path.removesuffix("__pets")
         if clean.startswith("/"):
             return Path(clean)
-        if self.base_dir is None:
-            return Path(clean)
         if ".." in clean.split("/"):
             msg = f"Path contains '..': {clean}"
             raise ValueError(msg)
-        return self.base_dir / clean
+        # tmp/ paths are app-generated (video frames, etc.) — relative to DB directory
+        if clean.startswith("tmp/"):
+            return self.db_path.parent / clean
+        if self.base_dir is not None:
+            return self.base_dir / clean
+        return Path(clean)
 
     def to_relative(self, absolute_path: str) -> str:
         """Convert an absolute path to a relative path (stripping base_dir prefix)."""

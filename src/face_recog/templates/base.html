@@ -32,38 +32,37 @@
         FaceRecog
       </a>
 
-      {% set sp = species|default("human") %}
-      {% set sp_qs = "?species=pet" if sp == "pet" else "" %}
+      {% set k = kind|default("people") %}
 
       <!-- Section toggle pills -->
       <div class="flex items-center rounded-full bg-gallery-card p-1 text-sm">
-        <a href="/clusters"
+        <a href="/people/clusters"
            class="rounded-full px-4 py-1.5 font-medium transition-colors
-                  {% if sp != 'pet' %}bg-gallery-accent text-gallery-bg{% else %}text-gallery-muted hover:text-gallery-text{% endif %}">
+                  {% if k != 'pets' %}bg-gallery-accent text-gallery-bg{% else %}text-gallery-muted hover:text-gallery-text{% endif %}">
           Humans
         </a>
-        <a href="/clusters?species=pet"
+        <a href="/pets/clusters"
            class="rounded-full px-4 py-1.5 font-medium transition-colors
-                  {% if sp == 'pet' %}bg-gallery-accent text-gallery-bg{% else %}text-gallery-muted hover:text-gallery-text{% endif %}">
+                  {% if k == 'pets' %}bg-gallery-accent text-gallery-bg{% else %}text-gallery-muted hover:text-gallery-text{% endif %}">
           Pets
         </a>
       </div>
 
       <!-- Nav links -->
       <div class="hidden items-center gap-1 text-sm md:flex">
-        <a href="/clusters{{ sp_qs }}"
+        <a href="/{{ k }}/clusters"
            class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
           Clusters
         </a>
-        <a href="/persons{{ sp_qs }}"
+        <a href="/{{ k }}"
            class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
-          Persons
+          Names
         </a>
-        <a href="/merge-suggestions{{ sp_qs }}"
+        <a href="/{{ k }}/merge-suggestions"
            class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
           Merge
         </a>
-        <a href="/compare{{ sp_qs }}"
+        <a href="/{{ k }}/compare"
            class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
           Compare
         </a>
