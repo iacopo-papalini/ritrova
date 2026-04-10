@@ -11,7 +11,6 @@ from fastapi import Body, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from PIL import Image, ImageFile, ImageOps
 
 from .cluster import (
     compare_persons,
@@ -21,12 +20,11 @@ from .cluster import (
     suggest_merges,
 )
 from .db import FaceDB
+from .images import crop_face_thumbnail, resize_photo, stream_raw
 from .services import (
     compute_cluster_hint,
     compute_singleton_hints,
 )
-
-ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 KindType = Literal["people", "pets"]
 _KIND_TO_SPECIES: dict[str, str] = {"people": "human", "pets": "pet"}
@@ -373,8 +371,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         size = min(size, 500)
         cache_path = thumbnails_dir / f"{face_id}_{size}.jpg"
         if cache_path.exists():
-            data = cache_path.read_bytes()
-            return StreamingResponse(io.BytesIO(data), media_type="image/jpeg")
+            return StreamingResponse(io.BytesIO(cache_path.read_bytes()), media_type="image/jpeg")
 
         face = db.get_face(face_id)
         if not face:
@@ -386,35 +383,25 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         if not resolved.exists():
             raise HTTPException(404)
 
-        with Image.open(resolved) as raw_img:
-            oriented = ImageOps.exif_transpose(raw_img)
-            pad_w = face.bbox_w * 0.3
-            pad_h = face.bbox_h * 0.3
-            x1 = max(0, face.bbox_x - pad_w)
-            y1 = max(0, face.bbox_y - pad_h)
-            x2 = min(oriented.width, face.bbox_x + face.bbox_w + pad_w)
-            y2 = min(oriented.height, face.bbox_y + face.bbox_h + pad_h)
-            crop = oriented.crop((int(x1), int(y1), int(x2), int(y2)))
-
-        crop.thumbnail((size, size))
-        crop.save(cache_path, "JPEG", quality=85)
-
-        buf = io.BytesIO()
-        crop.save(buf, "JPEG", quality=85)
-        buf.seek(0)
+        buf = crop_face_thumbnail(
+            resolved, face.bbox_x, face.bbox_y, face.bbox_w, face.bbox_h, size
+        )
+        cache_path.write_bytes(buf.getvalue())
         return StreamingResponse(buf, media_type="image/jpeg")
 
     @app.get("/api/photos/{photo_id}/image")
-    def photo_image(photo_id: int) -> StreamingResponse:
+    def photo_image(photo_id: int, max_size: int | None = None) -> StreamingResponse:
         photo = db.get_photo(photo_id)
         if not photo:
             raise HTTPException(404)
         resolved = db.resolve_path(photo.file_path)
         if not resolved.exists():
             raise HTTPException(404)
-        # Stream raw file — browsers handle EXIF rotation natively
-        media = "image/jpeg" if resolved.suffix.lower() in (".jpg", ".jpeg") else "image/png"
-        return StreamingResponse(open(resolved, "rb"), media_type=media)  # noqa: SIM115
+        if max_size is None:
+            handle, media = stream_raw(resolved)
+            return StreamingResponse(handle, media_type=media)
+        buf = resize_photo(resolved, min(max_size, 2000))
+        return StreamingResponse(buf, media_type="image/jpeg")
 
     @app.get("/api/photos/{photo_id}/info")
     def photo_info(photo_id: int) -> JSONResponse:

@@ -9,10 +9,10 @@
 <h3 class="mt-4 mb-2 text-sm font-medium text-gallery-muted">{{ group.month }}</h3>
 <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
   {% for photo in group.photos %}
-  <a href="/photos/{{ photo.id }}"
-     class="group relative overflow-hidden rounded-xl bg-gallery-card transition-all duration-200
-            hover:ring-2 hover:ring-gallery-accent/40 hover:ring-offset-2 hover:ring-offset-gallery-bg">
-    <img src="/api/photos/{{ photo.id }}/image"
+  <div @click="$store.lightbox.show({{ photo.id }})"
+       class="group relative cursor-pointer overflow-hidden rounded-xl bg-gallery-card transition-all duration-200
+              hover:ring-2 hover:ring-gallery-accent/40 hover:ring-offset-2 hover:ring-offset-gallery-bg">
+    <img src="/api/photos/{{ photo.id }}/image?max_size=400"
          loading="lazy"
          alt="photo"
          class="aspect-[4/3] w-full object-cover">
@@ -22,7 +22,7 @@
       <span class="text-xs text-gallery-text/90">{{ photo.taken_at[:10] }}</span>
     </div>
     {% endif %}
-  </a>
+  </div>
   {% endfor %}
 </div>
 {% endfor %}
