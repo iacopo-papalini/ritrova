@@ -25,8 +25,14 @@
          class="w-full rounded-lg border border-gallery-border bg-gallery-card px-3 py-2 text-sm text-gallery-text
                 placeholder-gallery-muted outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
 
+  {# Loading indicator #}
+  <div x-show="open && loading" x-cloak
+       class="absolute z-50 mt-1 w-full rounded-lg border border-gallery-border bg-gallery-card shadow-xl px-3 py-2 text-sm text-gallery-muted">
+    Loading...
+  </div>
+
   {# Dropdown results #}
-  <div x-show="open && (filtered.length > 0 || showCreate)"
+  <div x-show="open && !loading && (filtered.length > 0 || showCreate)"
        x-cloak
        @click.outside="open = false"
        class="absolute z-50 mt-1 w-full rounded-lg border border-gallery-border bg-gallery-card shadow-xl
