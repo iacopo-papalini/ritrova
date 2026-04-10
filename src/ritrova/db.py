@@ -620,17 +620,23 @@ class FaceDB:
         return {r[0]: r[1] for r in rows}
 
     def get_photos_with_all_persons(self, person_ids: list[int]) -> list[Photo]:
-        """Find photos that contain ALL given persons (intersection)."""
+        """Find photos that contain ALL given persons (intersection).
+
+        Uses faces index: filter by person_ids first, group by photo, keep
+        only photos matching all requested persons.
+        """
         if not person_ids:
             return []
         placeholders = ",".join("?" * len(person_ids))
         rows = self.conn.execute(
             f"""
             SELECT p.* FROM photos p
-            WHERE (
-                SELECT COUNT(DISTINCT f.person_id) FROM faces f
-                WHERE f.photo_id = p.id AND f.person_id IN ({placeholders})
-            ) = ?
+            JOIN (
+                SELECT photo_id FROM faces
+                WHERE person_id IN ({placeholders})
+                GROUP BY photo_id
+                HAVING COUNT(DISTINCT person_id) = ?
+            ) matched ON matched.photo_id = p.id
             ORDER BY p.file_path DESC
             """,
             (*person_ids, len(person_ids)),
