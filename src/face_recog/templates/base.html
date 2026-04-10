@@ -4,27 +4,104 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}FaceRecog{% endblock %}</title>
+
+  <!-- Google Fonts: DM Sans -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap" rel="stylesheet">
+
+  <!-- Tailwind-built CSS -->
   <link rel="stylesheet" href="/static/style.css">
+
+  <!-- htmx 2.0 -->
+  <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
+
+  <!-- Alpine.js 3.x -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+
+  {% block head %}{% endblock %}
 </head>
-<body>
-  <nav>
-    <a href="/" class="logo">FaceRecog</a>
-    <div class="nav-links">
-      <a href="/clusters">Clusters</a>
-      <a href="/persons">Persons</a>
-      <a href="/merge-suggestions">Merge suggestions</a>
-      <a href="/compare">Compare</a>
-      <span class="nav-sep">|</span>
-      <a href="/clusters?species=pet">Pets</a>
-      <a href="/persons?species=pet">Pet names</a>
-      <form action="/search" method="get" class="nav-search">
-        <input type="text" name="q" placeholder="Search..." value="{{ query|default('') }}">
+<body class="bg-gallery-bg font-body text-gallery-text min-h-screen" x-data>
+
+  <!-- Navigation -->
+  <nav class="sticky top-0 z-50 border-b border-gallery-border bg-gallery-bg/95 backdrop-blur-sm">
+    <div class="mx-auto flex max-w-7xl items-center gap-6 px-4 py-3">
+
+      <!-- Logo -->
+      <a href="/" class="font-display text-xl font-bold tracking-tight text-gallery-accent shrink-0">
+        FaceRecog
+      </a>
+
+      <!-- Section toggle pills -->
+      <div class="flex items-center rounded-full bg-gallery-card p-1 text-sm" x-data="{ section: '{{ species|default("human") }}' }">
+        <a href="/clusters"
+           class="rounded-full px-4 py-1.5 font-medium transition-colors"
+           :class="section === 'human' ? 'bg-gallery-accent text-gallery-bg' : 'text-gallery-muted hover:text-gallery-text'">
+          Humans
+        </a>
+        <a href="/clusters?species=pet"
+           class="rounded-full px-4 py-1.5 font-medium transition-colors"
+           :class="section === 'pet' ? 'bg-gallery-accent text-gallery-bg' : 'text-gallery-muted hover:text-gallery-text'">
+          Pets
+        </a>
+      </div>
+
+      <!-- Nav links -->
+      <div class="hidden items-center gap-1 text-sm md:flex">
+        <a href="/clusters{% if species|default('human') == 'pet' %}?species=pet{% endif %}"
+           class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
+          Clusters
+        </a>
+        <a href="/persons{% if species|default('human') == 'pet' %}?species=pet{% endif %}"
+           class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
+          Persons
+        </a>
+        <a href="/merge-suggestions"
+           class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
+          Merge
+        </a>
+        <a href="/compare"
+           class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
+          Compare
+        </a>
+      </div>
+
+      <!-- Spacer -->
+      <div class="flex-1"></div>
+
+      <!-- Search -->
+      <form action="/search" method="get" class="relative hidden sm:block">
+        <input type="text" name="q" placeholder="Search faces..."
+               value="{{ query|default('') }}"
+               class="w-48 rounded-lg border border-gallery-border bg-gallery-card px-3 py-1.5 text-sm text-gallery-text
+                      placeholder-gallery-muted outline-none transition-all
+                      focus:w-64 focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
       </form>
+
+      <!-- Stats badge -->
+      <a href="/" class="hidden text-xs text-gallery-muted lg:block" title="Dashboard">
+        {% block nav_stats %}{% endblock %}
+      </a>
     </div>
   </nav>
-  <main>
+
+  <!-- htmx loading indicator -->
+  <div class="htmx-indicator fixed top-0 left-0 right-0 z-[60] h-0.5 bg-gallery-accent animate-pulse"></div>
+
+  <!-- Main content -->
+  <main class="mx-auto max-w-7xl px-4 py-6">
     {% block content %}{% endblock %}
   </main>
+
+  <!-- Lightbox container (populated by Alpine store) -->
+  <div x-data x-show="$store.lightbox.open" x-cloak
+       @keydown.escape.window="$store.lightbox.close()"
+       class="fixed inset-0 z-[100] flex items-center justify-center bg-black/90"
+       @click.self="$store.lightbox.close()">
+    {% include "partials/lightbox.html" %}
+  </div>
+
   <script src="/static/app.js"></script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -81,6 +81,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "total": total,
                 "ranked_persons": ranked,
                 "is_pet": is_pet,
+                "species": species,
             },
             request=request,
         )
@@ -107,6 +108,26 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "persons": persons,
                 "total": total,
                 "species": species,
+            },
+            request=request,
+        )
+
+    @app.get("/api/singletons/faces-html", response_class=HTMLResponse)
+    def singletons_faces_html(
+        request: Request, species: str = "human", offset: int = 0, limit: int = 200
+    ) -> HTMLResponse:
+        faces = db.get_singleton_faces(species=species, limit=limit, offset=offset)
+        face_hints = compute_singleton_hints(db, faces, species)
+        total = db.get_singleton_count(species=species)
+        return templates.TemplateResponse(
+            name="partials/singleton_grid.html",
+            context={
+                "faces": faces,
+                "face_hints": face_hints,
+                "species": species,
+                "offset": offset,
+                "limit": limit,
+                "total": total,
             },
             request=request,
         )
@@ -178,11 +199,9 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     def merge_suggestions_page(
         request: Request, min_sim: float = 40.0, species: str = "human"
     ) -> HTMLResponse:
-        persons_map = {p.id: p.name for p in db.get_persons()}
         return templates.TemplateResponse(
             name="merge_suggestions.html",
             context={
-                "persons_map": persons_map,
                 "min_sim": min_sim,
                 "species": species,
             },
@@ -218,6 +237,45 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                     for s in page
                 ],
             }
+        )
+
+    @app.get("/api/merge-suggestions-html", response_class=HTMLResponse)
+    def merge_suggestions_html(
+        request: Request,
+        min_sim: float = 40.0,
+        offset: int = 0,
+        limit: int = 20,
+        species: str = "human",
+    ) -> HTMLResponse:
+        suggestions = suggest_merges(db, min_similarity=min_sim, species=species)
+        persons_map = {p.id: p.name for p in db.get_persons()}
+        total = len(suggestions)
+        page = suggestions[offset : offset + limit]
+        items = [
+            {
+                "cluster_a": s.cluster_a,
+                "cluster_b": s.cluster_b,
+                "similarity_pct": s.similarity_pct,
+                "size_a": s.size_a,
+                "size_b": s.size_b,
+                "sample_face_ids_a": s.sample_face_ids_a,
+                "sample_face_ids_b": s.sample_face_ids_b,
+                "name_a": persons_map.get(s.cluster_a) if s.kind_a == "person" else None,
+                "name_b": persons_map.get(s.cluster_b) if s.kind_b == "person" else None,
+            }
+            for s in page
+        ]
+        return templates.TemplateResponse(
+            name="partials/merge_page.html",
+            context={
+                "suggestions": items,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "min_sim": min_sim,
+                "species": species,
+            },
+            request=request,
         )
 
     @app.get("/compare", response_class=HTMLResponse)
@@ -293,6 +351,16 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             return JSONResponse({"name": None})
         return JSONResponse(hint)
 
+    @app.get("/api/clusters/{cluster_id}/hint-html", response_class=HTMLResponse)
+    def cluster_hint_html(request: Request, cluster_id: int) -> HTMLResponse:
+        """Return an HTML fragment with the assign button for the best hint."""
+        hint = compute_cluster_hint(db, cluster_id)
+        return templates.TemplateResponse(
+            name="partials/cluster_hint.html",
+            context={"hint": hint, "cluster_id": cluster_id},
+            request=request,
+        )
+
     # ── API: pagination ─────────────────────────────────────
 
     @app.get("/api/clusters/{cluster_id}/faces")
@@ -303,6 +371,27 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         )
         return JSONResponse([{"id": r[0], "photo_id": r[1]} for r in rows])
 
+    @app.get("/api/clusters/{cluster_id}/faces-html", response_class=HTMLResponse)
+    def cluster_faces_html(
+        request: Request, cluster_id: int, offset: int = 0, limit: int = 200
+    ) -> HTMLResponse:
+        rows = db.query(
+            "SELECT id, photo_id FROM faces WHERE cluster_id = ? LIMIT ? OFFSET ?",
+            (cluster_id, limit, offset),
+        )
+        faces = [{"id": r[0], "photo_id": r[1]} for r in rows]
+        return templates.TemplateResponse(
+            name="partials/face_grid.html",
+            context={
+                "faces": faces,
+                "cluster_id": cluster_id,
+                "offset": offset,
+                "limit": limit,
+                "total": db.get_cluster_face_count(cluster_id),
+            },
+            request=request,
+        )
+
     @app.get("/api/persons/{person_id}/faces")
     def person_faces_api(person_id: int, offset: int = 0, limit: int = 200) -> JSONResponse:
         rows = db.query(
@@ -310,6 +399,29 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             (person_id, limit, offset),
         )
         return JSONResponse([{"id": r[0], "photo_id": r[1]} for r in rows])
+
+    @app.get("/api/persons/{person_id}/faces-html", response_class=HTMLResponse)
+    def person_faces_html(
+        request: Request, person_id: int, offset: int = 0, limit: int = 200
+    ) -> HTMLResponse:
+        rows = db.query(
+            "SELECT id, photo_id FROM faces WHERE person_id = ? LIMIT ? OFFSET ?",
+            (person_id, limit, offset),
+        )
+        faces = [{"id": r[0], "photo_id": r[1]} for r in rows]
+        person = db.get_person(person_id)
+        total = person.face_count if person else 0
+        return templates.TemplateResponse(
+            name="partials/person_face_grid.html",
+            context={
+                "faces": faces,
+                "person_id": person_id,
+                "offset": offset,
+                "limit": limit,
+                "total": total,
+            },
+            request=request,
+        )
 
     # ── API: images ────────────────────────────────────────
 
@@ -368,6 +480,13 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         buf.seek(0)
         return StreamingResponse(buf, media_type="image/jpeg")
 
+    @app.get("/api/photos/{photo_id}/info")
+    def photo_info(photo_id: int) -> JSONResponse:
+        photo = db.get_photo(photo_id)
+        if not photo:
+            raise HTTPException(404)
+        return JSONResponse({"file_path": str(db.resolve_path(photo.file_path))})
+
     # ── API: actions ───────────────────────────────────────
 
     def _next_similar_cluster(person_id: int, cluster_id: int) -> str:
@@ -389,12 +508,16 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         db.assign_cluster_to_person(cluster_id, person_id)
         return RedirectResponse(_next_similar_cluster(person_id, cluster_id), status_code=303)
 
-    @app.post("/api/clusters/{cluster_id}/assign")
-    def assign_cluster_to_existing(cluster_id: int, person_id: int = Form(...)) -> RedirectResponse:
+    @app.post("/api/clusters/{cluster_id}/assign", response_model=None)
+    def assign_cluster_to_existing(
+        request: Request, cluster_id: int, person_id: int = Form(...)
+    ) -> RedirectResponse | HTMLResponse:
         person = db.get_person(person_id)
         if not person:
             raise HTTPException(404, "Person not found")
         db.assign_cluster_to_person(cluster_id, person_id)
+        if request.headers.get("HX-Request"):
+            return HTMLResponse("")
         return RedirectResponse(_next_similar_cluster(person_id, cluster_id), status_code=303)
 
     @app.post("/api/clusters/{cluster_id}/dismiss")
@@ -405,12 +528,16 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             db.dismiss_faces(face_ids)
         return JSONResponse({"ok": True, "dismissed": len(face_ids)})
 
-    @app.post("/api/clusters/merge")
+    @app.post("/api/clusters/merge", response_model=None)
     def merge_clusters_api(
-        source_cluster: int = Body(...), target_cluster: int = Body(...)
-    ) -> JSONResponse:
+        request: Request,
+        source_cluster: int = Body(...),
+        target_cluster: int = Body(...),
+    ) -> JSONResponse | HTMLResponse:
         """Move all faces from source cluster into target cluster."""
         db.merge_clusters(source_cluster, target_cluster)
+        if request.headers.get("HX-Request"):
+            return HTMLResponse("")
         return JSONResponse({"ok": True})
 
     @app.post("/api/faces/dismiss")

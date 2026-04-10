@@ -33,8 +33,23 @@ def get_exif_date(image_path: Path) -> str | None:
     return None
 
 
+EXCLUDE_MARKER = ".fr_exclude"
+
+
+def _excluded_dirs(root: Path) -> set[Path]:
+    """Find all directories under root containing a .fr_exclude marker file."""
+    return {p.parent.resolve() for p in root.rglob(EXCLUDE_MARKER)}
+
+
+def _is_excluded(path: Path, excluded: set[Path]) -> bool:
+    """Check if path is inside any excluded directory."""
+    resolved = path.resolve()
+    return any(resolved == ex or ex in resolved.parents for ex in excluded)
+
+
 def find_images(photos_dir: Path) -> list[Path]:
-    """Find all image files in directory tree."""
+    """Find all image files in directory tree, skipping dirs with .fr_exclude."""
+    excluded = _excluded_dirs(photos_dir)
     images: list[Path] = []
     for ext in IMAGE_EXTENSIONS:
         images.extend(photos_dir.rglob(f"*{ext}"))
@@ -44,13 +59,16 @@ def find_images(photos_dir: Path) -> list[Path]:
     for p in sorted(images):
         key = str(p).lower()
         if key not in seen:
+            if excluded and _is_excluded(p, excluded):
+                continue
             seen.add(key)
             unique.append(p)
     return unique
 
 
 def find_videos(photos_dir: Path) -> list[Path]:
-    """Find all video files in directory tree."""
+    """Find all video files in directory tree, skipping dirs with .fr_exclude."""
+    excluded = _excluded_dirs(photos_dir)
     videos: list[Path] = []
     for ext in VIDEO_EXTENSIONS:
         videos.extend(photos_dir.rglob(f"*{ext}"))
@@ -60,6 +78,8 @@ def find_videos(photos_dir: Path) -> list[Path]:
     for p in sorted(videos):
         key = str(p).lower()
         if key not in seen:
+            if excluded and _is_excluded(p, excluded):
+                continue
             seen.add(key)
             unique.append(p)
     return unique

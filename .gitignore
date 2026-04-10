@@ -7,3 +7,5 @@ data/
 *.egg-info/
 dist/
 .coverage
+tailwindcss
+src/face_recog/static/style.css

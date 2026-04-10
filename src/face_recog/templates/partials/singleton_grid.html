@@ -1,0 +1,50 @@
+{# Singleton grid fragment -- returned by /api/singletons/faces-html for htmx infinite scroll #}
+{% for face in faces %}
+{% set hint = face_hints.get(face.id) %}
+<div class="relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150 group"
+     data-face-id="{{ face.id }}"
+     @click="toggle({{ face.id }})"
+     :class="selected.has({{ face.id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'">
+  <img src="/api/faces/{{ face.id }}/thumbnail?size=180"
+       loading="lazy"
+       alt="face"
+       @click.stop="$store.lightbox.show({{ face.photo_id }})"
+       class="aspect-square w-full object-cover">
+  {% if hint %}
+  <!-- Hint overlay: click to quick-assign -->
+  <div class="absolute inset-x-0 bottom-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200
+              bg-gallery-bg/80 backdrop-blur-sm px-2 py-1.5 text-xs text-gallery-accent font-medium
+              cursor-pointer hover:bg-gallery-accent/20"
+       @click.stop="
+         fetch('/api/persons/{{ hint.person_id }}/claim-faces', {
+           method: 'POST',
+           headers: { 'Content-Type': 'application/json' },
+           body: JSON.stringify({ face_ids: [{{ face.id }}] })
+         }).then(r => { if (r.ok) $el.closest('[data-face-id]').remove() })
+       ">
+    {{ hint.name }} {{ hint.sim }}%
+  </div>
+  {% endif %}
+  <!-- Selection checkmark overlay -->
+  <div x-show="selected.has({{ face.id }})" x-cloak
+       class="absolute inset-0 bg-gallery-accent/20 flex items-center justify-center pointer-events-none">
+    <svg class="w-8 h-8 text-gallery-accent drop-shadow-lg" fill="currentColor" viewBox="0 0 20 20">
+      <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+    </svg>
+  </div>
+</div>
+{% endfor %}
+{% if offset + faces|length < total %}
+<div hx-get="/api/singletons/faces-html?species={{ species }}&offset={{ offset + faces|length }}&limit={{ limit }}"
+     hx-trigger="revealed"
+     hx-swap="outerHTML"
+     class="col-span-full flex justify-center py-8">
+  <div class="flex items-center gap-2 text-gallery-muted text-sm">
+    <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+    </svg>
+    <span>Loading more faces...</span>
+  </div>
+</div>
+{% endif %}

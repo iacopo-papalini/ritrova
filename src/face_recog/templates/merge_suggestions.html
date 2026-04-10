@@ -1,162 +1,40 @@
 {% extends "base.html" %}
 {% block title %}Merge Suggestions{% endblock %}
 {% block content %}
-<h1>Merge Suggestions</h1>
-<p class="photo-meta">
-  Showing pairs with centroid similarity &ge; <span id="current-sim">{{ min_sim }}</span>%.
-  <a href="/merge-suggestions?min_sim=30&species={{ species }}">30%</a> |
-  <a href="/merge-suggestions?min_sim=40&species={{ species }}">40%</a> |
-  <a href="/merge-suggestions?min_sim=50&species={{ species }}">50%</a> |
-  <a href="/merge-suggestions?min_sim=60&species={{ species }}">60%</a>
-</p>
+<div class="space-y-6">
 
-<p class="photo-meta" id="status">Loading...</p>
+  {# ── Header + similarity filter pills ─────────────────── #}
+  <div class="flex flex-col gap-3 sm:flex-row sm:items-baseline sm:justify-between">
+    <h1 class="font-display text-2xl font-bold tracking-tight">Merge Suggestions</h1>
 
-<div id="suggestions-list"></div>
+    <div class="flex items-center gap-1 text-sm">
+      <span class="text-gallery-muted mr-1">Min similarity:</span>
+      {% for t in [30, 40, 50, 60] %}
+      <a href="/merge-suggestions?min_sim={{ t }}&species={{ species }}"
+         class="rounded-full px-3 py-1 transition-colors
+                {% if min_sim == t %}bg-gallery-accent text-gallery-bg font-semibold
+                {% else %}bg-gallery-card text-gallery-muted hover:text-gallery-text{% endif %}">
+        {{ t }}%
+      </a>
+      {% endfor %}
+    </div>
+  </div>
 
-<script>
-const minSim = {{ min_sim }};
-const species = '{{ species }}';
-const personsMap = {{ persons_map | tojson }};
-let offset = 0;
-const pageSize = 20;
-let total = null;
-let loading = false;
+  {# ── htmx-loaded suggestion list ──────────────────────── #}
+  <div id="suggestions-list"
+       hx-get="/api/merge-suggestions-html?min_sim={{ min_sim }}&species={{ species }}"
+       hx-trigger="load"
+       hx-swap="innerHTML">
+    <div class="flex justify-center py-12">
+      <div class="flex items-center gap-2 text-gallery-muted text-sm">
+        <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+        <span>Loading suggestions...</span>
+      </div>
+    </div>
+  </div>
 
-function appendLabel(container, id, name, size) {
-  const a = document.createElement('a');
-  a.href = name ? '/persons/' + id : '/clusters/' + id;
-  a.textContent = name || 'Cluster #' + id;
-  container.appendChild(a);
-  container.append(' (' + id + ') (' + size + ')');
-}
-
-function simClass(pct) {
-  if (pct >= 60) return 'sim-high';
-  if (pct >= 50) return 'sim-medium';
-  return '';
-}
-
-function createMergeButton(s) {
-  const btn = document.createElement('button');
-  if (s.name_a && !s.name_b) {
-    btn.className = 'btn';
-    btn.textContent = 'Merge into ' + s.name_a;
-    btn.onclick = function() { mergeClusterIntoPerson(s.cluster_b, s.cluster_a, btn); };
-  } else if (s.name_b && !s.name_a) {
-    btn.className = 'btn';
-    btn.textContent = 'Merge into ' + s.name_b;
-    btn.onclick = function() { mergeClusterIntoPerson(s.cluster_a, s.cluster_b, btn); };
-  } else if (!s.name_a && !s.name_b) {
-    btn.className = 'btn btn-secondary';
-    btn.textContent = 'Merge clusters';
-    btn.onclick = function() { mergeClusters(s.cluster_a, s.cluster_b, btn); };
-  } else {
-    return null;
-  }
-  return btn;
-}
-
-function createFaceImages(faceIds) {
-  const div = document.createElement('div');
-  div.className = 'merge-faces';
-  faceIds.forEach(function(id) {
-    const img = document.createElement('img');
-    img.src = '/api/faces/' + id + '/thumbnail?size=100';
-    img.loading = 'lazy';
-    div.appendChild(img);
-  });
-  return div;
-}
-
-function renderSuggestion(s) {
-  const row = document.createElement('div');
-  row.className = 'merge-row';
-  const pair = document.createElement('div');
-  pair.className = 'merge-pair';
-
-  // Side A
-  const sideA = document.createElement('div');
-  sideA.className = 'merge-side';
-  const labelA = document.createElement('div');
-  labelA.className = 'merge-label';
-  appendLabel(labelA, s.cluster_a, s.name_a, s.size_a);
-  sideA.appendChild(labelA);
-  sideA.appendChild(createFaceImages(s.sample_face_ids_a));
-
-  // Similarity + action
-  const simDiv = document.createElement('div');
-  simDiv.className = 'merge-similarity';
-  const badge = document.createElement('span');
-  badge.className = 'sim-badge ' + simClass(s.similarity_pct);
-  badge.textContent = s.similarity_pct + '%';
-  simDiv.appendChild(badge);
-  const actionDiv = document.createElement('div');
-  actionDiv.style.marginTop = '0.5rem';
-  const btn = createMergeButton(s);
-  if (btn) actionDiv.appendChild(btn);
-  simDiv.appendChild(actionDiv);
-
-  // Side B
-  const sideB = document.createElement('div');
-  sideB.className = 'merge-side';
-  const labelB = document.createElement('div');
-  labelB.className = 'merge-label';
-  appendLabel(labelB, s.cluster_b, s.name_b, s.size_b);
-  sideB.appendChild(labelB);
-  sideB.appendChild(createFaceImages(s.sample_face_ids_b));
-
-  pair.appendChild(sideA);
-  pair.appendChild(simDiv);
-  pair.appendChild(sideB);
-  row.appendChild(pair);
-  return row;
-}
-
-async function loadMore() {
-  if (loading || (total !== null && offset >= total)) return;
-  loading = true;
-  const resp = await fetch('/api/merge-suggestions?min_sim=' + minSim + '&offset=' + offset + '&limit=' + pageSize + '&species=' + species);
-  const data = await resp.json();
-  total = data.total;
-  const list = document.getElementById('suggestions-list');
-  data.suggestions.forEach(s => list.appendChild(renderSuggestion(s)));
-  offset += data.suggestions.length;
-  document.getElementById('status').textContent =
-    'Showing ' + offset + ' of ' + total + ' suggestions';
-  if (total === 0) document.getElementById('status').textContent = 'No suggestions above ' + minSim + '%.';
-  loading = false;
-}
-
-window.addEventListener('scroll', function() {
-  if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) {
-    loadMore();
-  }
-});
-
-async function mergeClusterIntoPerson(clusterId, personId, btn) {
-  const body = new FormData();
-  body.append('person_id', personId);
-  const resp = await fetch('/api/clusters/' + clusterId + '/assign', {method: 'POST', body});
-  if (resp.ok) removeRow(btn);
-}
-
-async function mergeClusters(clusterA, clusterB, btn) {
-  const resp = await fetch('/api/clusters/merge', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({source_cluster: clusterB, target_cluster: clusterA})
-  });
-  if (resp.ok) removeRow(btn);
-}
-
-function removeRow(btn) {
-  btn.closest('.merge-row').remove();
-  if (document.querySelectorAll('.merge-row').length === 0) {
-    location.reload();
-  }
-}
-
-loadMore();
-</script>
+</div>
 {% endblock %}

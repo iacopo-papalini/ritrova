@@ -1,42 +1,118 @@
 {% extends "base.html" %}
 {% block title %}{{ person.name }}{% endblock %}
 {% block content %}
-<h1>{{ person.name }} <span class="subtitle">({{ person.face_count }} faces in {{ photos|length }} photos)</span></h1>
+<div x-data="{ confirmDelete: false }">
 
-<div class="action-bar">
-  <form action="/api/persons/{{ person.id }}/rename" method="post" class="inline-form">
-    <input type="text" name="name" value="{{ person.name }}" required>
-    <button type="submit" class="btn btn-secondary">Rename</button>
-  </form>
-
-  <a href="/persons/{{ person.id }}/find-similar" class="btn">Find similar unclustered</a>
-
-  <form action="/api/persons/{{ person.id }}/delete" method="post" class="inline-form"
-        onsubmit="return confirm('Delete this person? Faces will become unassigned.')">
-    <button type="submit" class="btn btn-danger">Delete</button>
-  </form>
-</div>
-
-<h2>Face samples</h2>
-<div class="face-grid-large">
-  {% for face in faces[:60] %}
-  <div class="face-thumb">
-    <a href="/photos/{{ face.photo_id }}">
-      <img src="/api/faces/{{ face.id }}/thumbnail?size=150" loading="lazy" alt="face">
-    </a>
+  {# ── Header ──────────────────────────────────────────────── #}
+  <div class="mb-6">
+    <div class="flex items-center gap-3">
+      <a href="/persons"
+         class="text-gallery-muted hover:text-gallery-text transition-colors">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+        </svg>
+      </a>
+      <h1 class="text-2xl font-bold font-display text-gallery-accent">
+        {{ person.name }}
+      </h1>
+      <span class="text-gallery-muted text-sm">
+        ({{ person.face_count }} face{{ 's' if person.face_count != 1 else '' }}
+        in {{ photos|length }} photo{{ 's' if photos|length != 1 else '' }})
+      </span>
+    </div>
   </div>
-  {% endfor %}
-</div>
 
-<h2>Photos</h2>
-<div class="photo-grid">
-  {% for photo in photos %}
-  <a href="/photos/{{ photo.id }}" class="photo-card">
-    <img src="/api/photos/{{ photo.id }}/image?max_size=400" loading="lazy" alt="photo">
-    {% if photo.taken_at %}
-    <span class="photo-date">{{ photo.taken_at[:10] }}</span>
+  {# ── Action bar ──────────────────────────────────────────── #}
+  <div class="mb-6 flex flex-wrap items-center gap-3">
+    {# Rename #}
+    <form action="/api/persons/{{ person.id }}/rename" method="post"
+          class="flex items-center gap-2">
+      <input type="text" name="name" value="{{ person.name }}" required
+             class="rounded-lg border border-gallery-border bg-gallery-card px-3 py-2 text-sm text-gallery-text
+                    placeholder-gallery-muted outline-none focus:border-gallery-accent
+                    focus:ring-1 focus:ring-gallery-accent/30 w-48">
+      <button type="submit"
+              class="rounded-lg border border-gallery-border px-4 py-2 text-sm font-medium text-gallery-text
+                     transition-colors hover:bg-gallery-card cursor-pointer">
+        Rename
+      </button>
+    </form>
+
+    {# Find similar #}
+    <a href="/persons/{{ person.id }}/find-similar"
+       class="rounded-lg bg-gallery-accent px-4 py-2 text-sm font-medium text-gallery-bg
+              transition-colors hover:bg-gallery-accent/80">
+      Find similar unclustered
+    </a>
+
+    <div class="flex-1"></div>
+
+    {# Delete #}
+    <button @click="if (confirm('Delete this person? All faces will become unassigned.'))
+                      fetch('/api/persons/{{ person.id }}/delete', { method: 'POST' })
+                        .then(r => { if (r.redirected) location.href = r.url; else location.href = '/persons'; })"
+            class="rounded-lg border border-gallery-danger/30 px-4 py-2 text-sm font-medium text-gallery-danger
+                   transition-colors hover:bg-gallery-danger/10 cursor-pointer">
+      Delete person
+    </button>
+  </div>
+
+  {# ── Face samples with infinite scroll ───────────────────── #}
+  <div class="mb-8">
+    <h2 class="text-lg font-semibold font-display text-gallery-text mb-3">Face samples</h2>
+    <div class="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-8 lg:grid-cols-10 gap-2">
+      {% for face in faces %}
+      <div class="relative overflow-hidden rounded-lg transition-all duration-150 hover:scale-[1.03]">
+        <img src="/api/faces/{{ face.id }}/thumbnail?size=180"
+             loading="lazy"
+             alt="face"
+             @click="$store.lightbox.show({{ face.photo_id }})"
+             class="aspect-square w-full cursor-pointer object-cover">
+      </div>
+      {% endfor %}
+      {% if person.face_count > faces|length %}
+      <div hx-get="/api/persons/{{ person.id }}/faces-html?offset={{ faces|length }}&limit=200"
+           hx-trigger="revealed"
+           hx-swap="outerHTML"
+           class="col-span-full flex justify-center py-8">
+        <div class="flex items-center gap-2 text-gallery-muted text-sm">
+          <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <span>Loading more faces...</span>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Photos grid ─────────────────────────────────────────── #}
+  <div>
+    <h2 class="text-lg font-semibold font-display text-gallery-text mb-3">Photos</h2>
+    {% if not photos %}
+    <p class="text-gallery-muted text-sm">No photos found.</p>
+    {% else %}
+    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+      {% for photo in photos %}
+      <a href="/photos/{{ photo.id }}"
+         class="group relative overflow-hidden rounded-xl bg-gallery-card transition-all duration-200
+                hover:ring-2 hover:ring-gallery-accent/40 hover:ring-offset-2 hover:ring-offset-gallery-bg">
+        <img src="/api/photos/{{ photo.id }}/image?max_size=400"
+             loading="lazy"
+             alt="photo"
+             class="aspect-[4/3] w-full object-cover">
+        {% if photo.taken_at %}
+        <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent
+                    px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+          <span class="text-xs text-gallery-text/90">{{ photo.taken_at[:10] }}</span>
+        </div>
+        {% endif %}
+      </a>
+      {% endfor %}
+    </div>
     {% endif %}
-  </a>
-  {% endfor %}
+  </div>
+
 </div>
 {% endblock %}

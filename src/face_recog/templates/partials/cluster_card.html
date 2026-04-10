@@ -1,0 +1,28 @@
+{# Cluster card partial — used inside clusters.html grid #}
+<div class="cluster-card group relative overflow-hidden rounded-xl border border-gallery-border bg-gallery-card
+            transition-shadow hover:shadow-lg hover:shadow-black/30"
+     id="cluster-{{ cluster.cluster_id }}"
+     x-data="{ showHint: false }"
+     @mouseenter="showHint = true"
+     @mouseleave="showHint = false">
+  <a href="/clusters/{{ cluster.cluster_id }}" class="block">
+    <div class="grid grid-cols-3 gap-0.5">
+      {% for fid in cluster.sample_face_ids[:6] %}
+      <img src="/api/faces/{{ fid }}/thumbnail?size=120"
+           loading="lazy"
+           alt="face"
+           class="aspect-square w-full object-cover">
+      {% endfor %}
+    </div>
+    <div class="px-3 py-2 text-xs text-gallery-muted">
+      Cluster #{{ cluster.cluster_id }} &mdash; {{ cluster.face_count }} faces
+    </div>
+  </a>
+  {# Hint overlay — loaded via htmx on hover, hidden on leave #}
+  <div x-show="showHint" x-cloak
+       class="absolute inset-x-0 bottom-0"
+       hx-get="/api/clusters/{{ cluster.cluster_id }}/hint-html"
+       hx-trigger="mouseenter from:closest .cluster-card once"
+       hx-swap="innerHTML">
+  </div>
+</div>

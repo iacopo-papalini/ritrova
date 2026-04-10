@@ -1,73 +1,28 @@
 {% extends "base.html" %}
 {% block title %}Unnamed Clusters{% endblock %}
 {% block content %}
-<h1>{% if species == 'pet' %}Pet{% else %}Unnamed{% endif %} Clusters ({{ clusters|length }})</h1>
 
-{% if not clusters %}
-<p class="empty">No unnamed clusters. All faces have been assigned!</p>
-{% endif %}
-
-<p class="photo-meta"><a href="/singletons?species={{ species }}">View unmatched singles</a></p>
-
-<div class="cluster-list">
-  {% for cluster in clusters %}
-  <div class="cluster-card" data-cluster-id="{{ cluster.cluster_id }}"
-       onmouseenter="loadHint(this)" onmouseleave="hideHint(this)">
-    <a href="/clusters/{{ cluster.cluster_id }}">
-      <div class="face-grid">
-        {% for fid in cluster.sample_face_ids[:6] %}
-        <img src="/api/faces/{{ fid }}/thumbnail?size=120" loading="lazy" alt="face">
-        {% endfor %}
-      </div>
-      <div class="cluster-info">
-        Cluster #{{ cluster.cluster_id }} &mdash; {{ cluster.face_count }} faces
-      </div>
-    </a>
-    <div class="cluster-assign-hint"></div>
-  </div>
-  {% endfor %}
+<div class="mb-6 flex items-baseline justify-between">
+  <h1 class="font-display text-2xl font-bold tracking-tight text-gallery-text">
+    {% if species == 'pet' %}Pet{% else %}Unnamed{% endif %} Clusters
+    <span class="text-gallery-muted">({{ clusters|length }})</span>
+  </h1>
+  <a href="/singletons?species={{ species }}"
+     class="text-sm text-gallery-accent transition-colors hover:text-gallery-accent/80">
+    View unmatched singles &rarr;
+  </a>
 </div>
 
-<script>
-const hintCache = {};
-const hoveredCards = new Set();
+{% if not clusters %}
+<p class="rounded-lg border border-gallery-border bg-gallery-card px-6 py-10 text-center text-gallery-muted">
+  No unnamed clusters. All faces have been assigned!
+</p>
+{% else %}
+<div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+  {% for cluster in clusters %}
+    {% include "partials/cluster_card.html" %}
+  {% endfor %}
+</div>
+{% endif %}
 
-async function loadHint(card) {
-  hoveredCards.add(card);
-  const cid = card.dataset.clusterId;
-  if (hintCache[cid] === undefined) {
-    hintCache[cid] = null;
-    const resp = await fetch('/api/clusters/' + cid + '/hint');
-    hintCache[cid] = await resp.json();
-  }
-  if (hoveredCards.has(card)) showHint(card);
-}
-
-function showHint(card) {
-  const data = hintCache[card.dataset.clusterId];
-  if (!data || !data.name) return;
-  const bar = card.querySelector('.cluster-assign-hint');
-  bar.innerHTML = '<button class="btn btn-small" style="width:100%;padding:0.4rem;border-radius:0 0 12px 12px;background:#0066cc;color:#fff;border:none;cursor:pointer">'
-    + data.name + ' ' + data.sim + '% — click to assign</button>';
-  bar.style.display = 'block';
-  bar.querySelector('button').onclick = function(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    assignCluster(card.dataset.clusterId, data.person_id, card);
-  };
-}
-
-function hideHint(card) {
-  hoveredCards.delete(card);
-  const bar = card.querySelector('.cluster-assign-hint');
-  bar.style.display = 'none';
-}
-
-async function assignCluster(clusterId, personId, card) {
-  const body = new FormData();
-  body.append('person_id', personId);
-  const resp = await fetch('/api/clusters/' + clusterId + '/assign', {method: 'POST', body});
-  if (resp.ok) card.remove();
-}
-</script>
 {% endblock %}

@@ -1,18 +1,45 @@
 {% extends "base.html" %}
-{% block title %}Persons{% endblock %}
+{% block title %}{% if species == 'pet' %}Pets{% else %}Persons{% endif %}{% endblock %}
 {% block content %}
-<h1>{% if species == 'pet' %}Pets{% else %}Persons{% endif %} ({{ persons|length }})</h1>
+
+<div class="mb-6 flex items-baseline justify-between">
+  <h1 class="font-display text-2xl font-bold tracking-tight text-gallery-text">
+    {% if species == 'pet' %}Pets{% else %}Persons{% endif %}
+    <span class="text-gallery-muted">({{ persons|length }})</span>
+  </h1>
+  <a href="/search"
+     class="text-sm text-gallery-accent transition-colors hover:text-gallery-accent/80">
+    Search &rarr;
+  </a>
+</div>
 
 {% if not persons %}
-<p class="empty">No persons named yet. <a href="/clusters">Start by naming clusters</a>.</p>
-{% endif %}
-
-<div class="person-grid">
+<div class="rounded-xl border border-gallery-border bg-gallery-card px-6 py-12 text-center">
+  <p class="text-gallery-muted">
+    No persons named yet.
+    <a href="/clusters{% if species == 'pet' %}?species=pet{% endif %}"
+       class="text-gallery-accent transition-colors hover:text-gallery-accent/80">
+      Start by naming clusters
+    </a>.
+  </p>
+</div>
+{% else %}
+<div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
   {% for person in persons %}
-  <a href="/persons/{{ person.id }}" class="person-card">
-    <div class="person-name">{{ person.name }}</div>
-    <div class="person-count">{{ person.face_count }} faces</div>
+  <a href="/persons/{{ person.id }}"
+     class="group rounded-xl border border-gallery-border bg-gallery-card p-5
+            transition-all duration-200 hover:border-gallery-accent/40
+            hover:ring-1 hover:ring-gallery-accent/20">
+    <p class="font-display text-lg font-semibold text-gallery-text
+              group-hover:text-gallery-accent transition-colors">
+      {{ person.name }}
+    </p>
+    <p class="mt-1 text-sm text-gallery-muted">
+      {{ person.face_count }} face{{ 's' if person.face_count != 1 else '' }}
+    </p>
   </a>
   {% endfor %}
 </div>
+{% endif %}
+
 {% endblock %}

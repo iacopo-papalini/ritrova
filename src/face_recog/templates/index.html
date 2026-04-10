@@ -1,44 +1,87 @@
 {% extends "base.html" %}
 {% block title %}FaceRecog — Dashboard{% endblock %}
 {% block content %}
-<h1>Dashboard</h1>
-<div class="stats-grid">
-  <div class="stat-card">
-    <div class="stat-value">{{ stats.total_photos }}</div>
-    <div class="stat-label">Photos scanned</div>
-  </div>
-  <div class="stat-card">
-    <div class="stat-value">{{ stats.total_faces }}</div>
-    <div class="stat-label">Faces detected</div>
-  </div>
-  <div class="stat-card">
-    <div class="stat-value">{{ stats.total_persons }}</div>
-    <div class="stat-label">Persons named</div>
-  </div>
-  <div class="stat-card">
-    <div class="stat-value">{{ stats.named_faces }}</div>
-    <div class="stat-label">Faces identified</div>
-  </div>
-  <div class="stat-card">
-    <div class="stat-value">{{ stats.unnamed_clusters }}</div>
-    <div class="stat-label">Unnamed clusters</div>
-  </div>
-  <div class="stat-card">
-    <div class="stat-value">{{ stats.unclustered_faces }}</div>
-    <div class="stat-label">Unclustered faces</div>
-  </div>
-  <div class="stat-card">
-    <div class="stat-value">{{ stats.dismissed_faces }}</div>
-    <div class="stat-label">Dismissed (non-faces)</div>
-  </div>
-</div>
+<div class="space-y-8">
 
-<div class="actions">
-  {% if stats.unnamed_clusters > 0 %}
-  <a href="/clusters" class="btn">Review unnamed clusters</a>
-  {% endif %}
-  {% if stats.total_persons > 0 %}
-  <a href="/persons" class="btn btn-secondary">Browse persons</a>
-  {% endif %}
+  <!-- Page heading -->
+  <h1 class="font-display text-2xl font-bold tracking-tight text-gallery-text">Dashboard</h1>
+
+  <!-- Stats grid -->
+  <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+
+    <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
+         x-data="{ current: 0, target: {{ stats.total_photos }} }"
+         x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
+      <p class="font-display text-4xl font-bold text-gallery-accent"
+         x-text="current.toLocaleString()">{{ stats.total_photos }}</p>
+      <p class="mt-1 text-sm text-gallery-muted">Photos scanned</p>
+    </div>
+
+    <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
+         x-data="{ current: 0, target: {{ stats.total_faces }} }"
+         x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
+      <p class="font-display text-4xl font-bold text-gallery-accent"
+         x-text="current.toLocaleString()">{{ stats.total_faces }}</p>
+      <p class="mt-1 text-sm text-gallery-muted">Faces detected</p>
+    </div>
+
+    <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
+         x-data="{ current: 0, target: {{ stats.total_persons }} }"
+         x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
+      <p class="font-display text-4xl font-bold text-gallery-accent"
+         x-text="current.toLocaleString()">{{ stats.total_persons }}</p>
+      <p class="mt-1 text-sm text-gallery-muted">Persons named</p>
+    </div>
+
+    <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
+         x-data="{ current: 0, target: {{ stats.named_faces }} }"
+         x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
+      <p class="font-display text-4xl font-bold text-gallery-accent"
+         x-text="current.toLocaleString()">{{ stats.named_faces }}</p>
+      <p class="mt-1 text-sm text-gallery-muted">Faces identified</p>
+    </div>
+
+    <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
+         x-data="{ current: 0, target: {{ stats.unnamed_clusters }} }"
+         x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
+      <p class="font-display text-4xl font-bold text-gallery-accent"
+         x-text="current.toLocaleString()">{{ stats.unnamed_clusters }}</p>
+      <p class="mt-1 text-sm text-gallery-muted">Unnamed clusters</p>
+    </div>
+
+    <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
+         x-data="{ current: 0, target: {{ stats.unclustered_faces }} }"
+         x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
+      <p class="font-display text-4xl font-bold text-gallery-accent"
+         x-text="current.toLocaleString()">{{ stats.unclustered_faces }}</p>
+      <p class="mt-1 text-sm text-gallery-muted">Unclustered faces</p>
+    </div>
+
+    <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
+         x-data="{ current: 0, target: {{ stats.dismissed_faces }} }"
+         x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
+      <p class="font-display text-4xl font-bold text-gallery-accent"
+         x-text="current.toLocaleString()">{{ stats.dismissed_faces }}</p>
+      <p class="mt-1 text-sm text-gallery-muted">Dismissed (non-faces)</p>
+    </div>
+
+  </div>
+
+  <!-- Action buttons -->
+  <div class="flex flex-wrap gap-3">
+    {% if stats.unnamed_clusters > 0 %}
+    <a href="/clusters"
+       class="inline-flex items-center rounded-lg bg-gallery-accent px-5 py-2.5 text-sm font-semibold text-gallery-bg transition-colors hover:bg-gallery-accent/80">
+      Review unnamed clusters
+    </a>
+    {% endif %}
+    {% if stats.total_persons > 0 %}
+    <a href="/persons"
+       class="inline-flex items-center rounded-lg border border-gallery-accent px-5 py-2.5 text-sm font-semibold text-gallery-accent transition-colors hover:bg-gallery-accent/10">
+      Browse persons
+    </a>
+    {% endif %}
+  </div>
+
 </div>
 {% endblock %}

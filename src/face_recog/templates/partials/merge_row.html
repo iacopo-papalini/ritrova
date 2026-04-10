@@ -1,0 +1,86 @@
+{# Single merge-suggestion row — used by merge_page.html #}
+<div class="merge-row rounded-xl border border-gallery-border bg-gallery-card p-4 mb-4
+            transition-all duration-200">
+  <div class="flex items-center gap-4">
+
+    {# ── Side A ─────────────────────────────────────────── #}
+    <div class="flex-1 min-w-0">
+      <div class="text-sm font-medium mb-2">
+        {% if s.name_a %}
+        <a href="/persons/{{ s.cluster_a }}" class="text-gallery-accent hover:underline">{{ s.name_a }}</a>
+        {% else %}
+        <a href="/clusters/{{ s.cluster_a }}" class="text-gallery-text hover:underline">Cluster #{{ s.cluster_a }}</a>
+        {% endif %}
+        <span class="text-gallery-muted text-xs">({{ s.size_a }} faces)</span>
+      </div>
+      <div class="flex gap-1 flex-wrap">
+        {% for fid in s.sample_face_ids_a %}
+        <img src="/api/faces/{{ fid }}/thumbnail?size=100"
+             class="w-16 h-16 rounded object-cover" loading="lazy" alt="face">
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ── Similarity badge + merge action ────────────────── #}
+    <div class="text-center shrink-0">
+      <span class="inline-block rounded-full px-3 py-1 text-sm font-bold
+                   {% if s.similarity_pct >= 60 %}bg-gallery-success/20 text-gallery-success
+                   {% elif s.similarity_pct >= 50 %}bg-gallery-accent/20 text-gallery-accent
+                   {% else %}bg-gallery-card text-gallery-muted{% endif %}">
+        {{ s.similarity_pct }}%
+      </span>
+      <div class="mt-2">
+        {% if s.name_a and not s.name_b %}
+        {# Named person A + unnamed cluster B => assign B into person A #}
+        <form hx-post="/api/clusters/{{ s.cluster_b }}/assign"
+              hx-target="closest .merge-row" hx-swap="outerHTML">
+          <input type="hidden" name="person_id" value="{{ s.cluster_a }}">
+          <button class="rounded-lg bg-amber-600/80 px-3 py-1.5 text-xs font-semibold text-white
+                         hover:bg-amber-500 transition-colors cursor-pointer">
+            Merge into {{ s.name_a }}
+          </button>
+        </form>
+        {% elif s.name_b and not s.name_a %}
+        {# Named person B + unnamed cluster A => assign A into person B #}
+        <form hx-post="/api/clusters/{{ s.cluster_a }}/assign"
+              hx-target="closest .merge-row" hx-swap="outerHTML">
+          <input type="hidden" name="person_id" value="{{ s.cluster_b }}">
+          <button class="rounded-lg bg-amber-600/80 px-3 py-1.5 text-xs font-semibold text-white
+                         hover:bg-amber-500 transition-colors cursor-pointer">
+            Merge into {{ s.name_b }}
+          </button>
+        </form>
+        {% elif not s.name_a and not s.name_b %}
+        {# Two unnamed clusters => merge B into A #}
+        <button hx-post="/api/clusters/merge"
+                hx-target="closest .merge-row" hx-swap="outerHTML"
+                hx-vals='{"source_cluster": {{ s.cluster_b }}, "target_cluster": {{ s.cluster_a }}}'
+                class="rounded-lg bg-gallery-card border border-gallery-border px-3 py-1.5 text-xs
+                       font-semibold text-gallery-text hover:border-gallery-accent hover:text-gallery-accent
+                       transition-colors cursor-pointer">
+          Merge clusters
+        </button>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Side B ─────────────────────────────────────────── #}
+    <div class="flex-1 min-w-0">
+      <div class="text-sm font-medium mb-2">
+        {% if s.name_b %}
+        <a href="/persons/{{ s.cluster_b }}" class="text-gallery-accent hover:underline">{{ s.name_b }}</a>
+        {% else %}
+        <a href="/clusters/{{ s.cluster_b }}" class="text-gallery-text hover:underline">Cluster #{{ s.cluster_b }}</a>
+        {% endif %}
+        <span class="text-gallery-muted text-xs">({{ s.size_b }} faces)</span>
+      </div>
+      <div class="flex gap-1 flex-wrap">
+        {% for fid in s.sample_face_ids_b %}
+        <img src="/api/faces/{{ fid }}/thumbnail?size=100"
+             class="w-16 h-16 rounded object-cover" loading="lazy" alt="face">
+        {% endfor %}
+      </div>
+    </div>
+
+  </div>
+</div>

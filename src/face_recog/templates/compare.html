@@ -1,96 +1,225 @@
 {% extends "base.html" %}
 {% block title %}Compare Persons{% endblock %}
 {% block content %}
-<h1>Compare Persons</h1>
+<div class="space-y-6">
 
-<form action="/compare" method="get" class="action-bar">
-  <select name="a">
-    <option value="">-- Person A --</option>
-    {% for p in persons %}
-    <option value="{{ p.id }}" {% if selected_a == p.id %}selected{% endif %}>{{ p.name }} ({{ p.face_count }})</option>
-    {% endfor %}
-  </select>
-  <span>vs</span>
-  <select name="b">
-    <option value="">-- Person B --</option>
-    {% for p in persons %}
-    <option value="{{ p.id }}" {% if selected_b == p.id %}selected{% endif %}>{{ p.name }} ({{ p.face_count }})</option>
-    {% endfor %}
-  </select>
-  <button type="submit" class="btn">Compare</button>
-</form>
+  {# ── Header ───────────────────────────────────────────────── #}
+  <h1 class="font-display text-2xl font-bold tracking-tight">Compare Persons</h1>
 
-{% if result %}
+  {# ── Picker form ──────────────────────────────────────────── #}
+  <form action="/compare" method="get"
+        class="flex flex-wrap items-center gap-3 rounded-xl border border-gallery-border
+               bg-gallery-card px-4 py-4">
+    <select name="a"
+            class="rounded-lg border border-gallery-border bg-gallery-bg px-3 py-2 text-sm text-gallery-text
+                   outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+      <option value="">-- Person A --</option>
+      {% for p in persons %}
+      <option value="{{ p.id }}" {% if selected_a == p.id %}selected{% endif %}>
+        {{ p.name }} ({{ p.face_count }})
+      </option>
+      {% endfor %}
+    </select>
 
-{% if result.swaps_a_to_b %}
-<h2>In {{ person_a.name }} but looks more like {{ person_b.name }} ({{ result.swaps_a_to_b|length }})</h2>
-<div class="select-bar" id="bar-atob">
-  <span id="count-atob">0</span> selected
-  <button class="btn" onclick="swapSelected('atob', {{ person_b.id }})">Move to {{ person_b.name }}</button>
-  <button class="btn btn-secondary" onclick="selectAll('atob')">Select all</button>
-</div>
-<div class="face-grid-large" id="grid-atob">
-  {% for face_id, sim_own, sim_other, path in result.swaps_a_to_b %}
-  <div class="face-thumb selectable" data-face-id="{{ face_id }}" onclick="toggleSel(this, 'atob')">
-    <img src="/api/faces/{{ face_id }}/thumbnail?size=180" loading="lazy" title="{{ path }}">
-    <div class="face-assign">
-      <span class="tag">{{ sim_own }}%</span> &rarr; <span class="sim-badge sim-high">{{ sim_other }}%</span>
+    <span class="text-gallery-muted text-sm font-medium">vs</span>
+
+    <select name="b"
+            class="rounded-lg border border-gallery-border bg-gallery-bg px-3 py-2 text-sm text-gallery-text
+                   outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+      <option value="">-- Person B --</option>
+      {% for p in persons %}
+      <option value="{{ p.id }}" {% if selected_b == p.id %}selected{% endif %}>
+        {{ p.name }} ({{ p.face_count }})
+      </option>
+      {% endfor %}
+    </select>
+
+    <button type="submit"
+            class="rounded-lg bg-gallery-accent px-4 py-2 text-sm font-medium text-gallery-bg
+                   transition-colors hover:bg-gallery-accent/80 cursor-pointer">
+      Compare
+    </button>
+  </form>
+
+  {% if result %}
+
+  {# ══════════════════════════════════════════════════════════════
+     Swap group A → B: faces in person_a that look more like person_b
+     ═══════════════════════════════════════════════════════════════ #}
+  {% if result.swaps_a_to_b %}
+  <div x-data="faceSelection()">
+
+    <h2 class="font-display text-lg font-semibold text-gallery-text mb-3">
+      In {{ person_a.name }} but looks more like {{ person_b.name }}
+      <span class="text-gallery-muted text-sm font-normal">({{ result.swaps_a_to_b|length }})</span>
+    </h2>
+
+    {# ── Selection bar ────────────────────────────────────────── #}
+    <div x-show="hasSelection"
+         x-cloak
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0 -translate-y-2"
+         x-transition:enter-end="opacity-100 translate-y-0"
+         x-transition:leave="transition ease-in duration-150"
+         x-transition:leave-start="opacity-100 translate-y-0"
+         x-transition:leave-end="opacity-0 -translate-y-2"
+         class="sticky top-14 z-40 mb-4 flex flex-wrap items-center gap-3 rounded-xl
+                border border-gallery-accent/30 bg-gallery-accent/10 backdrop-blur-sm
+                px-4 py-3 shadow-lg">
+      <span class="text-sm font-medium text-gallery-accent">
+        <span x-text="count"></span> selected
+      </span>
+
+      <div class="flex-1"></div>
+
+      <button @click="selectAll([{% for fid, _, _, _ in result.swaps_a_to_b %}{{ fid }}{% if not loop.last %},{% endif %}{% endfor %}])"
+              class="rounded-lg bg-gallery-card px-3 py-1.5 text-sm font-medium text-gallery-muted
+                     transition-colors hover:bg-gallery-card/80 hover:text-gallery-text cursor-pointer">
+        Select all
+      </button>
+      <button @click="clear()"
+              class="rounded-lg px-3 py-1.5 text-sm font-medium text-gallery-muted
+                     transition-colors hover:text-gallery-text cursor-pointer">
+        Clear
+      </button>
+      <button @click="
+                const faceIds = ids;
+                if (!faceIds.length) return;
+                fetch('/api/faces/swap', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ face_ids: faceIds, target_person_id: {{ person_b.id }} })
+                }).then(r => { if (r.ok) location.reload(); })"
+              class="rounded-lg bg-gallery-accent px-4 py-1.5 text-sm font-medium text-gallery-bg
+                     transition-colors hover:bg-gallery-accent/80 cursor-pointer">
+        Move to {{ person_b.name }}
+      </button>
     </div>
-  </div>
-  {% endfor %}
-</div>
-{% else %}
-<p class="photo-meta">No faces in {{ person_a.name }} look more like {{ person_b.name }}.</p>
-{% endif %}
 
-{% if result.swaps_b_to_a %}
-<h2>In {{ person_b.name }} but looks more like {{ person_a.name }} ({{ result.swaps_b_to_a|length }})</h2>
-<div class="select-bar" id="bar-btoa">
-  <span id="count-btoa">0</span> selected
-  <button class="btn" onclick="swapSelected('btoa', {{ person_a.id }})">Move to {{ person_a.name }}</button>
-  <button class="btn btn-secondary" onclick="selectAll('btoa')">Select all</button>
-</div>
-<div class="face-grid-large" id="grid-btoa">
-  {% for face_id, sim_own, sim_other, path in result.swaps_b_to_a %}
-  <div class="face-thumb selectable" data-face-id="{{ face_id }}" onclick="toggleSel(this, 'btoa')">
-    <img src="/api/faces/{{ face_id }}/thumbnail?size=180" loading="lazy" title="{{ path }}">
-    <div class="face-assign">
-      <span class="tag">{{ sim_own }}%</span> &rarr; <span class="sim-badge sim-high">{{ sim_other }}%</span>
+    {# ── Face grid ────────────────────────────────────────────── #}
+    <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
+      {% for face_id, sim_own, sim_other, path in result.swaps_a_to_b %}
+      <div class="relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150"
+           @click="toggle({{ face_id }})"
+           :class="selected.has({{ face_id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'"
+           title="{{ path }}">
+        <img src="/api/faces/{{ face_id }}/thumbnail?size=180"
+             loading="lazy"
+             alt="face"
+             class="aspect-square w-full object-cover">
+        {# Similarity comparison badge #}
+        <div class="absolute bottom-0 inset-x-0 bg-gallery-bg/80 backdrop-blur-sm px-1.5 py-1 text-center">
+          <span class="text-xs text-gallery-muted">{{ sim_own }}%</span>
+          <span class="text-xs text-gallery-muted mx-0.5">&rarr;</span>
+          <span class="text-xs font-semibold text-gallery-success">{{ sim_other }}%</span>
+        </div>
+        {# Selection checkmark overlay #}
+        <div x-show="selected.has({{ face_id }})" x-cloak
+             class="absolute inset-0 bg-gallery-accent/20 flex items-center justify-center pointer-events-none">
+          <svg class="w-8 h-8 text-gallery-accent drop-shadow-lg" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+          </svg>
+        </div>
+      </div>
+      {% endfor %}
     </div>
+
   </div>
-  {% endfor %}
+  {% else %}
+  <p class="text-gallery-muted text-sm">
+    No faces in {{ person_a.name }} look more like {{ person_b.name }}.
+  </p>
+  {% endif %}
+
+  {# ══════════════════════════════════════════════════════════════
+     Swap group B → A: faces in person_b that look more like person_a
+     ═══════════════════════════════════════════════════════════════ #}
+  {% if result.swaps_b_to_a %}
+  <div x-data="faceSelection()">
+
+    <h2 class="font-display text-lg font-semibold text-gallery-text mb-3">
+      In {{ person_b.name }} but looks more like {{ person_a.name }}
+      <span class="text-gallery-muted text-sm font-normal">({{ result.swaps_b_to_a|length }})</span>
+    </h2>
+
+    {# ── Selection bar ────────────────────────────────────────── #}
+    <div x-show="hasSelection"
+         x-cloak
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0 -translate-y-2"
+         x-transition:enter-end="opacity-100 translate-y-0"
+         x-transition:leave="transition ease-in duration-150"
+         x-transition:leave-start="opacity-100 translate-y-0"
+         x-transition:leave-end="opacity-0 -translate-y-2"
+         class="sticky top-14 z-40 mb-4 flex flex-wrap items-center gap-3 rounded-xl
+                border border-gallery-accent/30 bg-gallery-accent/10 backdrop-blur-sm
+                px-4 py-3 shadow-lg">
+      <span class="text-sm font-medium text-gallery-accent">
+        <span x-text="count"></span> selected
+      </span>
+
+      <div class="flex-1"></div>
+
+      <button @click="selectAll([{% for fid, _, _, _ in result.swaps_b_to_a %}{{ fid }}{% if not loop.last %},{% endif %}{% endfor %}])"
+              class="rounded-lg bg-gallery-card px-3 py-1.5 text-sm font-medium text-gallery-muted
+                     transition-colors hover:bg-gallery-card/80 hover:text-gallery-text cursor-pointer">
+        Select all
+      </button>
+      <button @click="clear()"
+              class="rounded-lg px-3 py-1.5 text-sm font-medium text-gallery-muted
+                     transition-colors hover:text-gallery-text cursor-pointer">
+        Clear
+      </button>
+      <button @click="
+                const faceIds = ids;
+                if (!faceIds.length) return;
+                fetch('/api/faces/swap', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ face_ids: faceIds, target_person_id: {{ person_a.id }} })
+                }).then(r => { if (r.ok) location.reload(); })"
+              class="rounded-lg bg-gallery-accent px-4 py-1.5 text-sm font-medium text-gallery-bg
+                     transition-colors hover:bg-gallery-accent/80 cursor-pointer">
+        Move to {{ person_a.name }}
+      </button>
+    </div>
+
+    {# ── Face grid ────────────────────────────────────────────── #}
+    <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
+      {% for face_id, sim_own, sim_other, path in result.swaps_b_to_a %}
+      <div class="relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150"
+           @click="toggle({{ face_id }})"
+           :class="selected.has({{ face_id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'"
+           title="{{ path }}">
+        <img src="/api/faces/{{ face_id }}/thumbnail?size=180"
+             loading="lazy"
+             alt="face"
+             class="aspect-square w-full object-cover">
+        {# Similarity comparison badge #}
+        <div class="absolute bottom-0 inset-x-0 bg-gallery-bg/80 backdrop-blur-sm px-1.5 py-1 text-center">
+          <span class="text-xs text-gallery-muted">{{ sim_own }}%</span>
+          <span class="text-xs text-gallery-muted mx-0.5">&rarr;</span>
+          <span class="text-xs font-semibold text-gallery-success">{{ sim_other }}%</span>
+        </div>
+        {# Selection checkmark overlay #}
+        <div x-show="selected.has({{ face_id }})" x-cloak
+             class="absolute inset-0 bg-gallery-accent/20 flex items-center justify-center pointer-events-none">
+          <svg class="w-8 h-8 text-gallery-accent drop-shadow-lg" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+          </svg>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+  </div>
+  {% else %}
+  <p class="text-gallery-muted text-sm">
+    No faces in {{ person_b.name }} look more like {{ person_a.name }}.
+  </p>
+  {% endif %}
+
+  {% endif %}
+
 </div>
-{% else %}
-<p class="photo-meta">No faces in {{ person_b.name }} look more like {{ person_a.name }}.</p>
-{% endif %}
-
-<script>
-function toggleSel(el, group) {
-  el.classList.toggle('selected');
-  const count = document.querySelectorAll('#grid-' + group + ' .selected').length;
-  document.getElementById('count-' + group).textContent = count;
-  document.getElementById('bar-' + group).style.display = count > 0 ? 'flex' : 'none';
-}
-
-function selectAll(group) {
-  document.querySelectorAll('#grid-' + group + ' .face-thumb').forEach(el => el.classList.add('selected'));
-  const count = document.querySelectorAll('#grid-' + group + ' .selected').length;
-  document.getElementById('count-' + group).textContent = count;
-  document.getElementById('bar-' + group).style.display = count > 0 ? 'flex' : 'none';
-}
-
-async function swapSelected(group, targetPersonId) {
-  const ids = [...document.querySelectorAll('#grid-' + group + ' .selected')]
-    .map(el => Number(el.dataset.faceId));
-  if (!ids.length) return;
-  const resp = await fetch('/api/faces/swap', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({face_ids: ids, target_person_id: targetPersonId})
-  });
-  if (resp.ok) location.reload();
-}
-</script>
-
-{% endif %}
 {% endblock %}

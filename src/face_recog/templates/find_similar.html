@@ -1,70 +1,130 @@
 {% extends "base.html" %}
 {% block title %}Find similar — {{ person.name }}{% endblock %}
 {% block content %}
-<h1>Find similar faces for {{ person.name }}</h1>
-<p class="photo-meta">
-  Showing unclustered faces with similarity &ge; {{ min_sim }}%.
-  <a href="/persons/{{ person.id }}/find-similar?min_sim=40">40%</a> |
-  <a href="/persons/{{ person.id }}/find-similar?min_sim=50">50%</a> |
-  <a href="/persons/{{ person.id }}/find-similar?min_sim=55">55%</a> |
-  <a href="/persons/{{ person.id }}/find-similar?min_sim=60">60%</a> |
-  <a href="/persons/{{ person.id }}/find-similar?min_sim=70">70%</a>
-</p>
+{# All face IDs for selectAll — tuples lack named attrs so we build the array manually #}
+<div x-data="faceSelection()" x-init="selectAll([{% for fid, _ in candidates %}{{ fid }}{% if not loop.last %},{% endif %}{% endfor %}])">
 
-{% if not candidates %}
-<p class="empty">No similar unclustered faces found above {{ min_sim }}%.</p>
-{% else %}
-
-<div class="select-bar" id="select-bar">
-  <button class="btn" onclick="claimAll()">Claim all {{ candidates|length }} faces</button>
-  <button class="btn btn-secondary" onclick="claimSelected()">Claim selected (<span id="select-count">0</span>)</button>
-</div>
-
-<div class="face-grid-large">
-  {% for face_id, sim in candidates %}
-  <div class="face-thumb selectable selected" data-face-id="{{ face_id }}" onclick="toggleSelect(this)">
-    <img src="/api/faces/{{ face_id }}/thumbnail?size=180" loading="lazy" alt="face">
-    <div class="face-assign">
-      <span class="sim-badge {% if sim >= 60 %}sim-high{% elif sim >= 50 %}sim-medium{% endif %}">{{ sim }}%</span>
+  {# ── Header + back link ──────────────────────────────────── #}
+  <div class="mb-6">
+    <div class="flex items-center gap-3">
+      <a href="/persons/{{ person.id }}"
+         class="text-gallery-muted hover:text-gallery-text transition-colors">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+        </svg>
+      </a>
+      <h1 class="text-2xl font-bold font-display text-gallery-text">
+        Find similar &mdash; {{ person.name }}
+      </h1>
     </div>
   </div>
-  {% endfor %}
+
+  {# ── Similarity filter pills ─────────────────────────────── #}
+  <div class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-baseline sm:justify-between">
+    <p class="text-gallery-muted text-sm">
+      Showing unclustered faces with similarity &ge; {{ min_sim }}%.
+    </p>
+
+    <div class="flex items-center gap-1 text-sm">
+      <span class="text-gallery-muted mr-1">Min similarity:</span>
+      {% for t in [40, 50, 55, 60, 70] %}
+      <a href="/persons/{{ person.id }}/find-similar?min_sim={{ t }}"
+         class="rounded-full px-3 py-1 transition-colors
+                {% if min_sim == t %}bg-gallery-accent text-gallery-bg font-semibold
+                {% else %}bg-gallery-card text-gallery-muted hover:text-gallery-text{% endif %}">
+        {{ t }}%
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if not candidates %}
+  {# ── Empty state ──────────────────────────────────────────── #}
+  <div class="flex flex-col items-center justify-center py-16 text-center">
+    <svg class="w-12 h-12 text-gallery-muted/50 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/>
+    </svg>
+    <p class="text-gallery-muted text-sm">
+      No similar unclustered faces found above {{ min_sim }}%.
+    </p>
+  </div>
+
+  {% else %}
+
+  {# ── Sticky action bar ───────────────────────────────────── #}
+  <div class="sticky top-14 z-40 mb-4 flex flex-wrap items-center gap-3 rounded-xl
+              border border-gallery-accent/30 bg-gallery-accent/10 backdrop-blur-sm
+              px-4 py-3 shadow-lg">
+    <span class="text-sm font-medium text-gallery-accent">
+      <span x-text="count"></span> / {{ candidates|length }} selected
+    </span>
+
+    <div class="flex-1"></div>
+
+    <button @click="selectAll([{% for fid, _ in candidates %}{{ fid }}{% if not loop.last %},{% endif %}{% endfor %}])"
+            class="rounded-lg bg-gallery-card px-3 py-1.5 text-sm font-medium text-gallery-muted
+                   transition-colors hover:bg-gallery-card/80 hover:text-gallery-text cursor-pointer">
+      Select all
+    </button>
+    <button @click="clear()"
+            class="rounded-lg px-3 py-1.5 text-sm font-medium text-gallery-muted
+                   transition-colors hover:text-gallery-text cursor-pointer">
+      Clear
+    </button>
+    <button @click="
+              const faceIds = ids;
+              if (!faceIds.length) return;
+              fetch('/api/persons/{{ person.id }}/claim-faces', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ face_ids: faceIds })
+              }).then(r => { if (r.ok) location.href = '/persons/{{ person.id }}'; })"
+            class="rounded-lg bg-gallery-accent px-4 py-1.5 text-sm font-medium text-gallery-bg
+                   transition-colors hover:bg-gallery-accent/80 cursor-pointer">
+      Claim selected
+    </button>
+  </div>
+
+  {# ── Face grid ────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
+    {% for face_id, sim in candidates %}
+    <div class="relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150"
+         @click="toggle({{ face_id }})"
+         :class="selected.has({{ face_id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'">
+      <img src="/api/faces/{{ face_id }}/thumbnail?size=180"
+           loading="lazy"
+           alt="face"
+           class="aspect-square w-full object-cover">
+      {# Similarity badge — color-coded #}
+      <div class="absolute bottom-0 inset-x-0 px-1.5 py-1 text-center">
+        <span class="inline-block rounded-full px-2 py-0.5 text-xs font-semibold
+                     {% if sim >= 60 %}bg-gallery-success/80 text-white
+                     {% elif sim >= 50 %}bg-amber-500/80 text-white
+                     {% else %}bg-gallery-card/80 text-gallery-muted{% endif %}">
+          {{ sim }}%
+        </span>
+      </div>
+      {# Selection checkmark overlay #}
+      <div x-show="selected.has({{ face_id }})" x-cloak
+           class="absolute inset-0 bg-gallery-accent/20 flex items-center justify-center pointer-events-none">
+        <svg class="w-8 h-8 text-gallery-accent drop-shadow-lg" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+        </svg>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% endif %}
+
+  {# ── Back link ────────────────────────────────────────────── #}
+  <div class="mt-8">
+    <a href="/persons/{{ person.id }}"
+       class="text-gallery-muted text-sm hover:text-gallery-accent transition-colors">
+      &larr; Back to {{ person.name }}
+    </a>
+  </div>
+
 </div>
-{% endif %}
-
-<p><a href="/persons/{{ person.id }}">&larr; Back to {{ person.name }}</a></p>
-
-<script>
-function toggleSelect(el) {
-  el.classList.toggle('selected');
-  document.getElementById('select-count').textContent =
-    document.querySelectorAll('.face-thumb.selected').length;
-}
-
-async function claimSelected() {
-  const ids = [...document.querySelectorAll('.face-thumb.selected')].map(el => Number(el.dataset.faceId));
-  if (!ids.length) return;
-  const resp = await fetch('/api/persons/{{ person.id }}/claim-faces', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({face_ids: ids})
-  });
-  if (resp.ok) location.href = '/persons/{{ person.id }}';
-}
-
-async function claimAll() {
-  const ids = [...document.querySelectorAll('.face-thumb')].map(el => Number(el.dataset.faceId));
-  if (!ids.length) return;
-  const resp = await fetch('/api/persons/{{ person.id }}/claim-faces', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({face_ids: ids})
-  });
-  if (resp.ok) location.href = '/persons/{{ person.id }}';
-}
-
-// Initialize count
-document.getElementById('select-count').textContent =
-  document.querySelectorAll('.face-thumb.selected').length;
-</script>
 {% endblock %}

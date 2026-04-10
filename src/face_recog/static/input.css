@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+@source "../../templates/**/*.html";
+
+/* --- Dark gallery theme --- */
+@theme {
+  --color-gallery-bg: #0f1114;
+  --color-gallery-card: #1a1d23;
+  --color-gallery-accent: #d4a574;
+  --color-gallery-text: #e8e4df;
+  --color-gallery-muted: #6b7280;
+  --color-gallery-border: #2a2d35;
+  --color-gallery-success: #4ade80;
+  --color-gallery-danger: #ef4444;
+
+  --font-display: "DM Sans", sans-serif;
+  --font-body: "DM Sans", sans-serif;
+}
+
+/* --- Alpine.js cloak: hide elements until Alpine initialises --- */
+[x-cloak] {
+  display: none !important;
+}
+
+/* --- htmx loading indicator --- */
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 200ms ease-in;
+}
+
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}

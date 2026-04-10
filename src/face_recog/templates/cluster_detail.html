@@ -1,142 +1,179 @@
 {% extends "base.html" %}
 {% block title %}Cluster #{{ cluster_id }}{% endblock %}
 {% block content %}
-<h1>Cluster #{{ cluster_id }} <span class="subtitle">({{ total }} faces{% if total > faces|length %}, showing {{ faces|length }}{% endif %})</span></h1>
+<div x-data="faceSelection()">
 
-<div class="action-bar">
-  <form id="assign-form" method="post" class="inline-form">
-    <select name="person_id" id="person-select" onchange="toggleNewName()">
-      {% for pid, name, count, sim in ranked_persons %}
-      <option value="{{ pid }}">{{ name }} ({{ count }}) — {{ sim }}%</option>
-      {% endfor %}
-      <option value="__new__">+ Create new {{ 'pet' if is_pet else 'person' }}</option>
-    </select>
-    <input type="text" name="name" id="new-name-input" placeholder="Name..." style="display:none">
-    <button type="submit" class="btn">Assign</button>
-  </form>
-  <button class="btn btn-danger" onclick="dismissCluster()" style="margin-left:auto">Dismiss entire cluster</button>
-</div>
-
-<script>
-function toggleNewName() {
-  const sel = document.getElementById('person-select');
-  const inp = document.getElementById('new-name-input');
-  if (sel.value === '__new__') {
-    inp.style.display = '';
-    inp.required = true;
-    inp.focus();
-  } else {
-    inp.style.display = 'none';
-    inp.required = false;
-    inp.value = '';
-  }
-}
-
-document.getElementById('assign-form').addEventListener('submit', function(e) {
-  e.preventDefault();
-  const sel = document.getElementById('person-select');
-  const inp = document.getElementById('new-name-input');
-  if (sel.value === '__new__') {
-    if (!inp.value.trim()) return;
-    this.action = '/api/clusters/{{ cluster_id }}/name';
-  } else {
-    this.action = '/api/clusters/{{ cluster_id }}/assign';
-  }
-  this.submit();
-});
-</script>
-
-<div class="select-bar" id="select-bar" style="display:none;">
-  <span id="select-count">0</span> selected
-  <button class="btn btn-danger" onclick="excludeSelected()">Exclude from cluster</button>
-  <button class="btn btn-danger" onclick="dismissSelected()" style="background:#86868b">Not a face</button>
-  <button class="btn btn-secondary" onclick="clearSelection()">Cancel</button>
-</div>
-
-<p class="photo-meta">Click faces to select them for exclusion.</p>
-
-<div class="face-grid-large">
-  {% for face in faces %}
-  <div class="face-thumb selectable" data-face-id="{{ face.id }}" onclick="toggleSelect(this)">
-    <img src="/api/faces/{{ face.id }}/thumbnail?size=180" loading="lazy" alt="face" title="{{ face_paths.get(face.id, '') }}">
+  <!-- Page heading -->
+  <div class="mb-6">
+    <div class="flex items-center gap-3">
+      <a href="/clusters{% if is_pet %}?species=pet{% endif %}"
+         class="text-gallery-muted hover:text-gallery-text transition-colors">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+        </svg>
+      </a>
+      <h1 class="text-2xl font-bold font-display text-gallery-text">
+        Cluster #{{ cluster_id }}
+      </h1>
+      <span class="text-gallery-muted text-sm">
+        ({{ total }} face{{ 's' if total != 1 else '' }}{% if total > faces|length %}, showing {{ faces|length }}{% endif %})
+      </span>
+    </div>
   </div>
-  {% endfor %}
+
+  <!-- Assign form -->
+  <div class="mb-6 flex flex-wrap items-start gap-3" x-data="{ createNew: {{ 'true' if not ranked_persons else 'false' }}, personId: '{{ ranked_persons[0][0] if ranked_persons else '__new__' }}' }">
+    <form class="flex flex-wrap items-center gap-2"
+          @submit.prevent="
+            const isNew = personId === '__new__';
+            if (isNew && !$refs.newNameInput.value.trim()) { $refs.newNameInput.focus(); return; }
+            const fd = new FormData();
+            if (isNew) { fd.append('name', $refs.newNameInput.value.trim()); }
+            else { fd.append('person_id', personId); }
+            const url = isNew
+              ? '/api/clusters/{{ cluster_id }}/name'
+              : '/api/clusters/{{ cluster_id }}/assign';
+            fetch(url, { method: 'POST', body: fd, redirect: 'follow' })
+              .then(r => { if (r.ok) location.href = r.url; })
+          ">
+      <select name="person_id"
+              x-model="personId"
+              @change="createNew = (personId === '__new__')"
+              class="rounded-lg border border-gallery-border bg-gallery-card px-3 py-2 text-sm text-gallery-text
+                     outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+        {% for pid, name, count, sim in ranked_persons %}
+        <option value="{{ pid }}">{{ name }} ({{ count }}) &mdash; {{ sim }}%</option>
+        {% endfor %}
+        <option value="__new__">+ Create new {{ 'pet' if is_pet else 'person' }}</option>
+      </select>
+      <input type="text"
+             x-show="createNew"
+             x-cloak
+             x-ref="newNameInput"
+             placeholder="Name..."
+             class="rounded-lg border border-gallery-border bg-gallery-card px-3 py-2 text-sm text-gallery-text
+                    placeholder-gallery-muted outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+      <button type="submit"
+              class="rounded-lg bg-gallery-accent px-4 py-2 text-sm font-medium text-gallery-bg
+                     transition-colors hover:bg-gallery-accent/80 cursor-pointer">
+        Assign
+      </button>
+    </form>
+
+    <div class="flex-1"></div>
+
+    <!-- Dismiss entire cluster -->
+    <button @click="if (confirm('Dismiss all {{ total }} faces in this cluster as non-faces?'))
+                      fetch('/api/clusters/{{ cluster_id }}/dismiss', { method: 'POST' })
+                        .then(r => { if (r.ok) location.href = '/clusters{% if is_pet %}?species=pet{% endif %}'; })"
+            class="rounded-lg border border-gallery-danger/30 px-4 py-2 text-sm font-medium text-gallery-danger
+                   transition-colors hover:bg-gallery-danger/10 cursor-pointer">
+      Dismiss entire cluster
+    </button>
+  </div>
+
+  <!-- Selection bar (sticky, amber-themed) -->
+  <div x-show="hasSelection"
+       x-cloak
+       x-transition:enter="transition ease-out duration-200"
+       x-transition:enter-start="opacity-0 -translate-y-2"
+       x-transition:enter-end="opacity-100 translate-y-0"
+       x-transition:leave="transition ease-in duration-150"
+       x-transition:leave-start="opacity-100 translate-y-0"
+       x-transition:leave-end="opacity-0 -translate-y-2"
+       class="sticky top-14 z-40 mb-4 flex flex-wrap items-center gap-3 rounded-xl
+              border border-gallery-accent/30 bg-gallery-accent/10 backdrop-blur-sm
+              px-4 py-3 shadow-lg">
+    <span class="text-sm font-medium text-gallery-accent">
+      <span x-text="count"></span> selected
+    </span>
+
+    <div class="flex-1"></div>
+
+    <button @click="
+              const faceIds = ids;
+              if (!faceIds.length) return;
+              fetch('/api/faces/exclude', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ face_ids: faceIds, cluster_id: {{ cluster_id }} })
+              }).then(r => { if (r.ok) location.reload(); })"
+            class="rounded-lg bg-gallery-danger/20 px-3 py-1.5 text-sm font-medium text-gallery-danger
+                   transition-colors hover:bg-gallery-danger/30 cursor-pointer">
+      Exclude from cluster
+    </button>
+    <button @click="
+              const faceIds = ids;
+              if (!faceIds.length || !confirm('Permanently dismiss ' + faceIds.length + ' as non-faces?')) return;
+              fetch('/api/faces/dismiss', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ face_ids: faceIds })
+              }).then(r => { if (r.ok) location.reload(); })"
+            class="rounded-lg bg-gallery-card px-3 py-1.5 text-sm font-medium text-gallery-muted
+                   transition-colors hover:bg-gallery-card/80 hover:text-gallery-text cursor-pointer">
+      Not a face
+    </button>
+    <button @click="clear()"
+            class="rounded-lg px-3 py-1.5 text-sm font-medium text-gallery-muted
+                   transition-colors hover:text-gallery-text cursor-pointer">
+      Cancel
+    </button>
+  </div>
+
+  <p class="text-gallery-muted text-sm mb-4">
+    Click faces to select them for exclusion. Click thumbnails to view full photo.
+  </p>
+
+  <!-- Face grid with htmx infinite scroll -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
+    {% for face in faces %}
+    <div class="group relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150"
+         @click="toggle({{ face.id }})"
+         :class="selected.has({{ face.id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'">
+      <img src="/api/faces/{{ face.id }}/thumbnail?size=180"
+           loading="lazy"
+           alt="face"
+           title="{{ face_paths.get(face.id, '') }}"
+           @click.stop="$store.lightbox.show({{ face.photo_id }})"
+           class="aspect-square w-full object-cover">
+      <!-- Remove single face button (visible on hover) -->
+      <button @click.stop="if(confirm('Remove this face from cluster?'))
+                fetch('/api/faces/exclude', {
+                  method: 'POST', headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({face_ids: [{{ face.id }}], cluster_id: {{ cluster_id }}})
+                }).then(r => { if(r.ok) $el.closest('.group').remove() })"
+              class="absolute top-1 right-1 z-10 hidden group-hover:flex h-6 w-6 items-center justify-center
+                     rounded-full bg-black/60 text-gallery-text transition-colors hover:bg-gallery-danger hover:text-white"
+              title="Remove from cluster">
+        <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+        </svg>
+      </button>
+      <!-- Selection checkmark overlay -->
+      <div x-show="selected.has({{ face.id }})" x-cloak
+           class="absolute inset-0 bg-gallery-accent/20 flex items-center justify-center pointer-events-none">
+        <svg class="w-8 h-8 text-gallery-accent drop-shadow-lg" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+        </svg>
+      </div>
+    </div>
+    {% endfor %}
+    {% if total > faces|length %}
+    <div hx-get="/api/clusters/{{ cluster_id }}/faces-html?offset={{ faces|length }}&limit=200"
+         hx-trigger="revealed"
+         hx-swap="outerHTML"
+         class="col-span-full flex justify-center py-8">
+      <div class="flex items-center gap-2 text-gallery-muted text-sm">
+        <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+        <span>Loading more faces...</span>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
 </div>
-
-<script>
-function toggleSelect(el) {
-  el.classList.toggle('selected');
-  const count = document.querySelectorAll('.face-thumb.selected').length;
-  document.getElementById('select-count').textContent = count;
-  document.getElementById('select-bar').style.display = count > 0 ? 'flex' : 'none';
-}
-
-function clearSelection() {
-  document.querySelectorAll('.face-thumb.selected').forEach(el => el.classList.remove('selected'));
-  document.getElementById('select-bar').style.display = 'none';
-}
-
-async function excludeSelected() {
-  const ids = [...document.querySelectorAll('.face-thumb.selected')].map(el => el.dataset.faceId);
-  if (!ids.length) return;
-  const resp = await fetch('/api/faces/exclude', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({face_ids: ids.map(Number), cluster_id: {{ cluster_id }}})
-  });
-  if (resp.ok) location.reload();
-}
-
-async function dismissCluster() {
-  if (!confirm('Dismiss all ' + {{ total }} + ' faces in this cluster as non-faces?')) return;
-  const resp = await fetch('/api/clusters/{{ cluster_id }}/dismiss', {method: 'POST'});
-  if (resp.ok) location.href = '/clusters{% if is_pet %}?species=pet{% endif %}';
-}
-
-async function dismissSelected() {
-  const ids = [...document.querySelectorAll('.face-thumb.selected')].map(el => el.dataset.faceId);
-  if (!ids.length) return;
-  if (!confirm('Permanently dismiss ' + ids.length + ' as non-faces?')) return;
-  const resp = await fetch('/api/faces/dismiss', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({face_ids: ids.map(Number)})
-  });
-  if (resp.ok) location.reload();
-}
-
-// Infinite scroll
-(function() {
-  const grid = document.querySelector('.face-grid-large');
-  let offset = {{ faces|length }};
-  const total = {{ total }};
-  let loading = false;
-
-  function addFace(face) {
-    const div = document.createElement('div');
-    div.className = 'face-thumb selectable';
-    div.dataset.faceId = face.id;
-    div.onclick = function() { toggleSelect(this); };
-    div.innerHTML = '<img src="/api/faces/' + face.id + '/thumbnail?size=180" loading="lazy" alt="face">';
-    grid.appendChild(div);
-  }
-
-  async function loadMore() {
-    if (loading || offset >= total) return;
-    loading = true;
-    const resp = await fetch('/api/clusters/{{ cluster_id }}/faces?offset=' + offset + '&limit=200');
-    const faces = await resp.json();
-    faces.forEach(addFace);
-    offset += faces.length;
-    if (faces.length === 0) offset = total;
-    loading = false;
-  }
-
-  window.addEventListener('scroll', function() {
-    if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) {
-      loadMore();
-    }
-  });
-})();
-</script>
 {% endblock %}

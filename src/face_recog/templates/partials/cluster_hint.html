@@ -1,0 +1,15 @@
+{# Cluster hint partial — returned by /api/clusters/{id}/hint-html #}
+{% if hint and hint.name %}
+<form hx-post="/api/clusters/{{ cluster_id }}/assign"
+      hx-target="closest .cluster-card"
+      hx-swap="outerHTML"
+      class="flex">
+  <input type="hidden" name="person_id" value="{{ hint.person_id }}">
+  <button type="submit"
+          class="w-full cursor-pointer rounded-b-xl bg-gallery-accent px-3 py-2 text-sm font-medium
+                 text-gallery-bg transition-colors hover:bg-gallery-accent/80"
+          onclick="event.stopPropagation()">
+    {{ hint.name }} {{ hint.sim }}% &mdash; assign
+  </button>
+</form>
+{% endif %}
