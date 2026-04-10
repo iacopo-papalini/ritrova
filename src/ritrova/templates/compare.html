@@ -10,39 +10,28 @@
   </div>
 
   {# ── Picker form ──────────────────────────────────────────── #}
-  <form action="/compare" method="get"
-        class="flex flex-wrap items-center gap-3 rounded-xl border border-gallery-border
-               bg-gallery-card px-4 py-4">
-    <select name="a"
-            class="rounded-lg border border-gallery-border bg-gallery-bg px-3 py-2 text-sm text-gallery-text
-                   outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
-      <option value="">-- Person A --</option>
-      {% for p in persons %}
-      <option value="{{ p.id }}" {% if selected_a == p.id %}selected{% endif %}>
-        {{ p.name }} ({{ p.face_count }})
-      </option>
-      {% endfor %}
-    </select>
+  <div x-data="{ pickedA: {{ selected_a or 'null' }}, pickedB: {{ selected_b or 'null' }} }"
+       class="flex flex-wrap items-center gap-3 rounded-xl border border-gallery-border
+              bg-gallery-card px-4 py-4">
+    <div class="w-48" x-data="personPicker({ onSelect(p) { pickedA = p.id; } })">
+      {% include "partials/person_picker.html" %}
+    </div>
 
     <span class="text-gallery-muted text-sm font-medium">vs</span>
 
-    <select name="b"
-            class="rounded-lg border border-gallery-border bg-gallery-bg px-3 py-2 text-sm text-gallery-text
-                   outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
-      <option value="">-- Person B --</option>
-      {% for p in persons %}
-      <option value="{{ p.id }}" {% if selected_b == p.id %}selected{% endif %}>
-        {{ p.name }} ({{ p.face_count }})
-      </option>
-      {% endfor %}
-    </select>
+    <div class="w-48" x-data="personPicker({ onSelect(p) { pickedB = p.id; } })">
+      {% include "partials/person_picker.html" %}
+    </div>
 
-    <button type="submit"
+    <button @click="if (pickedA && pickedB && pickedA !== pickedB)
+                      location.href = '/{{ kind }}/compare?a=' + pickedA + '&b=' + pickedB"
+            :disabled="!pickedA || !pickedB || pickedA === pickedB"
             class="rounded-lg bg-gallery-accent px-4 py-2 text-sm font-medium text-gallery-bg
-                   transition-colors hover:bg-gallery-accent/80 cursor-pointer">
+                   transition-colors hover:bg-gallery-accent/80 cursor-pointer
+                   disabled:opacity-40 disabled:cursor-not-allowed">
       Compare
     </button>
-  </form>
+  </div>
 
   {% if result %}
 

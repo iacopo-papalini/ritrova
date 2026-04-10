@@ -68,7 +68,8 @@ document.addEventListener('alpine:init', () => {
       } else {
         this.query = person.name;
         this.open = false;
-        if (opts.onSelect) opts.onSelect(person);
+        if (opts.onSelect) opts.onSelect.call(this, person);
+        this.$dispatch('person-selected', person);
       }
     },
 

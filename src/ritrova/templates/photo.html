@@ -93,29 +93,16 @@
 
         {% else %}
         {# ── Unassigned face ───────────────────────────────── #}
-        <form @submit.prevent="
-                const personId = $el.querySelector('select').value;
-                if (!personId) return;
-                const fd = new FormData();
-                fd.append('person_id', personId);
-                fetch('/api/faces/{{ face.id }}/assign', { method: 'POST', body: fd })
-                  .then(r => { if (r.ok) location.reload(); })"
-              class="flex items-center gap-2">
-          <select name="person_id"
-                  class="flex-1 min-w-0 rounded-lg border border-gallery-border bg-gallery-bg px-2 py-1.5 text-sm
-                         text-gallery-text outline-none focus:border-gallery-accent
-                         focus:ring-1 focus:ring-gallery-accent/30">
-            <option value="">-- assign --</option>
-            {% for p in persons %}
-            <option value="{{ p.id }}">{{ p.name }}</option>
-            {% endfor %}
-          </select>
-          <button type="submit"
-                  class="shrink-0 rounded-lg bg-gallery-accent px-3 py-1.5 text-sm font-medium text-gallery-bg
-                         transition-colors hover:bg-gallery-accent/80 cursor-pointer">
-            OK
-          </button>
-        </form>
+        <div x-data="personPicker({
+               onSelect(person) {
+                 const fd = new FormData();
+                 fd.append('person_id', person.id);
+                 fetch('/api/faces/{{ face.id }}/assign', { method: 'POST', body: fd })
+                   .then(r => { if (r.ok) location.reload(); });
+               }
+             })">
+          {% include "partials/person_picker.html" %}
+        </div>
         {% endif %}
       </div>
       {% endfor %}

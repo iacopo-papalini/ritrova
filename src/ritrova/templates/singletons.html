@@ -1,7 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Singles{% endblock %}
 {% block content %}
-<div x-data="faceSelection()">
+<div x-data="faceSelection()"
+     @person-selected="
+       const person = $event.detail;
+       const faceIds = ids;
+       if (!faceIds.length) return;
+       fetch('/api/persons/' + person.id + '/claim-faces', {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ face_ids: faceIds })
+       }).then(r => { if (r.ok) location.reload(); })"
 
   <!-- Page heading -->
   <div class="mb-6">
@@ -42,29 +51,10 @@
 
     <div class="flex-1"></div>
 
-    <!-- Assign to person -->
-    <select x-ref="assignPerson"
-            class="rounded-lg border border-gallery-border bg-gallery-card px-3 py-1.5 text-sm text-gallery-text
-                   outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
-      <option value="">-- assign to --</option>
-      {% for p in persons %}
-      <option value="{{ p.id }}">{{ p.name }} ({{ p.face_count }})</option>
-      {% endfor %}
-    </select>
-    <button @click="
-              const personId = $refs.assignPerson.value;
-              if (!personId) return;
-              const faceIds = ids;
-              if (!faceIds.length) return;
-              fetch('/api/persons/' + personId + '/claim-faces', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ face_ids: faceIds })
-              }).then(r => { if (r.ok) location.reload(); })"
-            class="rounded-lg bg-gallery-accent px-3 py-1.5 text-sm font-medium text-gallery-bg
-                   transition-colors hover:bg-gallery-accent/80 cursor-pointer">
-      Assign
-    </button>
+    <!-- Assign to person (typeahead) -->
+    <div class="w-56" x-data="personPicker()">
+      {% include "partials/person_picker.html" %}
+    </div>
     <button @click="
               const faceIds = ids;
               if (!faceIds.length || !confirm('Dismiss ' + faceIds.length + ' as non-faces?')) return;
