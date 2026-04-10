@@ -437,7 +437,12 @@ def rank_persons_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, str
     return results
 
 
-def find_similar_cluster(db: FaceDB, person_id: int, min_similarity: float = 0.35) -> int | None:
+def find_similar_cluster(
+    db: FaceDB,
+    person_id: int,
+    min_similarity: float = 0.35,
+    species: str = "human",
+) -> int | None:
     """Find the unnamed cluster most similar to a person. Returns cluster_id or None."""
     person_faces = db.get_person_faces(person_id, limit=500)
     if not person_faces:
@@ -448,7 +453,7 @@ def find_similar_cluster(db: FaceDB, person_id: int, min_similarity: float = 0.3
     best_cluster = None
     best_sim = min_similarity
 
-    for cluster in db.get_unnamed_clusters():
+    for cluster in db.get_unnamed_clusters(species=species):
         faces = db.get_cluster_faces(cluster["cluster_id"], limit=100)
         if not faces:
             continue

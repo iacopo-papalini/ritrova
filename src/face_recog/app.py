@@ -2,6 +2,8 @@
 
 import io
 import json
+import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from fastapi import Body, FastAPI, Form, HTTPException, Request
@@ -25,6 +27,34 @@ from .services import (
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
+
+_DATE_RE = re.compile(r"(\d{4})-(\d{2})")
+
+
+def _month_from_path(file_path: str) -> str:
+    """Extract YYYY-MM from directory names in a photo path (most reliable date source)."""
+    for part in reversed(Path(file_path).parts):
+        m = _DATE_RE.search(part)
+        if m:
+            return f"{m.group(1)}-{m.group(2)}"
+    return "Unknown"
+
+
+def _group_by_month(
+    items: Sequence[tuple[object, str]], key: str = "items"
+) -> list[dict[str, str | list[object]]]:
+    """Group (item, file_path) pairs by month extracted from path."""
+    groups: list[dict[str, str | list[object]]] = []
+    current_month = None
+    for item, path in items:
+        month = _month_from_path(path)
+        if month != current_month:
+            current_month = month
+            groups.append({"month": month, key: []})
+        last = groups[-1][key]
+        assert isinstance(last, list)
+        last.append(item)
+    return groups
 
 
 def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
@@ -146,16 +176,23 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         person = db.get_person(person_id)
         if not person:
             raise HTTPException(404, "Person not found")
-        faces = db.get_person_faces(person_id, limit=200)
+        faces_with_paths = db.get_person_faces_with_paths(person_id, limit=200)
+        faces = [f for f, _ in faces_with_paths]
+        face_groups = _group_by_month(faces_with_paths, key="faces")
         photos = db.get_person_photos(person_id)
+        photo_groups = _group_by_month([(p, p.file_path) for p in photos], key="photos")
         all_persons = db.get_persons()
+        species = "pet" if db.has_person_species(person_id, "pet") else "human"
         return templates.TemplateResponse(
             name="person_detail.html",
             context={
                 "person": person,
                 "faces": faces,
+                "face_groups": face_groups,
                 "photos": photos,
+                "photo_groups": photo_groups,
                 "all_persons": all_persons,
+                "species": species,
             },
             request=request,
         )
@@ -185,12 +222,16 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                     "confidence": face.confidence,
                 }
             )
+        species = faces[0].species if faces else "human"
+        if species in db.PET_SPECIES:
+            species = "pet"
         return templates.TemplateResponse(
             name="photo.html",
             context={
                 "photo": photo,
                 "faces_data": faces_data,
                 "persons": persons,
+                "species": species,
             },
             request=request,
         )
@@ -283,8 +324,9 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         request: Request,
         a: int | None = None,
         b: int | None = None,
+        species: str = "human",
     ) -> HTMLResponse:
-        persons = db.get_persons()
+        persons = db.get_persons_by_species(species)
         result = None
         person_a = None
         person_b = None
@@ -301,6 +343,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "result": result,
                 "selected_a": a,
                 "selected_b": b,
+                "species": species,
             },
             request=request,
         )
@@ -315,10 +358,12 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         return JSONResponse({"ok": True, "swapped": len(face_ids)})
 
     @app.get("/search", response_class=HTMLResponse)
-    def search_page(request: Request, q: str = "") -> HTMLResponse:
+    def search_page(request: Request, q: str = "", species: str = "human") -> HTMLResponse:
         results = db.search_persons(q) if q else []
         return templates.TemplateResponse(
-            name="search.html", context={"query": q, "results": results}, request=request
+            name="search.html",
+            context={"query": q, "results": results, "species": species},
+            request=request,
         )
 
     @app.get("/persons/{person_id}/find-similar", response_class=HTMLResponse)
@@ -326,6 +371,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         person = db.get_person(person_id)
         if not person:
             raise HTTPException(404, "Person not found")
+        species = "pet" if db.has_person_species(person_id, "pet") else "human"
         candidates = find_similar_unclustered(db, person_id, min_similarity=min_sim / 100)
         return templates.TemplateResponse(
             name="find_similar.html",
@@ -333,6 +379,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "person": person,
                 "candidates": candidates,
                 "min_sim": min_sim,
+                "species": species,
             },
             request=request,
         )
@@ -404,21 +451,19 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     def person_faces_html(
         request: Request, person_id: int, offset: int = 0, limit: int = 200
     ) -> HTMLResponse:
-        rows = db.query(
-            "SELECT id, photo_id FROM faces WHERE person_id = ? LIMIT ? OFFSET ?",
-            (person_id, limit, offset),
-        )
-        faces = [{"id": r[0], "photo_id": r[1]} for r in rows]
+        faces_with_paths = db.get_person_faces_with_paths(person_id, limit=limit, offset=offset)
+        face_groups = _group_by_month(faces_with_paths, key="faces")
         person = db.get_person(person_id)
         total = person.face_count if person else 0
         return templates.TemplateResponse(
             name="partials/person_face_grid.html",
             context={
-                "faces": faces,
+                "face_groups": face_groups,
                 "person_id": person_id,
                 "offset": offset,
                 "limit": limit,
                 "total": total,
+                "faces_count": len(faces_with_paths),
             },
             request=request,
         )
@@ -485,7 +530,13 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         photo = db.get_photo(photo_id)
         if not photo:
             raise HTTPException(404)
-        return JSONResponse({"file_path": str(db.resolve_path(photo.file_path))})
+        return JSONResponse(
+            {
+                "file_path": str(db.resolve_path(photo.file_path)),
+                "latitude": photo.latitude,
+                "longitude": photo.longitude,
+            }
+        )
 
     # ── API: actions ───────────────────────────────────────
 
@@ -497,7 +548,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         is_pet = species in db.PET_SPECIES
         fallback = "/clusters?species=pet" if is_pet else "/clusters"
 
-        next_cluster = find_similar_cluster(db, person_id)
+        sp = "pet" if is_pet else "human"
+        next_cluster = find_similar_cluster(db, person_id, species=sp)
         if next_cluster:
             return f"/clusters/{next_cluster}?suggested_person={person_id}"
         return fallback
@@ -531,8 +583,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     @app.post("/api/clusters/merge", response_model=None)
     def merge_clusters_api(
         request: Request,
-        source_cluster: int = Body(...),
-        target_cluster: int = Body(...),
+        source_cluster: int = Form(...),
+        target_cluster: int = Form(...),
     ) -> JSONResponse | HTMLResponse:
         """Move all faces from source cluster into target cluster."""
         db.merge_clusters(source_cluster, target_cluster)

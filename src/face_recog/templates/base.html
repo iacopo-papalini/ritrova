@@ -32,35 +32,38 @@
         FaceRecog
       </a>
 
+      {% set sp = species|default("human") %}
+      {% set sp_qs = "?species=pet" if sp == "pet" else "" %}
+
       <!-- Section toggle pills -->
-      <div class="flex items-center rounded-full bg-gallery-card p-1 text-sm" x-data="{ section: '{{ species|default("human") }}' }">
+      <div class="flex items-center rounded-full bg-gallery-card p-1 text-sm">
         <a href="/clusters"
-           class="rounded-full px-4 py-1.5 font-medium transition-colors"
-           :class="section === 'human' ? 'bg-gallery-accent text-gallery-bg' : 'text-gallery-muted hover:text-gallery-text'">
+           class="rounded-full px-4 py-1.5 font-medium transition-colors
+                  {% if sp != 'pet' %}bg-gallery-accent text-gallery-bg{% else %}text-gallery-muted hover:text-gallery-text{% endif %}">
           Humans
         </a>
         <a href="/clusters?species=pet"
-           class="rounded-full px-4 py-1.5 font-medium transition-colors"
-           :class="section === 'pet' ? 'bg-gallery-accent text-gallery-bg' : 'text-gallery-muted hover:text-gallery-text'">
+           class="rounded-full px-4 py-1.5 font-medium transition-colors
+                  {% if sp == 'pet' %}bg-gallery-accent text-gallery-bg{% else %}text-gallery-muted hover:text-gallery-text{% endif %}">
           Pets
         </a>
       </div>
 
       <!-- Nav links -->
       <div class="hidden items-center gap-1 text-sm md:flex">
-        <a href="/clusters{% if species|default('human') == 'pet' %}?species=pet{% endif %}"
+        <a href="/clusters{{ sp_qs }}"
            class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
           Clusters
         </a>
-        <a href="/persons{% if species|default('human') == 'pet' %}?species=pet{% endif %}"
+        <a href="/persons{{ sp_qs }}"
            class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
           Persons
         </a>
-        <a href="/merge-suggestions"
+        <a href="/merge-suggestions{{ sp_qs }}"
            class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
           Merge
         </a>
-        <a href="/compare"
+        <a href="/compare{{ sp_qs }}"
            class="rounded-md px-3 py-1.5 text-gallery-muted transition-colors hover:bg-gallery-card hover:text-gallery-text">
           Compare
         </a>

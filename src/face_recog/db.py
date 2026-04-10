@@ -37,6 +37,8 @@ class Photo:
     taken_at: str | None
     scanned_at: str
     video_path: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 @dataclass
@@ -119,6 +121,8 @@ class FaceDB:
         for migration in [
             "ALTER TABLE photos ADD COLUMN video_path TEXT",
             "ALTER TABLE faces ADD COLUMN species TEXT NOT NULL DEFAULT 'human'",
+            "ALTER TABLE photos ADD COLUMN latitude REAL",
+            "ALTER TABLE photos ADD COLUMN longitude REAL",
         ]:
             with contextlib.suppress(sqlite3.OperationalError):
                 self.conn.execute(migration)
@@ -179,11 +183,14 @@ class FaceDB:
         height: int,
         taken_at: str | None = None,
         video_path: str | None = None,
+        latitude: float | None = None,
+        longitude: float | None = None,
     ) -> int:
         cur = self.conn.execute(
-            "INSERT INTO photos (file_path, width, height, taken_at, scanned_at, video_path) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (file_path, width, height, taken_at, self._now(), video_path),
+            "INSERT INTO photos (file_path, width, height, taken_at, scanned_at, "
+            "video_path, latitude, longitude) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (file_path, width, height, taken_at, self._now(), video_path, latitude, longitude),
         )
         self.conn.commit()
         assert cur.lastrowid is not None
@@ -558,10 +565,14 @@ class FaceDB:
         self.conn.commit()
 
     @_locked
-    def get_person_faces(self, person_id: int, limit: int = 200) -> list[Face]:
+    def get_person_faces(self, person_id: int, limit: int = 200, offset: int = 0) -> list[Face]:
         rows = self.conn.execute(
-            "SELECT * FROM faces WHERE person_id = ? LIMIT ?",
-            (person_id, limit),
+            """SELECT f.* FROM faces f
+               LEFT JOIN photos p ON f.photo_id = p.id
+               WHERE f.person_id = ?
+               ORDER BY p.taken_at DESC, f.id
+               LIMIT ? OFFSET ?""",
+            (person_id, limit, offset),
         ).fetchall()
         result = []
         for row in rows:
@@ -570,15 +581,35 @@ class FaceDB:
             result.append(Face(**d))
         return result
 
+    def get_person_faces_with_paths(
+        self, person_id: int, limit: int = 200, offset: int = 0
+    ) -> list[tuple[Face, str]]:
+        """Return faces with their photo's file_path, sorted by path (date-based dirs)."""
+        rows = self.conn.execute(
+            """SELECT f.*, p.file_path AS photo_path FROM faces f
+               LEFT JOIN photos p ON f.photo_id = p.id
+               WHERE f.person_id = ?
+               ORDER BY p.file_path DESC, f.id
+               LIMIT ? OFFSET ?""",
+            (person_id, limit, offset),
+        ).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            path = d.pop("photo_path", "") or ""
+            d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
+            result.append((Face(**d), path))
+        return result
+
     @_locked
     def get_person_photos(self, person_id: int) -> list[Photo]:
-        """All unique photos containing a person, newest first."""
+        """All unique photos containing a person, newest first (by path)."""
         rows = self.conn.execute(
             """
             SELECT DISTINCT p.* FROM photos p
             JOIN faces f ON f.photo_id = p.id
             WHERE f.person_id = ?
-            ORDER BY p.taken_at DESC, p.file_path
+            ORDER BY p.file_path DESC
             """,
             (person_id,),
         ).fetchall()

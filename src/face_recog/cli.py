@@ -359,6 +359,36 @@ def stats(ctx: click.Context) -> None:
     db.close()
 
 
+@cli.command("backfill-gps")
+@click.pass_context
+def backfill_gps(ctx: click.Context) -> None:
+    """Read GPS from EXIF for all photos missing coordinates."""
+    from .db import FaceDB
+    from .scanner import get_exif_gps
+
+    photos_dir = _require_photos_dir(ctx)
+    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
+    rows = db.query("SELECT id, file_path FROM photos WHERE latitude IS NULL")
+    updated = 0
+    total = len(rows)
+    for i, r in enumerate(rows, 1):
+        pid, fp = r[0], r[1]
+        resolved = db.resolve_path(fp)
+        if not resolved.exists():
+            continue
+        gps = get_exif_gps(resolved)
+        if gps:
+            db.run(
+                "UPDATE photos SET latitude = ?, longitude = ? WHERE id = ?",
+                (gps[0], gps[1], pid),
+            )
+            updated += 1
+        if i % 500 == 0 or i == total:
+            print(f"\r  [{i}/{total}] updated={updated}", end="", flush=True)
+    print(f"\nUpdated {updated} of {total} photos with GPS coordinates.")
+    db.close()
+
+
 @cli.command("migrate-paths")
 @click.pass_context
 def migrate_paths(ctx: click.Context) -> None:

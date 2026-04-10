@@ -33,20 +33,30 @@ document.addEventListener('alpine:init', () => {
     open: false,
     photoId: null,
     photoPath: null,
+    latitude: null,
+    longitude: null,
 
     show(photoId) {
       this.photoId = photoId;
       this.photoPath = null;
+      this.latitude = null;
+      this.longitude = null;
       this.open = true;
       fetch(`/api/photos/${photoId}/info`)
         .then(r => r.json())
-        .then(data => { this.photoPath = data.file_path; });
+        .then(data => {
+          this.photoPath = data.file_path;
+          this.latitude = data.latitude;
+          this.longitude = data.longitude;
+        });
     },
 
     close() {
       this.open = false;
       this.photoId = null;
       this.photoPath = null;
+      this.latitude = null;
+      this.longitude = null;
     }
   });
 });

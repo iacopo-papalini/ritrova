@@ -33,6 +33,40 @@ def get_exif_date(image_path: Path) -> str | None:
     return None
 
 
+def _dms_to_decimal(dms: tuple[float, ...], ref: str) -> float:
+    """Convert degrees/minutes/seconds to decimal degrees."""
+    d, m, s = (float(x) for x in dms)
+    decimal = d + m / 60 + s / 3600
+    if ref in ("S", "W"):
+        decimal = -decimal
+    return decimal
+
+
+_GPS_IFD = 0x8825
+
+
+def get_exif_gps(image_path: Path) -> tuple[float, float] | None:
+    """Extract GPS lat/lon from EXIF. Returns (lat, lon) or None."""
+    try:
+        with Image.open(image_path) as img:
+            exif = img.getexif()
+            gps_ifd = exif.get_ifd(_GPS_IFD)
+            if not gps_ifd:
+                return None
+            # GPS IFD tags: 1=LatRef, 2=Lat, 3=LonRef, 4=Lon
+            lat_ref = gps_ifd.get(1)
+            lat_dms = gps_ifd.get(2)
+            lon_ref = gps_ifd.get(3)
+            lon_dms = gps_ifd.get(4)
+            if not (lat_ref and lat_dms and lon_ref and lon_dms):
+                return None
+            lat = _dms_to_decimal(lat_dms, lat_ref)
+            lon = _dms_to_decimal(lon_dms, lon_ref)
+            return (lat, lon)
+    except OSError:
+        return None
+
+
 EXCLUDE_MARKER = ".fr_exclude"
 
 
@@ -122,7 +156,16 @@ def scan_photos(
                 continue
 
             taken_at = get_exif_date(image_path)
-            photo_id = db.add_photo(stored_path, width, height, taken_at)
+            gps = get_exif_gps(image_path)
+            lat, lon = gps if gps else (None, None)
+            photo_id = db.add_photo(
+                stored_path,
+                width,
+                height,
+                taken_at,
+                latitude=lat,
+                longitude=lon,
+            )
 
             batch = [
                 (photo_id, face["bbox"], face["embedding"], face["confidence"])

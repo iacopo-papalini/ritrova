@@ -1,18 +1,23 @@
 {# Person face grid fragment -- returned by /api/persons/{id}/faces-html for htmx infinite scroll #}
-{% for face in faces %}
-<div class="relative overflow-hidden rounded-lg transition-all duration-150 hover:scale-[1.03]">
-  <img src="/api/faces/{{ face.id }}/thumbnail?size=180"
-       loading="lazy"
-       alt="face"
-       @click="$store.lightbox.show({{ face.photo_id }})"
-       class="aspect-square w-full cursor-pointer object-cover">
+{% for group in face_groups %}
+<h3 class="mt-4 mb-2 text-sm font-medium text-gallery-muted">{{ group.month }}</h3>
+<div class="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-14 gap-1.5">
+  {% for face in group.faces %}
+  <div class="relative overflow-hidden rounded-lg transition-all duration-150 hover:scale-[1.03]">
+    <img src="/api/faces/{{ face.id }}/thumbnail?size=180"
+         loading="lazy"
+         alt="face"
+         @click="$store.lightbox.show({{ face.photo_id }})"
+         class="aspect-square w-full cursor-pointer object-cover">
+  </div>
+  {% endfor %}
 </div>
 {% endfor %}
-{% if offset + faces|length < total %}
-<div hx-get="/api/persons/{{ person_id }}/faces-html?offset={{ offset + faces|length }}&limit={{ limit }}"
+{% if offset + faces_count < total %}
+<div hx-get="/api/persons/{{ person_id }}/faces-html?offset={{ offset + faces_count }}&limit={{ limit }}"
      hx-trigger="revealed"
      hx-swap="outerHTML"
-     class="col-span-full flex justify-center py-8">
+     class="flex justify-center py-8">
   <div class="flex items-center gap-2 text-gallery-muted text-sm">
     <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>

@@ -22,7 +22,23 @@
        alt="Full resolution photo"
        class="max-h-[85vh] max-w-[95vw] object-contain rounded-lg shadow-2xl">
 
-  <p x-show="$store.lightbox.photoPath" x-cloak
-     x-text="$store.lightbox.photoPath"
-     class="max-w-[95vw] truncate rounded bg-black/70 px-3 py-1.5 text-sm text-gallery-text/80"></p>
+  <div class="flex items-center gap-2">
+    <p x-show="$store.lightbox.photoPath" x-cloak
+       x-text="$store.lightbox.photoPath"
+       class="max-w-[90vw] truncate rounded bg-black/70 px-3 py-1.5 text-sm text-gallery-text/80"></p>
+
+    <a x-show="$store.lightbox.latitude" x-cloak
+       :href="`https://www.google.com/maps?q=${$store.lightbox.latitude},${$store.lightbox.longitude}`"
+       target="_blank" rel="noopener"
+       class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-black/70
+              text-gallery-accent transition-colors hover:bg-gallery-accent hover:text-gallery-bg"
+       title="Open in Google Maps">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd"
+              d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0
+                 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z"
+              clip-rule="evenodd" />
+      </svg>
+    </a>
+  </div>
 </div>
