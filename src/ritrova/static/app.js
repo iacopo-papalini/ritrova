@@ -37,8 +37,10 @@ document.addEventListener('alpine:init', () => {
     query: '',
     items: [],
     open: false,
+    loading: true,
     selected: [],        // multi-select: array of {id, name}
     multi: opts.multi || false,
+    allowCreate: opts.allowCreate !== false, // default true, set false to disable
 
     async init() {
       if (!_personsCache) {
@@ -46,6 +48,7 @@ document.addEventListener('alpine:init', () => {
         _personsCache = await r.json();
       }
       this.items = _personsCache;
+      this.loading = false;
     },
 
     get filtered() {
@@ -55,6 +58,7 @@ document.addEventListener('alpine:init', () => {
     },
 
     get showCreate() {
+      if (!this.allowCreate) return false;
       const q = this.query.trim();
       return q && !this.items.some(p => p.name.toLowerCase() === q.toLowerCase());
     },

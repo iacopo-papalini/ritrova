@@ -9,7 +9,7 @@
   </div>
 
   {# ── Multi-select person picker ───────────────────────────── #}
-  <div x-data="personPicker({ multi: true })"
+  <div x-data="personPicker({ multi: true, allowCreate: false })"
        class="rounded-xl border border-gallery-border bg-gallery-card p-4 space-y-3">
     <div class="w-72">
       {% include "partials/person_picker.html" %}
