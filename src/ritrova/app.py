@@ -11,7 +11,7 @@ from fastapi import Body, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from PIL import Image, ImageOps
+from PIL import Image, ImageFile, ImageOps
 
 from .cluster import (
     compare_persons,
@@ -25,6 +25,8 @@ from .services import (
     compute_cluster_hint,
     compute_singleton_hints,
 )
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 KindType = Literal["people", "pets"]
 _KIND_TO_SPECIES: dict[str, str] = {"people": "human", "pets": "pet"}
@@ -382,18 +384,15 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         if not resolved.exists():
             raise HTTPException(404)
 
-        try:
-            with Image.open(resolved) as raw_img:
-                oriented = ImageOps.exif_transpose(raw_img)
-                pad_w = face.bbox_w * 0.3
-                pad_h = face.bbox_h * 0.3
-                x1 = max(0, face.bbox_x - pad_w)
-                y1 = max(0, face.bbox_y - pad_h)
-                x2 = min(oriented.width, face.bbox_x + face.bbox_w + pad_w)
-                y2 = min(oriented.height, face.bbox_y + face.bbox_h + pad_h)
-                crop = oriented.crop((int(x1), int(y1), int(x2), int(y2)))
-        except OSError:
-            raise HTTPException(404, "Corrupt image file") from None
+        with Image.open(resolved) as raw_img:
+            oriented = ImageOps.exif_transpose(raw_img)
+            pad_w = face.bbox_w * 0.3
+            pad_h = face.bbox_h * 0.3
+            x1 = max(0, face.bbox_x - pad_w)
+            y1 = max(0, face.bbox_y - pad_h)
+            x2 = min(oriented.width, face.bbox_x + face.bbox_w + pad_w)
+            y2 = min(oriented.height, face.bbox_y + face.bbox_h + pad_h)
+            crop = oriented.crop((int(x1), int(y1), int(x2), int(y2)))
 
         crop.thumbnail((size, size))
         crop.save(cache_path, "JPEG", quality=85)
@@ -404,26 +403,16 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         return StreamingResponse(buf, media_type="image/jpeg")
 
     @app.get("/api/photos/{photo_id}/image")
-    def photo_image(photo_id: int, max_size: int = 1600) -> StreamingResponse:
-        max_size = min(max_size, 2000)
+    def photo_image(photo_id: int) -> StreamingResponse:
         photo = db.get_photo(photo_id)
         if not photo:
             raise HTTPException(404)
         resolved = db.resolve_path(photo.file_path)
         if not resolved.exists():
             raise HTTPException(404)
-
-        try:
-            with Image.open(resolved) as raw_img:
-                oriented = ImageOps.exif_transpose(raw_img)
-                oriented.thumbnail((max_size, max_size))
-                buf = io.BytesIO()
-                oriented.save(buf, "JPEG", quality=90)
-        except OSError:
-            raise HTTPException(404, "Corrupt image file") from None
-
-        buf.seek(0)
-        return StreamingResponse(buf, media_type="image/jpeg")
+        # Stream raw file — browsers handle EXIF rotation natively
+        media = "image/jpeg" if resolved.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+        return StreamingResponse(open(resolved, "rb"), media_type=media)  # noqa: SIM115
 
     @app.get("/api/photos/{photo_id}/info")
     def photo_info(photo_id: int) -> JSONResponse:
