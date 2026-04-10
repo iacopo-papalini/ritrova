@@ -141,6 +141,77 @@ class TestMergeSuggestionsAPI(TestCase):
         assert data["total"] == 0
 
 
+class TestPersonsAPI(TestCase):
+    """Test /api/persons/* endpoints used by the typeahead picker."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path: Path) -> None:
+        self.db = FaceDB(tmp_path / "test.db")
+        self.app = create_app(str(tmp_path / "test.db"))
+        self.client = TestClient(self.app)
+
+    def test_all_persons_empty(self) -> None:
+        resp = self.client.get("/api/persons/all")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_all_persons_returns_face_id(self) -> None:
+        pid = self.db.create_person("Alice")
+        _, fid = _add_face(self.db, "/a.jpg", seed=1)
+        self.db.assign_face_to_person(fid, pid)
+
+        resp = self.client.get("/api/persons/all")
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["id"] == pid
+        assert data[0]["name"] == "Alice"
+        assert data[0]["face_count"] == 1
+        assert data[0]["face_id"] == fid
+
+    def test_all_persons_includes_pets(self) -> None:
+        pid_human = self.db.create_person("Alice")
+        _, fid_h = _add_face(self.db, "/a.jpg", seed=1, species="human")
+        self.db.assign_face_to_person(fid_h, pid_human)
+
+        pid_pet = self.db.create_person("Figaro")
+        _, fid_p = _add_face(self.db, "/b.jpg__pets", seed=2, species="dog")
+        self.db.assign_face_to_person(fid_p, pid_pet)
+
+        resp = self.client.get("/api/persons/all")
+        data = resp.json()
+        names = {d["name"] for d in data}
+        assert names == {"Alice", "Figaro"}
+
+    def test_create_person(self) -> None:
+        resp = self.client.post("/api/persons/create", json={"name": "Bob"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "Bob"
+        assert data["id"] > 0
+        assert data["face_count"] == 0
+
+    def test_create_person_returns_existing(self) -> None:
+        """Creating with an existing name returns the existing person."""
+        self.db.create_person("Alice")
+        resp = self.client.post("/api/persons/create", json={"name": "Alice"})
+        data = resp.json()
+        assert data["name"] == "Alice"
+
+    def test_photo_info_includes_gps(self) -> None:
+        pid = self.db.add_photo("/test.jpg", 100, 100, latitude=43.77, longitude=11.25)
+        resp = self.client.get(f"/api/photos/{pid}/info")
+        data = resp.json()
+        assert data["latitude"] == pytest.approx(43.77)
+        assert data["longitude"] == pytest.approx(11.25)
+
+    def test_photo_info_null_gps(self) -> None:
+        pid = self.db.add_photo("/test.jpg", 100, 100)
+        resp = self.client.get(f"/api/photos/{pid}/info")
+        data = resp.json()
+        assert data["latitude"] is None
+        assert data["longitude"] is None
+
+
 class TestNamespaceCollision(TestCase):
     """Verify person IDs and cluster IDs don't collide in merge suggestions."""
 
