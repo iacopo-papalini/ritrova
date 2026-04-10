@@ -18,7 +18,9 @@
     <button @click="
               if (selected.length < 2) return;
               const ids = selected.map(s => s.id).join(',');
-              htmx.ajax('GET', '/api/together-html?person_ids=' + ids, '#results');
+              fetch('/api/together-html?person_ids=' + ids)
+                .then(r => r.text())
+                .then(html => { document.getElementById('results').innerHTML = html; });
             "
             :disabled="selected.length < 2"
             class="rounded-lg bg-gallery-accent px-5 py-2 text-sm font-medium text-gallery-bg
