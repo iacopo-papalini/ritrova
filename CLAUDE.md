@@ -4,7 +4,8 @@ Personal photo archive: face + pet recognition, 61K+ faces, 100K+ photos, Apple 
 
 ## Must read before any work
 - `docs/design-guide.md` — UI patterns, interaction rules, development conventions
-- `docs/bugs.md` — open bugs and feature backlog
+- `docs/bugs.md` — open bugs and closed bug history
+- `docs/features.md` — feature backlog and closed features
 
 ## Key rules
 - UI variable: `kind` ("people"/"pets"). DB field: `species` ("human"/"dog"/"cat").
