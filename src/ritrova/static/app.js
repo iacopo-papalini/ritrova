@@ -153,7 +153,7 @@ document.addEventListener('alpine:init', () => {
       this.longitude = null;
       this.rotation = 0;
       this.open = true;
-      fetch(`/api/photos/${photoId}/info`)
+      fetch(`/api/sources/${photoId}/info`)
         .then(r => r.json())
         .then(data => {
           this.photoPath = data.file_path;
