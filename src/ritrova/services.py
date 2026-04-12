@@ -6,9 +6,9 @@ from typing import Any
 
 import numpy as np
 
-from .cluster import EMBEDDING_DIMS
+from .cluster import EMBEDDING_DIMS, _findings_centroid
 from .db import FaceDB, Finding
-from .embeddings import compute_centroid, cosine_similarity, normalize
+from .embeddings import cosine_similarity, normalize
 
 
 def compute_cluster_hint(db: FaceDB, cluster_id: int) -> dict[str, Any] | None:
@@ -21,8 +21,7 @@ def compute_cluster_hint(db: FaceDB, cluster_id: int) -> dict[str, Any] | None:
     if not findings:
         return None
 
-    centroid = compute_centroid(np.array([f.embedding for f in findings]))
-    # Derive kind from actual embedding dimension, not species label
+    centroid = _findings_centroid(findings)
     dim = len(centroid)
     kind = "pet" if dim == EMBEDDING_DIMS["pet"] else "person"
     subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)

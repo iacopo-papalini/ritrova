@@ -31,10 +31,22 @@ class MergeSuggestion:
     kind_b: str = "cluster"
 
 
-def _findings_centroid(findings: list[Finding]) -> np.ndarray:
-    """Compute normalized centroid from a list of Finding objects."""
-    embs = np.array([f.embedding for f in findings])
-    return compute_centroid(embs)
+def _findings_centroid(findings: list[Finding], embedding_dim: int | None = None) -> np.ndarray:
+    """Compute normalized centroid from a list of Finding objects.
+
+    If embedding_dim is specified, only use findings with that dimension.
+    If not specified, use the majority dimension (most common among findings).
+    """
+    if not findings:
+        return np.zeros(512, dtype=np.float32)
+    if embedding_dim is None:
+        # Pick the majority dimension
+        dims = [len(f.embedding) for f in findings]
+        embedding_dim = max(set(dims), key=dims.count)
+    compatible = [f.embedding for f in findings if len(f.embedding) == embedding_dim]
+    if not compatible:
+        return np.zeros(embedding_dim, dtype=np.float32)
+    return compute_centroid(np.array(compatible))
 
 
 def _normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
@@ -241,9 +253,10 @@ def find_similar_unclustered(
         return []
 
     centroid = _findings_centroid(subject_findings)
-    species = subject_findings[0].species
+    dim = len(centroid)
+    species = "pet" if dim == EMBEDDING_DIMS["pet"] else "human"
 
-    unclustered = db.get_unclustered_embeddings(species=species)
+    unclustered = db.get_unclustered_embeddings(species=species, embedding_dim=dim)
     if not unclustered:
         return []
 
@@ -369,14 +382,18 @@ def compare_subjects(
     if not findings_a or not findings_b:
         return {"swaps_a_to_b": [], "swaps_b_to_a": []}
 
+    # Use consistent dimension (from majority of subject A)
     centroid_a = _findings_centroid(findings_a)
-    centroid_b = _findings_centroid(findings_b)
+    dim = len(centroid_a)
+    centroid_b = _findings_centroid(findings_b, embedding_dim=dim)
 
     def _find_swaps(
         findings: list[Finding], own_centroid: np.ndarray, other_centroid: np.ndarray
     ) -> list[tuple[int, float, float, str]]:
         swaps = []
         for finding in findings:
+            if len(finding.embedding) != dim:
+                continue
             emb = normalize(finding.embedding)
             sim_own = cosine_similarity(emb, own_centroid)
             sim_other = cosine_similarity(emb, other_centroid)
@@ -458,6 +475,7 @@ def find_similar_cluster(
         return None
 
     centroid = _findings_centroid(subject_findings)
+    dim = len(centroid)
 
     best_cluster = None
     best_sim = min_similarity
@@ -466,7 +484,9 @@ def find_similar_cluster(
         findings = db.get_cluster_findings(cluster["cluster_id"], limit=100)
         if not findings:
             continue
-        c = _findings_centroid(findings)
+        c = _findings_centroid(findings, embedding_dim=dim)
+        if len(c) != dim:
+            continue
         sim = cosine_similarity(centroid, c)
         if sim > best_sim:
             best_sim = sim
@@ -487,25 +507,28 @@ def suggest_merges(
     sorted by similarity descending.
     """
     species = FaceDB.KIND_TO_SPECIES[kind]
+    dim = EMBEDDING_DIMS.get(kind, 512)
     groups: list[tuple[str, int, list[int], np.ndarray]] = []
 
     for subject in db.get_subjects_by_kind(kind):
         findings = db.get_subject_findings(subject.id, limit=500)
-        if not findings:
+        compatible = [f for f in findings if len(f.embedding) == dim]
+        if not compatible:
             continue
-        embs = np.array([f.embedding for f in findings])
-        groups.append(("subject", subject.id, [f.id for f in findings], embs))
+        embs = np.array([f.embedding for f in compatible])
+        groups.append(("subject", subject.id, [f.id for f in compatible], embs))
 
     for cluster in db.get_unnamed_clusters(species=species):
         findings = db.get_cluster_findings(cluster["cluster_id"], limit=500)
-        if not findings:
+        compatible = [f for f in findings if len(f.embedding) == dim]
+        if not compatible:
             continue
-        embs = np.array([f.embedding for f in findings])
+        embs = np.array([f.embedding for f in compatible])
         groups.append(
             (
                 "cluster",
                 cluster["cluster_id"],
-                [f.id for f in findings],
+                [f.id for f in compatible],
                 embs,
             )
         )
