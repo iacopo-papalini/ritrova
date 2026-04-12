@@ -162,15 +162,15 @@ def cluster(ctx: click.Context, threshold: float | None, min_size: int) -> None:
 
 @cli.command()
 @click.option("--min-similarity", default=50.0, help="Minimum centroid similarity %")
-@click.option("--species", default="human", help="Species to process")
+@click.option("--kind", default="person", help="Subject kind: person or pet")
 @click.pass_context
-def auto_assign(ctx: click.Context, min_similarity: float, species: str) -> None:
-    """Bulk-assign unnamed clusters to existing named persons."""
+def auto_assign(ctx: click.Context, min_similarity: float, kind: str) -> None:
+    """Bulk-assign unnamed clusters to existing named subjects."""
     from .cluster import auto_assign as _auto_assign
     from .db import FaceDB
 
     db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
-    result = _auto_assign(db, min_similarity=min_similarity / 100, species=species)
+    result = _auto_assign(db, min_similarity=min_similarity / 100, kind=kind)
 
     print(
         f"\nAssigned {result['assigned_clusters']} clusters "
@@ -182,15 +182,15 @@ def auto_assign(ctx: click.Context, min_similarity: float, species: str) -> None
 
 @cli.command()
 @click.option("--min-similarity", default=70.0, help="Minimum centroid similarity %")
-@click.option("--species", default="human", help="Species to process")
+@click.option("--kind", default="person", help="Subject kind: person or pet")
 @click.pass_context
-def auto_merge(ctx: click.Context, min_similarity: float, species: str) -> None:
+def auto_merge(ctx: click.Context, min_similarity: float, kind: str) -> None:
     """Auto-merge unnamed clusters whose centroids are highly similar."""
     from .cluster import auto_merge_clusters
     from .db import FaceDB
 
     db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
-    result = auto_merge_clusters(db, min_similarity=min_similarity / 100, species=species)
+    result = auto_merge_clusters(db, min_similarity=min_similarity / 100, kind=kind)
 
     print(
         f"\nMerged {result['merged']} cluster pairs "
@@ -352,7 +352,7 @@ def stats(ctx: click.Context) -> None:
 
     print(f"Photos scanned:    {s['total_photos']}")
     print(f"Faces detected:    {s['total_faces']}")
-    print(f"Persons named:     {s['total_persons']}")
+    print(f"Subjects named:    {s['total_subjects']}")
     print(f"Named faces:       {s['named_faces']}")
     print(f"Unnamed clusters:  {s['unnamed_clusters']}")
     print(f"Unclustered faces: {s['unclustered_faces']}")

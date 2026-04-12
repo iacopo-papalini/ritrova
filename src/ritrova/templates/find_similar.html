@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Find similar — {{ person.name }}{% endblock %}
+{% block title %}Find similar — {{ subject.name }}{% endblock %}
 {% block content %}
 {# All face IDs for selectAll — tuples lack named attrs so we build the array manually #}
 <div x-data="faceSelection()" x-init="selectAll([{% for fid, _ in candidates %}{{ fid }}{% if not loop.last %},{% endif %}{% endfor %}])">
@@ -7,14 +7,14 @@
   {# ── Header + back link ──────────────────────────────────── #}
   <div class="mb-6">
     <div class="flex items-center gap-3">
-      <a href="/{{ kind }}/{{ person.id }}"
+      <a href="/{{ kind }}/{{ subject.id }}"
          class="text-gallery-muted hover:text-gallery-text transition-colors">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
         </svg>
       </a>
       <h1 class="text-2xl font-bold font-display text-gallery-text">
-        Find similar &mdash; {{ person.name }}
+        Find similar &mdash; {{ subject.name }}
       </h1>
     </div>
   </div>
@@ -28,7 +28,7 @@
     <div class="flex items-center gap-1 text-sm">
       <span class="text-gallery-muted mr-1">Min similarity:</span>
       {% for t in [40, 50, 55, 60, 70] %}
-      <a href="/{{ kind }}/{{ person.id }}/find-similar?min_sim={{ t }}"
+      <a href="/{{ kind }}/{{ subject.id }}/find-similar?min_sim={{ t }}"
          class="rounded-full px-3 py-1 transition-colors
                 {% if min_sim == t %}bg-gallery-accent text-gallery-bg font-semibold
                 {% else %}bg-gallery-card text-gallery-muted hover:text-gallery-text{% endif %}">
@@ -75,11 +75,11 @@
     <button @click="
               const faceIds = ids;
               if (!faceIds.length) return;
-              fetch('/api/persons/{{ person.id }}/claim-faces', {
+              fetch('/api/subjects/{{ subject.id }}/claim-faces', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ face_ids: faceIds })
-              }).then(r => { if (r.ok) location.href = '/{{ kind }}/{{ person.id }}'; })"
+              }).then(r => { if (r.ok) location.href = '/{{ kind }}/{{ subject.id }}'; })"
             class="rounded-lg bg-gallery-accent px-4 py-1.5 text-sm font-medium text-gallery-bg
                    transition-colors hover:bg-gallery-accent/80 cursor-pointer">
       Claim selected
@@ -120,9 +120,9 @@
 
   {# ── Back link ────────────────────────────────────────────── #}
   <div class="mt-8">
-    <a href="/{{ kind }}/{{ person.id }}"
+    <a href="/{{ kind }}/{{ subject.id }}"
        class="text-gallery-muted text-sm hover:text-gallery-accent transition-colors">
-      &larr; Back to {{ person.name }}
+      &larr; Back to {{ subject.name }}
     </a>
   </div>
 

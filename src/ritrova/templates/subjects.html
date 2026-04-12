@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{% if kind == 'pets' %}Pets{% else %}Persons{% endif %}{% endblock %}
+{% block content %}
+
+{# Embed names as JSON in a script tag — safe context for tojson #}
+<script>window._subjectNames = {{ subjects | map(attribute='name') | list | tojson }};</script>
+
+<div x-data="{
+  filter: '',
+  names: window._subjectNames,
+  get matchCount() {
+    if (!this.filter) return this.names.length;
+    const q = this.filter.toLowerCase();
+    return this.names.filter(n => n.toLowerCase().includes(q)).length;
+  }
+}">
+  <div class="mb-6 flex items-center justify-between gap-4">
+    <h1 class="font-display text-2xl font-bold tracking-tight text-gallery-text shrink-0">
+      {% if kind == 'pets' %}Pets{% else %}Persons{% endif %}
+      <span class="text-gallery-muted">(<span x-text="matchCount"></span>)</span>
+    </h1>
+    <input type="text"
+           x-model="filter"
+           placeholder="Filter..."
+           class="w-48 rounded-lg border border-gallery-border bg-gallery-card px-3 py-1.5 text-sm text-gallery-text
+                  placeholder-gallery-muted outline-none transition-all
+                  focus:w-64 focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+  </div>
+
+  {% if not subjects %}
+  <div class="rounded-xl border border-gallery-border bg-gallery-card px-6 py-12 text-center">
+    <p class="text-gallery-muted">
+      No {% if kind == 'pets' %}pets{% else %}persons{% endif %} named yet.
+      <a href="/{{ kind }}/clusters"
+         class="text-gallery-accent transition-colors hover:text-gallery-accent/80">
+        Start by naming clusters
+      </a>.
+    </p>
+  </div>
+  {% else %}
+  <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+    {% for subject in subjects %}
+      <div data-name="{{ subject.name|lower }}"
+           x-show="!filter || $el.dataset.name.includes(filter.toLowerCase())">
+        {% include "partials/subject_card.html" %}
+      </div>
+    {% endfor %}
+  </div>
+
+  <div x-show="filter && matchCount === 0" x-cloak
+       class="rounded-xl border border-gallery-border bg-gallery-card px-6 py-12 text-center mt-4">
+    <p class="text-gallery-muted">No matches for "<span x-text="filter"></span>"</p>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}

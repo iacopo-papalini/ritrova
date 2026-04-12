@@ -23,24 +23,25 @@
 
   <!-- Assign via typeahead -->
   <div class="mb-6 flex flex-wrap items-start gap-3"
-       x-data="personPicker({
-         onSelect(person) {
+       x-data="subjectPicker({
+         onSelect(subject) {
            const fd = new FormData();
-           fd.append('person_id', person.id);
+           fd.append('person_id', subject.id);
            fetch('/api/clusters/{{ cluster_id }}/assign', { method: 'POST', body: fd, redirect: 'follow' })
              .then(r => { if (r.ok) location.href = r.url; });
          }
        })">
-    {% if ranked_persons %}
+    {% if ranked_subjects %}
     <p class="text-xs text-gallery-muted self-center">Suggested:
-      {% for pid, name, count, sim in ranked_persons[:3] %}
-      <button @click="pick({id: {{ pid }}, name: '{{ name }}', face_count: {{ count }}})"
+      {% for pid, name, count, sim in ranked_subjects[:3] %}
+      <button data-subject-name="{{ name }}"
+              @click="pick({id: {{ pid }}, name: $el.dataset.subjectName, face_count: {{ count }}})"
               class="text-gallery-accent hover:underline cursor-pointer">{{ name }} {{ sim }}%</button>{% if not loop.last %},{% endif %}
       {% endfor %}
     </p>
     {% endif %}
     <div class="w-64">
-      {% include "partials/person_picker.html" %}
+      {% include "partials/subject_picker.html" %}
     </div>
 
     <div class="flex-1"></div>

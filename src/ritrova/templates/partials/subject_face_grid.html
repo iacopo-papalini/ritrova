@@ -1,4 +1,4 @@
-{# Person face grid fragment -- returned by /api/persons/{id}/faces-html for htmx infinite scroll #}
+{# Subject face grid fragment -- returned by /api/subjects/{id}/faces-html for htmx infinite scroll #}
 {% for group in face_groups %}
 <h3 class="mt-4 mb-2 text-sm font-medium text-gallery-muted">{{ group.month }}</h3>
 <div class="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-14 gap-1.5">
@@ -24,7 +24,7 @@
 </div>
 {% endfor %}
 {% if offset + faces_count < total %}
-<div hx-get="/api/persons/{{ person_id }}/faces-html?offset={{ offset + faces_count }}&limit={{ limit }}"
+<div hx-get="/api/subjects/{{ subject_id }}/faces-html?offset={{ offset + faces_count }}&limit={{ limit }}"
      hx-trigger="revealed"
      hx-swap="outerHTML"
      class="flex justify-center py-8">

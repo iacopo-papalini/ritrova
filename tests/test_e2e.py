@@ -32,18 +32,25 @@ def app_url(tmp_path_factory: pytest.TempPathFactory) -> str:
     img_path = tmp / "photo.jpg"
     img.save(str(img_path), "JPEG")
 
-    # Seed data: 2 persons with faces
-    pid_alice = db.create_person("Alice")
+    # Seed data: 2 subjects with faces
+    sid_alice = db.create_subject("Alice")
     photo_id = db.add_photo(str(img_path), 200, 200)
     db.add_faces_batch([(photo_id, (10, 10, 50, 50), _emb(1), 0.95)], species="human")
     faces = db.get_photo_faces(photo_id)
-    db.assign_face_to_person(faces[0].id, pid_alice)
+    db.assign_face_to_subject(faces[0].id, sid_alice)
 
-    pid_bob = db.create_person("Bob")
+    sid_bob = db.create_subject("Bob")
     photo_id2 = db.add_photo(str(img_path) + "2", 200, 200)
     db.add_faces_batch([(photo_id2, (10, 10, 50, 50), _emb(2), 0.95)], species="human")
     faces2 = db.get_photo_faces(photo_id2)
-    db.assign_face_to_person(faces2[0].id, pid_bob)
+    db.assign_face_to_subject(faces2[0].id, sid_bob)
+
+    # Subject with gnarly characters: apostrophe, emoji, brackets
+    sid_weird = db.create_subject("Al'ice \U0001f9d1<test>")
+    photo_id5 = db.add_photo(str(img_path) + "5", 200, 200)
+    db.add_faces_batch([(photo_id5, (10, 10, 50, 50), _emb(5), 0.95)], species="human")
+    faces5 = db.get_photo_faces(photo_id5)
+    db.assign_face_to_subject(faces5[0].id, sid_weird)
 
     # An unassigned cluster
     photo_id3 = db.add_photo(str(img_path) + "3", 200, 200)
@@ -98,6 +105,34 @@ class TestTypeaheadPicker:
         picker_input.click()
         # Wait for dropdown to appear and check for avatar images
         expect(page.locator("img[class*='rounded-full']").first).to_be_visible(timeout=3000)
+
+
+class TestSubjectsListFilter:
+    """Test inline filter on the subjects list page."""
+
+    def test_list_page_loads_with_special_chars(self, page: Page, app_url: str) -> None:
+        """Subject names with apostrophes, emoji, and angle brackets don't break the page."""
+        page.goto(f"{app_url}/people")
+        page.wait_for_load_state("networkidle")
+        # All 3 subjects should be visible (Alice, Bob, and the gnarly one)
+        expect(page.locator("h1")).to_contain_text("(3)")
+        # No JS errors: the filter input should be functional
+        filter_input = page.locator("input[placeholder='Filter...']")
+        expect(filter_input).to_be_visible()
+
+    def test_filter_narrows_results(self, page: Page, app_url: str) -> None:
+        page.goto(f"{app_url}/people")
+        filter_input = page.locator("input[placeholder='Filter...']")
+        filter_input.fill("Ali")
+        # Both "Alice" subjects should match (Alice and Al'ice...)
+        # Bob should be hidden
+        expect(page.locator("text=Bob").first).not_to_be_visible(timeout=2000)
+
+    def test_filter_no_matches(self, page: Page, app_url: str) -> None:
+        page.goto(f"{app_url}/people")
+        filter_input = page.locator("input[placeholder='Filter...']")
+        filter_input.fill("zzzznonexistent")
+        expect(page.locator("text=No matches")).to_be_visible(timeout=2000)
 
 
 class TestLightbox:

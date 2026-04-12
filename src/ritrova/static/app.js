@@ -28,12 +28,12 @@ document.addEventListener('alpine:init', () => {
     get ids() { return [...this.selected]; }
   }));
 
-  // --------------- Alpine: person picker (typeahead) ---------------
-  // Usage: x-data="personPicker({ multi: false, onSelect(person) { ... } })"
-  //   or:  x-data="personPicker({ multi: true })"  then read .selected
-  let _personsCache = null;
+  // --------------- Alpine: subject picker (typeahead) ---------------
+  // Usage: x-data="subjectPicker({ multi: false, onSelect(subject) { ... } })"
+  //   or:  x-data="subjectPicker({ multi: true })"  then read .selected
+  let _subjectsCache = null;
 
-  Alpine.data('personPicker', (opts = {}) => ({
+  Alpine.data('subjectPicker', (opts = {}) => ({
     query: '',
     items: [],
     open: false,
@@ -41,13 +41,14 @@ document.addEventListener('alpine:init', () => {
     selected: [],        // multi-select: array of {id, name}
     multi: opts.multi || false,
     allowCreate: opts.allowCreate !== false, // default true, set false to disable
+    hi: -1,              // highlighted index in dropdown
 
     async init() {
-      if (!_personsCache) {
-        const r = await fetch('/api/persons/all');
-        _personsCache = await r.json();
+      if (!_subjectsCache) {
+        const r = await fetch('/api/subjects/all');
+        _subjectsCache = await r.json();
       }
-      this.items = _personsCache;
+      this.items = _subjectsCache;
       this.loading = false;
     },
 
@@ -63,17 +64,51 @@ document.addEventListener('alpine:init', () => {
       return q && !this.items.some(p => p.name.toLowerCase() === q.toLowerCase());
     },
 
-    pick(person) {
+    // Keyboard: total selectable slots (filtered items + optional create)
+    get _totalSlots() {
+      return this.filtered.length + (this.showCreate ? 1 : 0);
+    },
+
+    onArrowDown() {
+      if (!this.open) { this.open = true; this.hi = 0; return; }
+      this.hi = (this.hi + 1) % this._totalSlots;
+      this._scrollToHighlighted();
+    },
+
+    onArrowUp() {
+      if (!this.open) return;
+      this.hi = (this.hi - 1 + this._totalSlots) % this._totalSlots;
+      this._scrollToHighlighted();
+    },
+
+    onEnter() {
+      if (!this.open || this.hi < 0) return;
+      if (this.hi < this.filtered.length) {
+        this.pick(this.filtered[this.hi]);
+      } else if (this.showCreate) {
+        this.create();
+      }
+    },
+
+    _scrollToHighlighted() {
+      this.$nextTick(() => {
+        const el = this.$refs.dropdown?.querySelector('[data-hi="true"]');
+        if (el) el.scrollIntoView({ block: 'nearest' });
+      });
+    },
+
+    pick(subject) {
+      this.hi = -1;
       if (this.multi) {
-        const idx = this.selected.findIndex(s => s.id === person.id);
+        const idx = this.selected.findIndex(s => s.id === subject.id);
         if (idx >= 0) this.selected.splice(idx, 1);
-        else this.selected.push(person);
+        else this.selected.push(subject);
         this.query = '';
       } else {
-        this.query = person.name;
+        this.query = subject.name;
         this.open = false;
-        if (opts.onSelect) opts.onSelect.call(this, person);
-        this.$dispatch('person-selected', person);
+        if (opts.onSelect) opts.onSelect.call(this, subject);
+        this.$dispatch('subject-selected', subject);
       }
     },
 
@@ -88,17 +123,17 @@ document.addEventListener('alpine:init', () => {
     async create() {
       const name = this.query.trim();
       if (!name) return;
-      const r = await fetch('/api/persons/create', {
+      const r = await fetch('/api/subjects/create', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({name})
       });
       if (!r.ok) return;
-      const person = await r.json();
+      const subject = await r.json();
       // Invalidate cache
-      _personsCache = null;
+      _subjectsCache = null;
       await this.init();
-      this.pick(person);
+      this.pick(subject);
     }
   }));
 

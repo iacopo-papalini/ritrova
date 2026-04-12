@@ -13,10 +13,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .cluster import (
-    compare_persons,
+    compare_subjects,
     find_similar_cluster,
     find_similar_unclustered,
-    rank_persons_for_cluster,
+    rank_subjects_for_cluster,
     suggest_merges,
 )
 from .db import FaceDB
@@ -27,19 +27,32 @@ from .services import (
 )
 
 KindType = Literal["people", "pets"]
+# URL kind -> face species (for face-level filtering)
 _KIND_TO_SPECIES: dict[str, str] = {"people": "human", "pets": "pet"}
-_SPECIES_TO_KIND: dict[str, str] = {"human": "people", "pet": "people"}
 
 
 def _species_for_kind(kind: KindType) -> str:
+    """Map URL kind to face species for face-level queries."""
     return _KIND_TO_SPECIES[kind]
 
 
 def _kind_for_species(species: str) -> KindType:
-    """Map a DB species string to the URL kind."""
+    """Map a face species string to the URL kind."""
     if species in ("pet", "cat", "dog"):
         return "pets"
     return "people"
+
+
+def _subject_kind_for_species(species: str) -> str:
+    """Map a face species to subject kind."""
+    if species in ("pet", "cat", "dog", "other_pet"):
+        return "pet"
+    return "person"
+
+
+def _kind_for_subject(subject_kind: str) -> KindType:
+    """Map subject kind to URL kind."""
+    return "pets" if subject_kind == "pet" else "people"
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -107,7 +120,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         face_paths = {
             f.id: photos[f.photo_id].file_path if f.photo_id in photos else "" for f in faces
         }
-        ranked = rank_persons_for_cluster(db, cluster_id)
+        ranked = rank_subjects_for_cluster(db, cluster_id)
         species = faces[0].species if faces else "human"
         kind = _kind_for_species(species)
         return templates.TemplateResponse(
@@ -117,7 +130,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "faces": faces,
                 "face_paths": face_paths,
                 "total": total,
-                "ranked_persons": ranked,
+                "ranked_subjects": ranked,
                 "kind": kind,
             },
             request=request,
@@ -127,8 +140,9 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     def singletons_faces_html(
         request: Request, species: str = "human", offset: int = 0, limit: int = 200
     ) -> HTMLResponse:
+        kind = _subject_kind_for_species(species)
         faces = db.get_singleton_faces(species=species, limit=limit, offset=offset)
-        face_hints = compute_singleton_hints(db, faces, species)
+        face_hints = compute_singleton_hints(db, faces, kind)
         total = db.get_singleton_count(species=species)
         return templates.TemplateResponse(
             name="partials/singleton_grid.html",
@@ -149,13 +163,13 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         if not photo:
             raise HTTPException(404, "Photo not found")
         faces = db.get_photo_faces(photo_id)
-        persons = db.get_persons()
+        subjects = db.get_subjects()
         faces_data = []
         for face in faces:
-            person_name = None
+            subject_name = None
             if face.person_id:
-                p = db.get_person(face.person_id)
-                person_name = p.name if p else None
+                s = db.get_subject(face.person_id)
+                subject_name = s.name if s else None
             faces_data.append(
                 {
                     "id": face.id,
@@ -164,7 +178,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                     "bbox_w_pct": face.bbox_w / photo.width * 100,
                     "bbox_h_pct": face.bbox_h / photo.height * 100,
                     "person_id": face.person_id,
-                    "person_name": person_name,
+                    "person_name": subject_name,
                     "confidence": face.confidence,
                 }
             )
@@ -175,7 +189,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             context={
                 "photo": photo,
                 "faces_data": faces_data,
-                "persons": persons,
+                "subjects": subjects,
                 "kind": kind,
             },
             request=request,
@@ -188,8 +202,9 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         limit: int = 20,
         species: str = "human",
     ) -> JSONResponse:
-        suggestions = suggest_merges(db, min_similarity=min_sim, species=species)
-        persons_map = {p.id: p.name for p in db.get_persons()}
+        kind = _subject_kind_for_species(species)
+        suggestions = suggest_merges(db, min_similarity=min_sim, kind=kind)
+        subjects_map = {s.id: s.name for s in db.get_subjects()}
         page = suggestions[offset : offset + limit]
         return JSONResponse(
             {
@@ -204,8 +219,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                         "size_b": s.size_b,
                         "sample_face_ids_a": s.sample_face_ids_a,
                         "sample_face_ids_b": s.sample_face_ids_b,
-                        "name_a": persons_map.get(s.cluster_a) if s.kind_a == "person" else None,
-                        "name_b": persons_map.get(s.cluster_b) if s.kind_b == "person" else None,
+                        "name_a": subjects_map.get(s.cluster_a) if s.kind_a == "subject" else None,
+                        "name_b": subjects_map.get(s.cluster_b) if s.kind_b == "subject" else None,
                     }
                     for s in page
                 ],
@@ -220,8 +235,9 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         limit: int = 20,
         species: str = "human",
     ) -> HTMLResponse:
-        suggestions = suggest_merges(db, min_similarity=min_sim, species=species)
-        persons_map = {p.id: p.name for p in db.get_persons()}
+        kind = _subject_kind_for_species(species)
+        suggestions = suggest_merges(db, min_similarity=min_sim, kind=kind)
+        subjects_map = {s.id: s.name for s in db.get_subjects()}
         total = len(suggestions)
         page = suggestions[offset : offset + limit]
         items = [
@@ -233,8 +249,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "size_b": s.size_b,
                 "sample_face_ids_a": s.sample_face_ids_a,
                 "sample_face_ids_b": s.sample_face_ids_b,
-                "name_a": persons_map.get(s.cluster_a) if s.kind_a == "person" else None,
-                "name_b": persons_map.get(s.cluster_b) if s.kind_b == "person" else None,
+                "name_a": subjects_map.get(s.cluster_a) if s.kind_a == "subject" else None,
+                "name_b": subjects_map.get(s.cluster_b) if s.kind_b == "subject" else None,
             }
             for s in page
         ]
@@ -258,16 +274,14 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         target_person_id: int = Body(...),
     ) -> JSONResponse:
         for fid in face_ids:
-            db.assign_face_to_person(fid, target_person_id)
+            db.assign_face_to_subject(fid, target_person_id)
         return JSONResponse({"ok": True, "swapped": len(face_ids)})
 
     @app.get("/search", response_class=HTMLResponse)
     def search_page(request: Request, q: str = "") -> HTMLResponse:
-        results = db.search_persons(q) if q else []
-        result_kinds = {
-            p.id: "pets" if db.has_person_species(p.id, "pet") else "people" for p in results
-        }
-        avatars = db.get_random_avatars([p.id for p in results])
+        results = db.search_subjects(q) if q else []
+        result_kinds = {s.id: _kind_for_subject(s.kind) for s in results}
+        avatars = db.get_random_avatars([s.id for s in results])
         return templates.TemplateResponse(
             name="search.html",
             context={
@@ -280,15 +294,15 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             request=request,
         )
 
-    @app.post("/api/persons/{person_id}/claim-faces")
-    def claim_faces(person_id: int, face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
+    @app.post("/api/subjects/{subject_id}/claim-faces")
+    def claim_faces(subject_id: int, face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
         for fid in face_ids:
-            db.assign_face_to_person(fid, person_id)
+            db.assign_face_to_subject(fid, subject_id)
         return JSONResponse({"ok": True, "claimed": len(face_ids)})
 
     @app.get("/api/clusters/{cluster_id}/hint")
     def cluster_hint_api(cluster_id: int) -> JSONResponse:
-        """Return the best matching person for a cluster."""
+        """Return the best matching subject for a cluster."""
         hint = compute_cluster_hint(db, cluster_id)
         if hint is None:
             return JSONResponse({"name": None})
@@ -335,27 +349,27 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             request=request,
         )
 
-    @app.get("/api/persons/{person_id}/faces")
-    def person_faces_api(person_id: int, offset: int = 0, limit: int = 200) -> JSONResponse:
+    @app.get("/api/subjects/{subject_id}/faces")
+    def subject_faces_api(subject_id: int, offset: int = 0, limit: int = 200) -> JSONResponse:
         rows = db.query(
             "SELECT id, photo_id FROM faces WHERE person_id = ? LIMIT ? OFFSET ?",
-            (person_id, limit, offset),
+            (subject_id, limit, offset),
         )
         return JSONResponse([{"id": r[0], "photo_id": r[1]} for r in rows])
 
-    @app.get("/api/persons/{person_id}/faces-html", response_class=HTMLResponse)
-    def person_faces_html(
-        request: Request, person_id: int, offset: int = 0, limit: int = 200
+    @app.get("/api/subjects/{subject_id}/faces-html", response_class=HTMLResponse)
+    def subject_faces_html(
+        request: Request, subject_id: int, offset: int = 0, limit: int = 200
     ) -> HTMLResponse:
-        faces_with_paths = db.get_person_faces_with_paths(person_id, limit=limit, offset=offset)
+        faces_with_paths = db.get_subject_faces_with_paths(subject_id, limit=limit, offset=offset)
         face_groups = _group_by_month(faces_with_paths, key="faces")
-        person = db.get_person(person_id)
-        total = person.face_count if person else 0
+        subject = db.get_subject(subject_id)
+        total = subject.face_count if subject else 0
         return templates.TemplateResponse(
-            name="partials/person_face_grid.html",
+            name="partials/subject_face_grid.html",
             context={
                 "face_groups": face_groups,
-                "person_id": person_id,
+                "subject_id": subject_id,
                 "offset": offset,
                 "limit": limit,
                 "total": total,
@@ -415,33 +429,36 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     # ── API: actions ───────────────────────────────────────
 
-    def _next_similar_cluster(person_id: int, cluster_id: int) -> str:
-        """Find the unnamed cluster most similar to this person, return redirect URL."""
+    def _next_similar_cluster(subject_id: int, cluster_id: int) -> str:
+        """Find the unnamed cluster most similar to this subject, return redirect URL."""
         faces = db.get_cluster_faces(cluster_id, limit=1)
         species = faces[0].species if faces else "human"
         kind = _kind_for_species(species)
         fallback = f"/{kind}/clusters"
 
-        sp = "pet" if species in db.PET_SPECIES else "human"
-        next_cluster = find_similar_cluster(db, person_id, species=sp)
+        subject_kind = _subject_kind_for_species(species)
+        next_cluster = find_similar_cluster(db, subject_id, kind=subject_kind)
         if next_cluster:
-            return f"/clusters/{next_cluster}?suggested_person={person_id}"
+            return f"/clusters/{next_cluster}?suggested_person={subject_id}"
         return fallback
 
     @app.post("/api/clusters/{cluster_id}/name")
     def name_cluster(cluster_id: int, name: str = Form(...)) -> RedirectResponse:
-        person_id = db.create_person(name)
-        db.assign_cluster_to_person(cluster_id, person_id)
-        return RedirectResponse(_next_similar_cluster(person_id, cluster_id), status_code=303)
+        # Determine subject kind from cluster's face species
+        faces = db.get_cluster_faces(cluster_id, limit=1)
+        subject_kind = _subject_kind_for_species(faces[0].species) if faces else "person"
+        subject_id = db.create_subject(name, kind=subject_kind)
+        db.assign_cluster_to_subject(cluster_id, subject_id)
+        return RedirectResponse(_next_similar_cluster(subject_id, cluster_id), status_code=303)
 
     @app.post("/api/clusters/{cluster_id}/assign", response_model=None)
     def assign_cluster_to_existing(
         request: Request, cluster_id: int, person_id: int = Form(...)
     ) -> RedirectResponse | HTMLResponse:
-        person = db.get_person(person_id)
-        if not person:
-            raise HTTPException(404, "Person not found")
-        db.assign_cluster_to_person(cluster_id, person_id)
+        subject = db.get_subject(person_id)
+        if not subject:
+            raise HTTPException(404, "Subject not found")
+        db.assign_cluster_to_subject(cluster_id, person_id)
         if request.headers.get("HX-Request"):
             return HTMLResponse("")
         return RedirectResponse(_next_similar_cluster(person_id, cluster_id), status_code=303)
@@ -483,7 +500,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.post("/api/faces/{face_id}/assign")
     def assign_face(face_id: int, person_id: int = Form(...)) -> JSONResponse:
-        db.assign_face_to_person(face_id, person_id)
+        db.assign_face_to_subject(face_id, person_id)
         return JSONResponse({"ok": True})
 
     @app.post("/api/faces/{face_id}/unassign")
@@ -491,49 +508,69 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         db.unassign_face(face_id)
         return JSONResponse({"ok": True})
 
-    @app.post("/api/persons/{person_id}/rename")
-    def rename_person(person_id: int, name: str = Form(...)) -> RedirectResponse:
-        kind = _kind_for_species("pet" if db.has_person_species(person_id, "pet") else "human")
-        db.rename_person(person_id, name)
-        return RedirectResponse(f"/{kind}/{person_id}", status_code=303)
+    @app.post("/api/subjects/{subject_id}/rename")
+    def rename_subject(subject_id: int, name: str = Form(...)) -> RedirectResponse:
+        subject = db.get_subject(subject_id)
+        if not subject:
+            raise HTTPException(404, "Subject not found")
+        kind = _kind_for_subject(subject.kind)
+        db.rename_subject(subject_id, name)
+        return RedirectResponse(f"/{kind}/{subject_id}", status_code=303)
 
-    @app.post("/api/persons/merge")
-    def merge_persons(source_id: int = Form(...), target_id: int = Form(...)) -> RedirectResponse:
+    @app.post("/api/subjects/merge")
+    def merge_subjects(source_id: int = Form(...), target_id: int = Form(...)) -> RedirectResponse:
         if source_id == target_id:
-            raise HTTPException(400, "Cannot merge person with themselves")
-        kind = _kind_for_species("pet" if db.has_person_species(target_id, "pet") else "human")
-        db.merge_persons(source_id, target_id)
+            raise HTTPException(400, "Cannot merge subject with themselves")
+        target = db.get_subject(target_id)
+        if not target:
+            raise HTTPException(404, "Target subject not found")
+        kind = _kind_for_subject(target.kind)
+        db.merge_subjects(source_id, target_id)
         return RedirectResponse(f"/{kind}/{target_id}", status_code=303)
 
-    @app.post("/api/persons/{person_id}/delete")
-    def delete_person(person_id: int) -> RedirectResponse:
-        """Unassign all faces and delete the person."""
-        kind = _kind_for_species("pet" if db.has_person_species(person_id, "pet") else "human")
-        db.delete_person(person_id)
+    @app.post("/api/subjects/{subject_id}/delete")
+    def delete_subject(subject_id: int) -> RedirectResponse:
+        """Unassign all faces and delete the subject."""
+        subject = db.get_subject(subject_id)
+        if not subject:
+            raise HTTPException(404, "Subject not found")
+        kind = _kind_for_subject(subject.kind)
+        db.delete_subject(subject_id)
         return RedirectResponse(f"/{kind}", status_code=303)
 
-    @app.post("/api/persons/create")
-    def create_person_api(name: str = Body(..., embed=True)) -> JSONResponse:
-        """Create a person and return its data. Used by typeahead picker."""
-        person_id = db.create_person(name)
-        person = db.get_person(person_id)
-        assert person is not None
-        return JSONResponse({"id": person.id, "name": person.name, "face_count": person.face_count})
+    @app.post("/api/subjects/create")
+    def create_subject_api(
+        name: str = Body(..., embed=True),
+        kind: str = Body("person", embed=True),
+    ) -> JSONResponse:
+        """Create a subject and return its data. Used by typeahead picker."""
+        subject_id = db.create_subject(name, kind=kind)
+        subject = db.get_subject(subject_id)
+        assert subject is not None
+        return JSONResponse(
+            {
+                "id": subject.id,
+                "name": subject.name,
+                "kind": subject.kind,
+                "face_count": subject.face_count,
+            }
+        )
 
-    @app.get("/api/persons/all")
-    def all_persons_api() -> JSONResponse:
-        """All persons and pets for typeahead components, with avatar face ID."""
-        persons = db.get_persons()
-        avatars = db.get_random_avatars([p.id for p in persons])
+    @app.get("/api/subjects/all")
+    def all_subjects_api() -> JSONResponse:
+        """All subjects (people and pets) for typeahead components, with avatar face ID."""
+        subjects = db.get_subjects()
+        avatars = db.get_random_avatars([s.id for s in subjects])
         return JSONResponse(
             [
                 {
-                    "id": p.id,
-                    "name": p.name,
-                    "face_count": p.face_count,
-                    "face_id": avatars.get(p.id),
+                    "id": s.id,
+                    "name": s.name,
+                    "kind": s.kind,
+                    "face_count": s.face_count,
+                    "face_id": avatars.get(s.id),
                 }
-                for p in persons
+                for s in subjects
             ]
         )
 
@@ -551,11 +588,11 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.get("/api/together")
     def together_api(person_ids: str = "") -> JSONResponse:
-        """Find photos containing ALL given person IDs (comma-separated)."""
+        """Find photos containing ALL given subject IDs (comma-separated)."""
         if not person_ids.strip():
             return JSONResponse({"photos": [], "total": 0})
         ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
-        photos = db.get_photos_with_all_persons(ids)
+        photos = db.get_photos_with_all_subjects(ids)
         return JSONResponse(
             {
                 "total": len(photos),
@@ -573,8 +610,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         if not person_ids.strip():
             return HTMLResponse("")
         ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
-        total = db.count_photos_with_all_persons(ids)
-        photos = db.get_photos_with_all_persons(ids, limit=limit, offset=offset)
+        total = db.count_photos_with_all_subjects(ids)
+        photos = db.get_photos_with_all_subjects(ids, limit=limit, offset=offset)
         groups = _group_by_month([(p, p.file_path) for p in photos], key="photos")
         return templates.TemplateResponse(
             name="partials/together_results.html",
@@ -609,21 +646,22 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     @app.get("/{kind}/singletons", response_class=HTMLResponse)
     def singletons_page(request: Request, kind: KindType) -> HTMLResponse:
         species = _species_for_kind(kind)
+        subject_kind = _subject_kind_for_species(species)
         total = db.get_singleton_count(species=species)
         faces = db.get_singleton_faces(species=species, limit=200)
-        persons = db.get_persons_by_species(species)
+        subjects = db.get_subjects_by_kind(subject_kind)
         photos = db.get_photos_batch([f.photo_id for f in faces])
         face_paths = {
             f.id: photos[f.photo_id].file_path if f.photo_id in photos else "" for f in faces
         }
-        face_hints = compute_singleton_hints(db, faces, species)
+        face_hints = compute_singleton_hints(db, faces, subject_kind)
         return templates.TemplateResponse(
             name="singletons.html",
             context={
                 "faces": faces,
                 "face_paths": face_paths,
                 "face_hints": face_hints,
-                "persons": persons,
+                "subjects": subjects,
                 "total": total,
                 "kind": kind,
             },
@@ -648,20 +686,21 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         b: int | None = None,
     ) -> HTMLResponse:
         species = _species_for_kind(kind)
-        persons = db.get_persons_by_species(species)
+        subject_kind = _subject_kind_for_species(species)
+        subjects = db.get_subjects_by_kind(subject_kind)
         result = None
-        person_a = None
-        person_b = None
+        subject_a = None
+        subject_b = None
         if a is not None and b is not None and a != b:
-            result = compare_persons(db, a, b)
-            person_a = db.get_person(a)
-            person_b = db.get_person(b)
+            result = compare_subjects(db, a, b)
+            subject_a = db.get_subject(a)
+            subject_b = db.get_subject(b)
         return templates.TemplateResponse(
             name="compare.html",
             context={
-                "persons": persons,
-                "person_a": person_a,
-                "person_b": person_b,
+                "subjects": subjects,
+                "subject_a": subject_a,
+                "subject_b": subject_b,
                 "result": result,
                 "selected_a": a,
                 "selected_b": b,
@@ -670,18 +709,18 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             request=request,
         )
 
-    @app.get("/{kind}/{person_id}/find-similar", response_class=HTMLResponse)
+    @app.get("/{kind}/{subject_id}/find-similar", response_class=HTMLResponse)
     def find_similar_page(
-        request: Request, kind: KindType, person_id: int, min_sim: float = 55.0
+        request: Request, kind: KindType, subject_id: int, min_sim: float = 55.0
     ) -> HTMLResponse:
-        person = db.get_person(person_id)
-        if not person:
-            raise HTTPException(404, "Person not found")
-        candidates = find_similar_unclustered(db, person_id, min_similarity=min_sim / 100)
+        subject = db.get_subject(subject_id)
+        if not subject:
+            raise HTTPException(404, "Subject not found")
+        candidates = find_similar_unclustered(db, subject_id, min_similarity=min_sim / 100)
         return templates.TemplateResponse(
             name="find_similar.html",
             context={
-                "person": person,
+                "subject": subject,
                 "candidates": candidates,
                 "min_sim": min_sim,
                 "kind": kind,
@@ -689,39 +728,40 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             request=request,
         )
 
-    @app.get("/{kind}/{person_id}", response_class=HTMLResponse)
-    def person_detail(request: Request, kind: KindType, person_id: int) -> HTMLResponse:
-        person = db.get_person(person_id)
-        if not person:
-            raise HTTPException(404, "Person not found")
-        faces_with_paths = db.get_person_faces_with_paths(person_id, limit=200)
+    @app.get("/{kind}/{subject_id}", response_class=HTMLResponse)
+    def subject_detail(request: Request, kind: KindType, subject_id: int) -> HTMLResponse:
+        subject = db.get_subject(subject_id)
+        if not subject:
+            raise HTTPException(404, "Subject not found")
+        faces_with_paths = db.get_subject_faces_with_paths(subject_id, limit=200)
         faces = [f for f, _ in faces_with_paths]
         face_groups = _group_by_month(faces_with_paths, key="faces")
-        photos = db.get_person_photos(person_id)
+        photos = db.get_subject_photos(subject_id)
         photo_groups = _group_by_month([(p, p.file_path) for p in photos], key="photos")
-        all_persons = db.get_persons()
+        all_subjects = db.get_subjects()
         return templates.TemplateResponse(
-            name="person_detail.html",
+            name="subject_detail.html",
             context={
-                "person": person,
+                "subject": subject,
                 "faces": faces,
                 "face_groups": face_groups,
                 "photos": photos,
                 "photo_groups": photo_groups,
-                "all_persons": all_persons,
+                "all_subjects": all_subjects,
                 "kind": kind,
             },
             request=request,
         )
 
     @app.get("/{kind}", response_class=HTMLResponse)
-    def persons_page(request: Request, kind: KindType) -> HTMLResponse:
+    def subjects_page(request: Request, kind: KindType) -> HTMLResponse:
         species = _species_for_kind(kind)
-        persons = db.get_persons_by_species(species)
-        avatars = db.get_random_avatars([p.id for p in persons])
+        subject_kind = _subject_kind_for_species(species)
+        subjects = db.get_subjects_by_kind(subject_kind)
+        avatars = db.get_random_avatars([s.id for s in subjects])
         return templates.TemplateResponse(
-            name="persons.html",
-            context={"persons": persons, "kind": kind, "avatars": avatars},
+            name="subjects.html",
+            context={"subjects": subjects, "kind": kind, "avatars": avatars},
             request=request,
         )
 
@@ -739,12 +779,14 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.get("/persons/{person_id}", response_class=RedirectResponse)
     def redirect_person_detail(person_id: int) -> RedirectResponse:
-        kind = _kind_for_species("pet" if db.has_person_species(person_id, "pet") else "human")
+        subject = db.get_subject(person_id)
+        kind = _kind_for_subject(subject.kind) if subject else "people"
         return RedirectResponse(f"/{kind}/{person_id}", status_code=301)
 
     @app.get("/persons/{person_id}/find-similar", response_class=RedirectResponse)
     def redirect_find_similar(person_id: int) -> RedirectResponse:
-        kind = _kind_for_species("pet" if db.has_person_species(person_id, "pet") else "human")
+        subject = db.get_subject(person_id)
+        kind = _kind_for_subject(subject.kind) if subject else "people"
         return RedirectResponse(f"/{kind}/{person_id}/find-similar", status_code=301)
 
     @app.get("/singletons", response_class=RedirectResponse)

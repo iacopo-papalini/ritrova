@@ -24,7 +24,7 @@ class MergeSuggestion:
     size_b: int
     sample_face_ids_a: list[int]
     sample_face_ids_b: list[int]
-    kind_a: str = "cluster"  # "person" or "cluster"
+    kind_a: str = "cluster"  # "subject" or "cluster"
     kind_b: str = "cluster"
 
 
@@ -64,9 +64,9 @@ def _cluster_faiss(embeddings: np.ndarray, threshold: float, min_size: int) -> n
     Phase 1: FAISS brute-force range search to find neighbor pairs.
              Still O(n^2) in theory but much faster than scipy pdist
              due to SIMD-optimized native code.
-    Phase 2: Connected components → candidate groups. For each group,
+    Phase 2: Connected components -> candidate groups. For each group,
              run exact complete-linkage clustering (O(k^2) per group, k << n).
-             Avoids storing the full n×n distance matrix.
+             Avoids storing the full n*n distance matrix.
     """
     n, d = embeddings.shape
     logger.info("FAISS clustering: building index for %d faces (dim=%d)...", n, d)
@@ -74,7 +74,7 @@ def _cluster_faiss(embeddings: np.ndarray, threshold: float, min_size: int) -> n
     index = faiss.IndexFlatIP(d)
     index.add(embeddings)
 
-    # Inner product ≥ (1 - threshold) means cosine distance ≤ threshold
+    # Inner product >= (1 - threshold) means cosine distance <= threshold
     sim_threshold = 1.0 - threshold
     logger.info("FAISS range search (similarity >= %.2f)...", sim_threshold)
     lims, _dists, neighbors = index.range_search(embeddings, sim_threshold)
@@ -175,9 +175,9 @@ def cluster_faces(
 
     Phase 1: FAISS range search finds candidate neighbor pairs (brute-force
     but SIMD-optimized, much faster than scipy pdist).
-    Phase 2: Connected components → candidate groups, then exact
+    Phase 2: Connected components -> candidate groups, then exact
     complete-linkage verification within each group (O(k^2), k << n).
-    Avoids storing the full n×n distance matrix in memory.
+    Avoids storing the full n*n distance matrix in memory.
 
     Args:
         db: Database instance.
@@ -226,18 +226,18 @@ def cluster_faces(
 
 
 def find_similar_unclustered(
-    db: FaceDB, person_id: int, min_similarity: float = 0.55, limit: int = 100
+    db: FaceDB, subject_id: int, min_similarity: float = 0.55, limit: int = 100
 ) -> list[tuple[int, float]]:
-    """Find unclustered faces similar to a confirmed person.
+    """Find unclustered faces similar to a confirmed subject.
 
     Returns list of (face_id, similarity_pct) sorted by similarity desc.
     """
-    person_faces = db.get_person_faces(person_id, limit=500)
-    if not person_faces:
+    subject_faces = db.get_subject_faces(subject_id, limit=500)
+    if not subject_faces:
         return []
 
-    centroid = _faces_centroid(person_faces)
-    species = person_faces[0].species
+    centroid = _faces_centroid(subject_faces)
+    species = subject_faces[0].species
 
     unclustered = db.get_unclustered_embeddings(species=species)
     if not unclustered:
@@ -257,29 +257,29 @@ def find_similar_unclustered(
 def auto_assign(
     db: FaceDB,
     min_similarity: float = 0.50,
-    species: str = "human",
+    kind: str = "person",
 ) -> dict[str, Any]:
-    """Bulk-assign unnamed clusters to existing named persons by centroid similarity.
+    """Bulk-assign unnamed clusters to existing named subjects by centroid similarity.
 
-    For each unnamed cluster, find the best-matching person. If similarity
-    exceeds the threshold, assign all faces in that cluster to the person.
+    For each unnamed cluster, find the best-matching subject. If similarity
+    exceeds the threshold, assign all faces in that cluster to the subject.
 
     Returns stats dict.
     """
-    persons = db.get_persons()
-    if not persons:
-        logger.info("No named persons to match against.")
+    species = FaceDB.KIND_TO_SPECIES[kind]
+    subjects = db.get_subjects_by_kind(kind)
+    if not subjects:
+        logger.info("No named subjects to match against.")
         return {"assigned_clusters": 0, "assigned_faces": 0, "unmatched": 0}
 
-    # Build person centroids
-    logger.info("Computing centroids for %d persons...", len(persons))
-    person_centroids = db.get_person_centroids(species=species)
+    logger.info("Computing centroids for %d subjects...", len(subjects))
+    subject_centroids = db.get_subject_centroids(kind=kind)
 
-    if not person_centroids:
-        logger.info("No persons with matching species.")
+    if not subject_centroids:
+        logger.info("No subjects with matching kind.")
         return {"assigned_clusters": 0, "assigned_faces": 0, "unmatched": 0}
 
-    centroid_matrix = np.array([pc[2] for pc in person_centroids])
+    centroid_matrix = np.array([sc[2] for sc in subject_centroids])
 
     # Process unnamed clusters
     unnamed = db.get_unnamed_clusters(species=species)
@@ -300,8 +300,8 @@ def auto_assign(
         best_sim = float(sims[best_idx])
 
         if best_sim >= min_similarity:
-            pid, pname, _ = person_centroids[best_idx]
-            db.assign_cluster_to_person(cluster["cluster_id"], pid)
+            sid, _name, _ = subject_centroids[best_idx]
+            db.assign_cluster_to_subject(cluster["cluster_id"], sid)
             assigned_clusters += 1
             assigned_faces += cluster["face_count"]
             if assigned_clusters % 100 == 0:
@@ -332,8 +332,8 @@ def auto_assign(
             best_idx = int(sims.argmax())
             best_sim = float(sims[best_idx])
             if best_sim >= min_similarity:
-                pid = person_centroids[best_idx][0]
-                db.assign_face_to_person(fid, pid)
+                sid = subject_centroids[best_idx][0]
+                db.assign_face_to_subject(fid, sid)
                 assigned_singletons += 1
 
         logger.info(
@@ -350,17 +350,17 @@ def auto_assign(
     }
 
 
-def compare_persons(
+def compare_subjects(
     db: FaceDB,
-    person_a_id: int,
-    person_b_id: int,
+    subject_a_id: int,
+    subject_b_id: int,
 ) -> dict[str, Any]:
-    """Compare two persons and find faces that might be misassigned.
+    """Compare two subjects and find faces that might be misassigned.
 
     Returns faces from A that are closer to B's centroid, and vice versa.
     """
-    faces_a = db.get_person_faces(person_a_id, limit=5000)
-    faces_b = db.get_person_faces(person_b_id, limit=5000)
+    faces_a = db.get_subject_faces(subject_a_id, limit=5000)
+    faces_b = db.get_subject_faces(subject_b_id, limit=5000)
     if not faces_a or not faces_b:
         return {"swaps_a_to_b": [], "swaps_b_to_a": []}
 
@@ -391,15 +391,16 @@ def compare_persons(
 def auto_merge_clusters(
     db: FaceDB,
     min_similarity: float = 0.70,
-    species: str = "human",
+    kind: str = "person",
 ) -> dict[str, Any]:
     """Auto-merge unnamed cluster pairs whose centroids exceed the similarity threshold."""
-    suggestions = suggest_merges(db, min_similarity=min_similarity * 100, species=species)
+    species = FaceDB.KIND_TO_SPECIES[kind]
+    suggestions = suggest_merges(db, min_similarity=min_similarity * 100, kind=kind)
 
     merged = 0
     faces_moved = 0
     for s in suggestions:
-        if s.kind_a == "person" or s.kind_b == "person":
+        if s.kind_a == "subject" or s.kind_b == "subject":
             continue
         if s.size_a >= s.size_b:
             target, source, source_size = s.cluster_a, s.cluster_b, s.size_b
@@ -413,10 +414,10 @@ def auto_merge_clusters(
     return {"merged": merged, "faces_moved": faces_moved, "remaining_clusters": remaining}
 
 
-def rank_persons_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, str, int, float]]:
-    """Rank existing persons by similarity to a cluster.
+def rank_subjects_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, str, int, float]]:
+    """Rank existing subjects by similarity to a cluster.
 
-    Returns list of (person_id, name, face_count, similarity_pct) sorted desc.
+    Returns list of (subject_id, name, face_count, similarity_pct) sorted desc.
     """
     cluster_faces = db.get_cluster_faces(cluster_id, limit=200)
     if not cluster_faces:
@@ -424,15 +425,15 @@ def rank_persons_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, str
 
     centroid = _faces_centroid(cluster_faces)
     cluster_species = cluster_faces[0].species
-    pet_species = db.PET_SPECIES
-    species = "pet" if cluster_species in pet_species else cluster_species
+    # Map face species to subject kind
+    kind = "pet" if cluster_species in db.PET_SPECIES else "person"
 
-    person_centroids = db.get_person_centroids(species=species)
-    persons_by_species = {p.id: p.face_count for p in db.get_persons_by_species(species)}
+    subject_centroids = db.get_subject_centroids(kind=kind)
+    subjects_by_kind = {s.id: s.face_count for s in db.get_subjects_by_kind(kind)}
     results = []
-    for pid, name, p_centroid in person_centroids:
-        sim = round(cosine_similarity(centroid, p_centroid) * 100, 1)
-        results.append((pid, name, persons_by_species.get(pid, 0), sim))
+    for sid, name, s_centroid in subject_centroids:
+        sim = round(cosine_similarity(centroid, s_centroid) * 100, 1)
+        results.append((sid, name, subjects_by_kind.get(sid, 0), sim))
 
     results.sort(key=lambda x: x[3], reverse=True)
     return results
@@ -440,16 +441,17 @@ def rank_persons_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, str
 
 def find_similar_cluster(
     db: FaceDB,
-    person_id: int,
+    subject_id: int,
     min_similarity: float = 0.35,
-    species: str = "human",
+    kind: str = "person",
 ) -> int | None:
-    """Find the unnamed cluster most similar to a person. Returns cluster_id or None."""
-    person_faces = db.get_person_faces(person_id, limit=500)
-    if not person_faces:
+    """Find the unnamed cluster most similar to a subject. Returns cluster_id or None."""
+    species = FaceDB.KIND_TO_SPECIES[kind]
+    subject_faces = db.get_subject_faces(subject_id, limit=500)
+    if not subject_faces:
         return None
 
-    centroid = _faces_centroid(person_faces)
+    centroid = _faces_centroid(subject_faces)
 
     best_cluster = None
     best_sim = min_similarity
@@ -470,28 +472,23 @@ def find_similar_cluster(
 def suggest_merges(
     db: FaceDB,
     min_similarity: float = 40.0,
-    species: str = "human",
+    kind: str = "person",
 ) -> list[MergeSuggestion]:
-    """Compare cluster/person centroids and suggest likely merges.
+    """Compare cluster/subject centroids and suggest likely merges.
 
-    Works across both unnamed clusters and named persons — any pair whose
+    Works across both unnamed clusters and named subjects — any pair whose
     centroid cosine similarity exceeds *min_similarity* % is returned,
     sorted by similarity descending.
     """
+    species = FaceDB.KIND_TO_SPECIES[kind]
     groups: list[tuple[str, int, list[int], np.ndarray]] = []
-    pet_species = db.PET_SPECIES
 
-    for person in db.get_persons():
-        faces = db.get_person_faces(person.id, limit=500)
+    for subject in db.get_subjects_by_kind(kind):
+        faces = db.get_subject_faces(subject.id, limit=500)
         if not faces:
             continue
-        face_species = faces[0].species
-        if species == "pet" and face_species not in pet_species:
-            continue
-        if species != "pet" and face_species != species:
-            continue
         embs = np.array([f.embedding for f in faces])
-        groups.append(("person", person.id, [f.id for f in faces], embs))
+        groups.append(("subject", subject.id, [f.id for f in faces], embs))
 
     for cluster in db.get_unnamed_clusters(species=species):
         faces = db.get_cluster_faces(cluster["cluster_id"], limit=500)
@@ -519,8 +516,8 @@ def suggest_merges(
         for j in range(i + 1, n):
             kind_a, gid_a, fids_a, _ = groups[i]
             kind_b, gid_b, fids_b, _ = groups[j]
-            # Skip person-to-person pairs — those are intentionally different people
-            if kind_a == "person" and kind_b == "person":
+            # Skip subject-to-subject pairs — those are intentionally different
+            if kind_a == "subject" and kind_b == "subject":
                 continue
             pct = float(sim_matrix[i, j]) * 100
             if pct < min_similarity:

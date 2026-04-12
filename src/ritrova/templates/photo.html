@@ -93,15 +93,15 @@
 
         {% else %}
         {# ── Unassigned face ───────────────────────────────── #}
-        <div x-data="personPicker({
-               onSelect(person) {
+        <div x-data="subjectPicker({
+               onSelect(subject) {
                  const fd = new FormData();
-                 fd.append('person_id', person.id);
+                 fd.append('person_id', subject.id);
                  fetch('/api/faces/{{ face.id }}/assign', { method: 'POST', body: fd })
                    .then(r => { if (r.ok) location.reload(); });
                }
              })">
-          {% include "partials/person_picker.html" %}
+          {% include "partials/subject_picker.html" %}
         </div>
         {% endif %}
       </div>

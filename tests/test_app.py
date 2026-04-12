@@ -107,11 +107,11 @@ class TestMergeSuggestionsAPI(TestCase):
         assert s["name_a"] is None
         assert s["name_b"] is None
 
-    def test_person_cluster_suggestion_shows_person_name(self) -> None:
-        """A person-cluster pair should show the person's name on the person side only."""
-        pid = self.db.create_person("Alice")
+    def test_subject_cluster_suggestion_shows_subject_name(self) -> None:
+        """A subject-cluster pair should show the subject's name on the subject side only."""
+        sid = self.db.create_subject("Alice")
         _, fid1 = _add_face(self.db, "/a1.jpg", seed=1)
-        self.db.assign_face_to_person(fid1, pid)
+        self.db.assign_face_to_subject(fid1, sid)
 
         _, fid2 = _add_face(self.db, "/b1.jpg", seed=1)
         _, fid3 = _add_face(self.db, "/b2.jpg", seed=1)
@@ -126,23 +126,23 @@ class TestMergeSuggestionsAPI(TestCase):
         assert "Alice" in names
         assert None in names
 
-    def test_person_to_person_excluded(self) -> None:
-        """Two named persons should NOT appear in suggestions."""
-        pid_a = self.db.create_person("Alice")
+    def test_subject_to_subject_excluded(self) -> None:
+        """Two named subjects should NOT appear in suggestions."""
+        sid_a = self.db.create_subject("Alice")
         _, fid1 = _add_face(self.db, "/a1.jpg", seed=1)
-        self.db.assign_face_to_person(fid1, pid_a)
+        self.db.assign_face_to_subject(fid1, sid_a)
 
-        pid_b = self.db.create_person("Alice2")
+        sid_b = self.db.create_subject("Alice2")
         _, fid2 = _add_face(self.db, "/b1.jpg", seed=1)
-        self.db.assign_face_to_person(fid2, pid_b)
+        self.db.assign_face_to_subject(fid2, sid_b)
 
         resp = self.client.get("/api/merge-suggestions?min_sim=50")
         data = resp.json()
         assert data["total"] == 0
 
 
-class TestPersonsAPI(TestCase):
-    """Test /api/persons/* endpoints used by the typeahead picker."""
+class TestSubjectsAPI(TestCase):
+    """Test /api/subjects/* endpoints used by the typeahead picker."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, tmp_path: Path) -> None:
@@ -150,50 +150,50 @@ class TestPersonsAPI(TestCase):
         self.app = create_app(str(tmp_path / "test.db"))
         self.client = TestClient(self.app)
 
-    def test_all_persons_empty(self) -> None:
-        resp = self.client.get("/api/persons/all")
+    def test_all_subjects_empty(self) -> None:
+        resp = self.client.get("/api/subjects/all")
         assert resp.status_code == 200
         assert resp.json() == []
 
-    def test_all_persons_returns_face_id(self) -> None:
-        pid = self.db.create_person("Alice")
+    def test_all_subjects_returns_face_id(self) -> None:
+        sid = self.db.create_subject("Alice")
         _, fid = _add_face(self.db, "/a.jpg", seed=1)
-        self.db.assign_face_to_person(fid, pid)
+        self.db.assign_face_to_subject(fid, sid)
 
-        resp = self.client.get("/api/persons/all")
+        resp = self.client.get("/api/subjects/all")
         data = resp.json()
         assert len(data) == 1
-        assert data[0]["id"] == pid
+        assert data[0]["id"] == sid
         assert data[0]["name"] == "Alice"
         assert data[0]["face_count"] == 1
         assert data[0]["face_id"] == fid
 
-    def test_all_persons_includes_pets(self) -> None:
-        pid_human = self.db.create_person("Alice")
+    def test_all_subjects_includes_pets(self) -> None:
+        sid_human = self.db.create_subject("Alice", kind="person")
         _, fid_h = _add_face(self.db, "/a.jpg", seed=1, species="human")
-        self.db.assign_face_to_person(fid_h, pid_human)
+        self.db.assign_face_to_subject(fid_h, sid_human)
 
-        pid_pet = self.db.create_person("Figaro")
+        sid_pet = self.db.create_subject("Figaro", kind="pet")
         _, fid_p = _add_face(self.db, "/b.jpg__pets", seed=2, species="dog")
-        self.db.assign_face_to_person(fid_p, pid_pet)
+        self.db.assign_face_to_subject(fid_p, sid_pet)
 
-        resp = self.client.get("/api/persons/all")
+        resp = self.client.get("/api/subjects/all")
         data = resp.json()
         names = {d["name"] for d in data}
         assert names == {"Alice", "Figaro"}
 
-    def test_create_person(self) -> None:
-        resp = self.client.post("/api/persons/create", json={"name": "Bob"})
+    def test_create_subject(self) -> None:
+        resp = self.client.post("/api/subjects/create", json={"name": "Bob"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["name"] == "Bob"
         assert data["id"] > 0
         assert data["face_count"] == 0
 
-    def test_create_person_returns_existing(self) -> None:
-        """Creating with an existing name returns the existing person."""
-        self.db.create_person("Alice")
-        resp = self.client.post("/api/persons/create", json={"name": "Alice"})
+    def test_create_subject_returns_existing(self) -> None:
+        """Creating with an existing name returns the existing subject."""
+        self.db.create_subject("Alice")
+        resp = self.client.post("/api/subjects/create", json={"name": "Alice"})
         data = resp.json()
         assert data["name"] == "Alice"
 
@@ -213,7 +213,7 @@ class TestPersonsAPI(TestCase):
 
 
 class TestTogetherAPI(TestCase):
-    """Test /api/together endpoint for multi-person photo search."""
+    """Test /api/together endpoint for multi-subject photo search."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, tmp_path: Path) -> None:
@@ -226,51 +226,51 @@ class TestTogetherAPI(TestCase):
         assert resp.status_code == 200
         assert resp.json()["total"] == 0
 
-    def test_finds_photo_with_both_persons(self) -> None:
-        pid_a = self.db.create_person("Alice")
-        pid_b = self.db.create_person("Bob")
+    def test_finds_photo_with_both_subjects(self) -> None:
+        sid_a = self.db.create_subject("Alice")
+        sid_b = self.db.create_subject("Bob")
         # One photo with both faces
         photo_id = self.db.add_photo("/group.jpg", 100, 100)
         self.db.add_faces_batch([(photo_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
         self.db.add_faces_batch([(photo_id, (50, 50, 30, 30), _emb(2), 0.9)], species="human")
         faces = self.db.get_photo_faces(photo_id)
-        self.db.assign_face_to_person(faces[0].id, pid_a)
-        self.db.assign_face_to_person(faces[1].id, pid_b)
+        self.db.assign_face_to_subject(faces[0].id, sid_a)
+        self.db.assign_face_to_subject(faces[1].id, sid_b)
 
-        resp = self.client.get(f"/api/together?person_ids={pid_a},{pid_b}")
+        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}")
         data = resp.json()
         assert data["total"] == 1
         assert data["photos"][0]["id"] == photo_id
 
     def test_excludes_photo_with_only_one(self) -> None:
-        pid_a = self.db.create_person("Alice")
-        pid_b = self.db.create_person("Bob")
+        sid_a = self.db.create_subject("Alice")
+        sid_b = self.db.create_subject("Bob")
         # Photo with only Alice
         photo_id = self.db.add_photo("/solo.jpg", 100, 100)
         self.db.add_faces_batch([(photo_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
         faces = self.db.get_photo_faces(photo_id)
-        self.db.assign_face_to_person(faces[0].id, pid_a)
+        self.db.assign_face_to_subject(faces[0].id, sid_a)
 
-        resp = self.client.get(f"/api/together?person_ids={pid_a},{pid_b}")
+        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}")
         assert resp.json()["total"] == 0
 
     def test_cross_kind_human_and_pet(self) -> None:
-        pid_human = self.db.create_person("Eva")
-        pid_pet = self.db.create_person("Figaro")
+        sid_human = self.db.create_subject("Eva", kind="person")
+        sid_pet = self.db.create_subject("Figaro", kind="pet")
         photo_id = self.db.add_photo("/family.jpg", 100, 100)
         self.db.add_faces_batch([(photo_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
         self.db.add_faces_batch([(photo_id, (50, 50, 30, 30), _emb(2), 0.9)], species="dog")
         faces = self.db.get_photo_faces(photo_id)
-        self.db.assign_face_to_person(faces[0].id, pid_human)
-        self.db.assign_face_to_person(faces[1].id, pid_pet)
+        self.db.assign_face_to_subject(faces[0].id, sid_human)
+        self.db.assign_face_to_subject(faces[1].id, sid_pet)
 
-        resp = self.client.get(f"/api/together?person_ids={pid_human},{pid_pet}")
+        resp = self.client.get(f"/api/together?person_ids={sid_human},{sid_pet}")
         data = resp.json()
         assert data["total"] == 1
 
 
 class TestNamespaceCollision(TestCase):
-    """Verify person IDs and cluster IDs don't collide in merge suggestions."""
+    """Verify subject IDs and cluster IDs don't collide in merge suggestions."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, tmp_path: Path) -> None:
@@ -278,18 +278,18 @@ class TestNamespaceCollision(TestCase):
         self.app = create_app(str(tmp_path / "test.db"))
         self.client = TestClient(self.app)
 
-    def test_cluster_id_matching_person_id_not_mislabeled(self) -> None:
-        """If cluster_id == person_id, the cluster should NOT show the person's name."""
-        # Create person with id=1
-        pid = self.db.create_person("Alice")
+    def test_cluster_id_matching_subject_id_not_mislabeled(self) -> None:
+        """If cluster_id == subject_id, the cluster should NOT show the subject's name."""
+        # Create subject with id=1
+        sid = self.db.create_subject("Alice")
         _, fid_alice = _add_face(self.db, "/alice.jpg", seed=1)
-        self.db.assign_face_to_person(fid_alice, pid)
+        self.db.assign_face_to_subject(fid_alice, sid)
 
-        # Create unnamed cluster with cluster_id=1 (same as person id!)
+        # Create unnamed cluster with cluster_id=1 (same as subject id!)
         # Use different seed so it's a different embedding from Alice
         _, fid_c1 = _add_face(self.db, "/c1.jpg", seed=99)
         _, fid_c2 = _add_face(self.db, "/c2.jpg", seed=99)
-        self.db.update_cluster_ids({fid_c1: pid, fid_c2: pid})  # cluster_id == person_id
+        self.db.update_cluster_ids({fid_c1: sid, fid_c2: sid})  # cluster_id == subject_id
 
         # Create another unnamed cluster to get a suggestion pair
         _, fid_c3 = _add_face(self.db, "/c3.jpg", seed=99)
@@ -299,20 +299,20 @@ class TestNamespaceCollision(TestCase):
         resp = self.client.get("/api/merge-suggestions?min_sim=50")
         data = resp.json()
 
-        # Find the cluster-cluster suggestion (not the person-cluster one)
+        # Find the cluster-cluster suggestion (not the subject-cluster one)
         for s in data["suggestions"]:
             ids = {s["cluster_a"], s["cluster_b"]}
-            if ids == {pid, 999}:
+            if ids == {sid, 999}:
                 # cluster_id=1 should NOT have name "Alice"
-                if s["cluster_a"] == pid:
+                if s["cluster_a"] == sid:
                     assert s["name_a"] is None, (
-                        f"Cluster {pid} incorrectly labeled as '{s['name_a']}' "
-                        f"due to person-id/cluster-id collision"
+                        f"Cluster {sid} incorrectly labeled as '{s['name_a']}' "
+                        f"due to subject-id/cluster-id collision"
                     )
-                if s["cluster_b"] == pid:
+                if s["cluster_b"] == sid:
                     assert s["name_b"] is None, (
-                        f"Cluster {pid} incorrectly labeled as '{s['name_b']}' "
-                        f"due to person-id/cluster-id collision"
+                        f"Cluster {sid} incorrectly labeled as '{s['name_b']}' "
+                        f"due to subject-id/cluster-id collision"
                     )
                 break
         else:

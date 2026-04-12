@@ -6,6 +6,10 @@
 **Reported:** 2026-04-10 | **Priority:** High
 Every write action undoable. Toast with Undo button, auto-dismiss ~15s. In-memory inverse action store on server. Affects every write endpoint.
 
+### FEAT-13: Inline search/filter on subjects list page
+**Reported:** 2026-04-11 | **Closed:** 2026-04-11
+**Shipped:** Filter input on `/{kind}` page, client-side Alpine filtering over the subjects grid. Count updates live. "No matches" message when filter yields nothing. `/search` route kept for now as fallback.
+
 ### FEAT-7: Generic search/filter across all metadata
 **Reported:** 2026-04-10 | **Priority:** Medium
 Unified search across names, paths, dates, tags. Filter by date range, person, location. Currently name-only.
@@ -18,9 +22,9 @@ Vision-language model (BLIP-2, LLaVA) for captions/tags ("people at a table", "c
 **Reported:** 2026-04-10 | **Priority:** Medium
 Dashboard task panel: launch scan/cluster/cleanup from UI. Background thread, SSE progress, log tail. One task at a time.
 
-### FEAT-10: Person/pet avatar in directory — partially done
-**Reported:** 2026-04-10 | **Priority:** Done (avatar + contextual label shipped)
-Remaining: could use best-quality face instead of random.
+### FEAT-10: Person/pet avatar in directory — done
+**Reported:** 2026-04-10 | **Closed:** 2026-04-11
+Avatar + contextual label shipped. Random face selection is intentional (variety).
 
 ### FEAT-12: Person avatar in typeahead picker — done
 **Reported:** 2026-04-10 | **Closed:** 2026-04-10

@@ -13,18 +13,19 @@
   <div x-data="{ pickedA: {{ selected_a or 'null' }}, pickedB: {{ selected_b or 'null' }} }"
        class="flex flex-wrap items-center gap-3 rounded-xl border border-gallery-border
               bg-gallery-card px-4 py-4">
-    <div class="w-48" x-data="personPicker({ onSelect(p) { pickedA = p.id; } })">
-      {% include "partials/person_picker.html" %}
+    <div class="w-48" x-data="subjectPicker({ onSelect(p) { pickedA = p.id; } })">
+      {% include "partials/subject_picker.html" %}
     </div>
 
     <span class="text-gallery-muted text-sm font-medium">vs</span>
 
-    <div class="w-48" x-data="personPicker({ onSelect(p) { pickedB = p.id; } })">
-      {% include "partials/person_picker.html" %}
+    <div class="w-48" x-data="subjectPicker({ onSelect(p) { pickedB = p.id; } })">
+      {% include "partials/subject_picker.html" %}
     </div>
 
-    <button @click="if (pickedA && pickedB && pickedA !== pickedB)
-                      location.href = '/{{ kind }}/compare?a=' + pickedA + '&b=' + pickedB"
+    <button data-compare-url="/{{ kind }}/compare"
+            @click="if (pickedA && pickedB && pickedA !== pickedB)
+                      location.href = $el.dataset.compareUrl + '?a=' + pickedA + '&b=' + pickedB"
             :disabled="!pickedA || !pickedB || pickedA === pickedB"
             class="rounded-lg bg-gallery-accent px-4 py-2 text-sm font-medium text-gallery-bg
                    transition-colors hover:bg-gallery-accent/80 cursor-pointer
@@ -36,13 +37,13 @@
   {% if result %}
 
   {# ══════════════════════════════════════════════════════════════
-     Swap group A → B: faces in person_a that look more like person_b
+     Swap group A → B: faces in subject_a that look more like subject_b
      ═══════════════════════════════════════════════════════════════ #}
   {% if result.swaps_a_to_b %}
   <div x-data="faceSelection()">
 
     <h2 class="font-display text-lg font-semibold text-gallery-text mb-3">
-      In {{ person_a.name }} but looks more like {{ person_b.name }}
+      In {{ subject_a.name }} but looks more like {{ subject_b.name }}
       <span class="text-gallery-muted text-sm font-normal">({{ result.swaps_a_to_b|length }})</span>
     </h2>
 
@@ -80,11 +81,11 @@
                 fetch('/api/faces/swap', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ face_ids: faceIds, target_person_id: {{ person_b.id }} })
+                  body: JSON.stringify({ face_ids: faceIds, target_person_id: {{ subject_b.id }} })
                 }).then(r => { if (r.ok) location.reload(); })"
               class="rounded-lg bg-gallery-accent px-4 py-1.5 text-sm font-medium text-gallery-bg
                      transition-colors hover:bg-gallery-accent/80 cursor-pointer">
-        Move to {{ person_b.name }}
+        Move to {{ subject_b.name }}
       </button>
     </div>
 
@@ -119,18 +120,18 @@
   </div>
   {% else %}
   <p class="text-gallery-muted text-sm">
-    No faces in {{ person_a.name }} look more like {{ person_b.name }}.
+    No faces in {{ subject_a.name }} look more like {{ subject_b.name }}.
   </p>
   {% endif %}
 
   {# ══════════════════════════════════════════════════════════════
-     Swap group B → A: faces in person_b that look more like person_a
+     Swap group B → A: faces in subject_b that look more like subject_a
      ═══════════════════════════════════════════════════════════════ #}
   {% if result.swaps_b_to_a %}
   <div x-data="faceSelection()">
 
     <h2 class="font-display text-lg font-semibold text-gallery-text mb-3">
-      In {{ person_b.name }} but looks more like {{ person_a.name }}
+      In {{ subject_b.name }} but looks more like {{ subject_a.name }}
       <span class="text-gallery-muted text-sm font-normal">({{ result.swaps_b_to_a|length }})</span>
     </h2>
 
@@ -168,11 +169,11 @@
                 fetch('/api/faces/swap', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ face_ids: faceIds, target_person_id: {{ person_a.id }} })
+                  body: JSON.stringify({ face_ids: faceIds, target_person_id: {{ subject_a.id }} })
                 }).then(r => { if (r.ok) location.reload(); })"
               class="rounded-lg bg-gallery-accent px-4 py-1.5 text-sm font-medium text-gallery-bg
                      transition-colors hover:bg-gallery-accent/80 cursor-pointer">
-        Move to {{ person_a.name }}
+        Move to {{ subject_a.name }}
       </button>
     </div>
 
@@ -207,7 +208,7 @@
   </div>
   {% else %}
   <p class="text-gallery-muted text-sm">
-    No faces in {{ person_b.name }} look more like {{ person_a.name }}.
+    No faces in {{ subject_b.name }} look more like {{ subject_a.name }}.
   </p>
   {% endif %}
 

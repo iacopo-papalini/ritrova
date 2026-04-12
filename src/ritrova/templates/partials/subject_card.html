@@ -1,24 +1,24 @@
-{# Reusable person/pet card — expects: person, kind, avatars dict #}
-<a href="/{{ kind }}/{{ person.id }}"
+{# Reusable person/pet card — expects: subject, kind, avatars dict #}
+<a href="/{{ kind }}/{{ subject.id }}"
    class="group flex items-center gap-4 rounded-xl border border-gallery-border bg-gallery-card p-4
           transition-all duration-200 hover:border-gallery-accent/40
           hover:ring-1 hover:ring-gallery-accent/20">
-  {% if avatars.get(person.id) %}
-  <img src="/api/faces/{{ avatars[person.id] }}/thumbnail?size=120"
-       alt="{{ person.name }}"
+  {% if avatars.get(subject.id) %}
+  <img src="/api/faces/{{ avatars[subject.id] }}/thumbnail?size=120"
+       alt="{{ subject.name }}"
        class="h-14 w-14 shrink-0 rounded-full object-cover">
   {% else %}
   <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gallery-border text-gallery-muted text-lg font-bold">
-    {{ person.name[0]|upper }}
+    {{ subject.name[0]|upper }}
   </div>
   {% endif %}
   <div class="min-w-0">
     <p class="font-display text-lg font-semibold text-gallery-text truncate
               group-hover:text-gallery-accent transition-colors">
-      {{ person.name }}
+      {{ subject.name }}
     </p>
     <p class="text-sm text-gallery-muted">
-      {{ person.face_count }} face{{ 's' if person.face_count != 1 else '' }}
+      {{ subject.face_count }} face{{ 's' if subject.face_count != 1 else '' }}
     </p>
   </div>
 </a>

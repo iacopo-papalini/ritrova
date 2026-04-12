@@ -2,11 +2,11 @@
 {% block title %}Singles{% endblock %}
 {% block content %}
 <div x-data="faceSelection()"
-     @person-selected="
-       const person = $event.detail;
+     @subject-selected="
+       const subject = $event.detail;
        const faceIds = ids;
        if (!faceIds.length) return;
-       fetch('/api/persons/' + person.id + '/claim-faces', {
+       fetch('/api/subjects/' + subject.id + '/claim-faces', {
          method: 'POST',
          headers: { 'Content-Type': 'application/json' },
          body: JSON.stringify({ face_ids: faceIds })
@@ -52,8 +52,8 @@
     <div class="flex-1"></div>
 
     <!-- Assign to person (typeahead) -->
-    <div class="w-56" x-data="personPicker()">
-      {% include "partials/person_picker.html" %}
+    <div class="w-56" x-data="subjectPicker()">
+      {% include "partials/subject_picker.html" %}
     </div>
     <button @click="
               const faceIds = ids;
@@ -93,7 +93,7 @@
                   bg-gallery-bg/80 backdrop-blur-sm px-2 py-1.5 text-xs text-gallery-accent font-medium
                   cursor-pointer hover:bg-gallery-accent/20"
            @click.stop="
-             fetch('/api/persons/{{ hint.person_id }}/claim-faces', {
+             fetch('/api/subjects/{{ hint.person_id }}/claim-faces', {
                method: 'POST',
                headers: { 'Content-Type': 'application/json' },
                body: JSON.stringify({ face_ids: [{{ face.id }}] })

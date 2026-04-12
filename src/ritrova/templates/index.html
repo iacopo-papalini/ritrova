@@ -26,10 +26,10 @@
     </div>
 
     <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
-         x-data="{ current: 0, target: {{ stats.total_persons }} }"
+         x-data="{ current: 0, target: {{ stats.total_subjects }} }"
          x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
       <p class="font-display text-4xl font-bold text-gallery-accent"
-         x-text="current.toLocaleString()">{{ stats.total_persons }}</p>
+         x-text="current.toLocaleString()">{{ stats.total_subjects }}</p>
       <p class="mt-1 text-sm text-gallery-muted">Persons named</p>
     </div>
 
@@ -75,7 +75,7 @@
       Review unnamed clusters
     </a>
     {% endif %}
-    {% if stats.total_persons > 0 %}
+    {% if stats.total_subjects > 0 %}
     <a href="/people"
        class="inline-flex items-center rounded-lg border border-gallery-accent px-5 py-2.5 text-sm font-semibold text-gallery-accent transition-colors hover:bg-gallery-accent/10">
       Browse names

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}{{ person.name }}{% endblock %}
+{% block title %}{{ subject.name }}{% endblock %}
 {% block content %}
-<div x-data="{ confirmDelete: false }">
+<div x-data="{ confirmDelete: false }" data-subject-name="{{ subject.name }}">
 
   {# ── Header ──────────────────────────────────────────────── #}
   <div class="mb-6">
@@ -13,10 +13,10 @@
         </svg>
       </a>
       <h1 class="text-2xl font-bold font-display text-gallery-accent">
-        {{ person.name }}
+        {{ subject.name }}
       </h1>
       <span class="text-gallery-muted text-sm">
-        ({{ person.face_count }} face{{ 's' if person.face_count != 1 else '' }}
+        ({{ subject.face_count }} face{{ 's' if subject.face_count != 1 else '' }}
         in {{ photos|length }} photo{{ 's' if photos|length != 1 else '' }})
       </span>
     </div>
@@ -25,9 +25,9 @@
   {# ── Action bar ──────────────────────────────────────────── #}
   <div class="mb-6 flex flex-wrap items-center gap-3">
     {# Rename #}
-    <form action="/api/persons/{{ person.id }}/rename" method="post"
+    <form action="/api/subjects/{{ subject.id }}/rename" method="post"
           class="flex items-center gap-2">
-      <input type="text" name="name" value="{{ person.name }}" required
+      <input type="text" name="name" value="{{ subject.name }}" required
              class="rounded-lg border border-gallery-border bg-gallery-card px-3 py-2 text-sm text-gallery-text
                     placeholder-gallery-muted outline-none focus:border-gallery-accent
                     focus:ring-1 focus:ring-gallery-accent/30 w-48">
@@ -39,32 +39,33 @@
     </form>
 
     {# Find similar #}
-    <a href="/{{ kind }}/{{ person.id }}/find-similar"
+    <a href="/{{ kind }}/{{ subject.id }}/find-similar"
        class="rounded-lg bg-gallery-accent px-4 py-2 text-sm font-medium text-gallery-bg
               transition-colors hover:bg-gallery-accent/80">
       Find similar unclustered
     </a>
 
     {# Merge into another person #}
-    <div class="w-56" x-data="personPicker({
-           onSelect(person) {
-             if (!confirm('Merge all faces from {{ person.name }} into ' + person.name + '?')) return;
+    <div class="w-56" x-data="subjectPicker({
+           onSelect(target) {
+             const srcName = $el.closest('[data-subject-name]').dataset.subjectName;
+             if (!confirm('Merge all faces from ' + srcName + ' into ' + target.name + '?')) return;
              const fd = new FormData();
-             fd.append('source_id', '{{ person.id }}');
-             fd.append('target_id', person.id);
-             fetch('/api/persons/merge', { method: 'POST', body: fd, redirect: 'follow' })
+             fd.append('source_id', '{{ subject.id }}');
+             fd.append('target_id', target.id);
+             fetch('/api/subjects/merge', { method: 'POST', body: fd, redirect: 'follow' })
                .then(r => { if (r.redirected) location.href = r.url; else if (r.ok) location.reload(); });
            }
          })">
       <p class="text-xs text-gallery-muted mb-1">Merge into...</p>
-      {% include "partials/person_picker.html" %}
+      {% include "partials/subject_picker.html" %}
     </div>
 
     <div class="flex-1"></div>
 
     {# Delete #}
     <button @click="if (confirm('Delete this person? All faces will become unassigned.'))
-                      fetch('/api/persons/{{ person.id }}/delete', { method: 'POST' })
+                      fetch('/api/subjects/{{ subject.id }}/delete', { method: 'POST' })
                         .then(r => { if (r.redirected) location.href = r.url; else location.href = '/{{ kind }}'; })"
             class="rounded-lg border border-gallery-danger/30 px-4 py-2 text-sm font-medium text-gallery-danger
                    transition-colors hover:bg-gallery-danger/10 cursor-pointer">
@@ -78,7 +79,7 @@
       <button @click="tab = 'faces'"
               class="rounded-full px-5 py-1.5 font-medium transition-colors cursor-pointer"
               :class="tab === 'faces' ? 'bg-gallery-accent text-gallery-bg' : 'text-gallery-muted hover:text-gallery-text'">
-        Face Samples ({{ person.face_count }})
+        Face Samples ({{ subject.face_count }})
       </button>
       <button @click="tab = 'photos'"
               class="rounded-full px-5 py-1.5 font-medium transition-colors cursor-pointer"
@@ -99,7 +100,7 @@
                alt="face"
                @click="$store.lightbox.show({{ face.photo_id }})"
                class="aspect-square w-full cursor-pointer object-cover">
-          <button @click.stop="if(confirm('Remove this face from {{ person.name }}?'))
+          <button @click.stop="if(confirm('Remove this face from ' + $el.closest('[data-subject-name]').dataset.subjectName + '?'))
                     fetch('/api/faces/{{ face.id }}/unassign', { method: 'POST' })
                       .then(r => { if(r.ok) $el.closest('.group').remove() })"
                   class="absolute top-1 right-1 z-10 hidden group-hover:flex h-6 w-6 items-center justify-center
@@ -113,8 +114,8 @@
         {% endfor %}
       </div>
       {% endfor %}
-      {% if person.face_count > faces|length %}
-      <div hx-get="/api/persons/{{ person.id }}/faces-html?offset={{ faces|length }}&limit=200"
+      {% if subject.face_count > faces|length %}
+      <div hx-get="/api/subjects/{{ subject.id }}/faces-html?offset={{ faces|length }}&limit=200"
            hx-trigger="revealed"
            hx-swap="outerHTML"
            class="flex justify-center py-8">

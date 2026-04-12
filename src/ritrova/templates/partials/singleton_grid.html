@@ -16,7 +16,7 @@
               bg-gallery-bg/80 backdrop-blur-sm px-2 py-1.5 text-xs text-gallery-accent font-medium
               cursor-pointer hover:bg-gallery-accent/20"
        @click.stop="
-         fetch('/api/persons/{{ hint.person_id }}/claim-faces', {
+         fetch('/api/subjects/{{ hint.person_id }}/claim-faces', {
            method: 'POST',
            headers: { 'Content-Type': 'application/json' },
            body: JSON.stringify({ face_ids: [{{ face.id }}] })

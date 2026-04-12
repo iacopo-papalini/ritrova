@@ -58,9 +58,10 @@ class Face:
 
 
 @dataclass
-class Person:
+class Subject:
     id: int
     name: str
+    kind: str = "person"
     face_count: int = 0
 
 
@@ -87,9 +88,10 @@ class FaceDB:
                 scanned_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS persons (
+            CREATE TABLE IF NOT EXISTS subjects (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'person',
                 created_at TEXT NOT NULL
             );
 
@@ -101,7 +103,7 @@ class FaceDB:
                 bbox_w INTEGER NOT NULL,
                 bbox_h INTEGER NOT NULL,
                 embedding BLOB NOT NULL,
-                person_id INTEGER REFERENCES persons(id) ON DELETE SET NULL,
+                person_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
                 cluster_id INTEGER,
                 confidence REAL NOT NULL DEFAULT 0.0,
                 detected_at TEXT NOT NULL
@@ -117,15 +119,22 @@ class FaceDB:
                 face_id INTEGER PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE
             );
         """)
-        # Migrations
+        # Migrations (idempotent — errors suppressed if already applied)
         for migration in [
             "ALTER TABLE photos ADD COLUMN video_path TEXT",
             "ALTER TABLE faces ADD COLUMN species TEXT NOT NULL DEFAULT 'human'",
             "ALTER TABLE photos ADD COLUMN latitude REAL",
             "ALTER TABLE photos ADD COLUMN longitude REAL",
+            # persons -> subjects migration (for DBs created before the rename)
+            "ALTER TABLE persons RENAME TO subjects",
+            "ALTER TABLE subjects ADD COLUMN kind TEXT NOT NULL DEFAULT 'person'",
         ]:
             with contextlib.suppress(sqlite3.OperationalError):
                 self.conn.execute(migration)
+        # Unique index on (name, kind) — idempotent via IF NOT EXISTS
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_name_kind ON subjects(name, kind)"
+        )
         self.conn.commit()
 
     @_locked
@@ -140,6 +149,7 @@ class FaceDB:
         return self.conn.execute(sql, params).fetchall()
 
     PET_SPECIES = ("dog", "cat", "other_pet")
+    KIND_TO_SPECIES: dict[str, str] = {"person": "human", "pet": "pet"}
 
     def close(self) -> None:
         self.conn.close()
@@ -352,7 +362,7 @@ class FaceDB:
 
     @_locked
     def get_unnamed_clusters(self, species: str = "human") -> list[dict[str, Any]]:
-        """Clusters with no person assigned, ordered by size."""
+        """Clusters with no subject assigned, ordered by size."""
         clause, params = self.species_filter(species)
         rows = self.conn.execute(
             f"""
@@ -452,130 +462,165 @@ class FaceDB:
             result.append(Face(**d))
         return result
 
-    # --- Persons ---
+    # --- Subjects ---
+
+    def _species_for_kind(self, kind: str) -> str:
+        """Map subject kind to the face species filter value."""
+        return self.KIND_TO_SPECIES[kind]
+
+    def _is_species_kind_compatible(self, face_species: str, subject_kind: str) -> bool:
+        """Check if a face's species is compatible with a subject's kind."""
+        if subject_kind == "person":
+            return face_species == "human"
+        if subject_kind == "pet":
+            return face_species in self.PET_SPECIES
+        return True
 
     @_locked
-    def create_person(self, name: str) -> int:
-        """Create a person or return existing one if name matches."""
-        row = self.conn.execute("SELECT id FROM persons WHERE name = ?", (name,)).fetchone()
+    def create_subject(self, name: str, kind: str = "person") -> int:
+        """Create a subject or return existing one if name+kind matches."""
+        row = self.conn.execute(
+            "SELECT id FROM subjects WHERE name = ? AND kind = ?", (name, kind)
+        ).fetchone()
         if row:
             return int(row[0])
         cur = self.conn.execute(
-            "INSERT INTO persons (name, created_at) VALUES (?, ?)",
-            (name, self._now()),
+            "INSERT INTO subjects (name, kind, created_at) VALUES (?, ?, ?)",
+            (name, kind, self._now()),
         )
         self.conn.commit()
         assert cur.lastrowid is not None
         return cur.lastrowid
 
     @_locked
-    def get_person(self, person_id: int) -> Person | None:
+    def get_subject(self, subject_id: int) -> Subject | None:
         row = self.conn.execute(
             """
-            SELECT p.id, p.name, COUNT(f.id) as face_count
-            FROM persons p LEFT JOIN faces f ON f.person_id = p.id
-            WHERE p.id = ? GROUP BY p.id
+            SELECT s.id, s.name, s.kind, COUNT(f.id) as face_count
+            FROM subjects s LEFT JOIN faces f ON f.person_id = s.id
+            WHERE s.id = ? GROUP BY s.id
             """,
-            (person_id,),
+            (subject_id,),
         ).fetchone()
         if not row:
             return None
-        return Person(id=row["id"], name=row["name"], face_count=row["face_count"])
+        return Subject(
+            id=row["id"], name=row["name"], kind=row["kind"], face_count=row["face_count"]
+        )
 
     @_locked
-    def get_persons(self) -> list[Person]:
+    def get_subjects(self) -> list[Subject]:
         rows = self.conn.execute("""
-            SELECT p.id, p.name, COUNT(f.id) as face_count
-            FROM persons p LEFT JOIN faces f ON f.person_id = p.id
-            GROUP BY p.id ORDER BY p.name
+            SELECT s.id, s.name, s.kind, COUNT(f.id) as face_count
+            FROM subjects s LEFT JOIN faces f ON f.person_id = s.id
+            GROUP BY s.id ORDER BY s.name
         """).fetchall()
-        return [Person(id=r["id"], name=r["name"], face_count=r["face_count"]) for r in rows]
+        return [
+            Subject(id=r["id"], name=r["name"], kind=r["kind"], face_count=r["face_count"])
+            for r in rows
+        ]
 
     @_locked
-    def get_persons_by_species(self, species: str) -> list[Person]:
-        """Return persons that have at least one face of the given species."""
-        clause, params = self.species_filter(species)
+    def get_subjects_by_kind(self, kind: str) -> list[Subject]:
+        """Return subjects of the given kind with their face counts."""
         rows = self.conn.execute(
-            f"""
-            SELECT p.id, p.name, COUNT(f.id) as face_count
-            FROM persons p
-            JOIN faces f ON f.person_id = p.id AND {clause}
-            GROUP BY p.id ORDER BY p.name
+            """
+            SELECT s.id, s.name, s.kind, COUNT(f.id) as face_count
+            FROM subjects s LEFT JOIN faces f ON f.person_id = s.id
+            WHERE s.kind = ?
+            GROUP BY s.id ORDER BY s.name
             """,
-            params,
+            (kind,),
         ).fetchall()
-        return [Person(id=r["id"], name=r["name"], face_count=r["face_count"]) for r in rows]
+        return [
+            Subject(id=r["id"], name=r["name"], kind=r["kind"], face_count=r["face_count"])
+            for r in rows
+        ]
 
     @_locked
-    def get_person_centroids(self, species: str = "human") -> list[tuple[int, str, np.ndarray]]:
-        """Return [(person_id, name, centroid)] for all persons of a species.
+    def get_subject_centroids(self, kind: str = "person") -> list[tuple[int, str, np.ndarray]]:
+        """Return [(subject_id, name, centroid)] for all subjects of a kind.
 
-        Single query for all face embeddings, grouped by person in Python.
+        Single query for all face embeddings, grouped by subject in Python.
         """
+        species = self._species_for_kind(kind)
         clause, params = self.species_filter(species)
         rows = self.conn.execute(
             f"""
-            SELECT f.person_id, p.name, f.embedding
+            SELECT f.person_id, s.name, f.embedding
             FROM faces f
-            JOIN persons p ON p.id = f.person_id
-            WHERE f.person_id IS NOT NULL AND {clause}
+            JOIN subjects s ON s.id = f.person_id
+            WHERE f.person_id IS NOT NULL AND s.kind = ? AND {clause}
             ORDER BY f.person_id
             """,
-            params,
+            (kind, *params),
         ).fetchall()
 
         from .embeddings import compute_centroid
 
-        person_embs: dict[int, tuple[str, list[np.ndarray]]] = {}
+        subject_embs: dict[int, tuple[str, list[np.ndarray]]] = {}
         for r in rows:
-            pid = r["person_id"]
-            if pid not in person_embs:
-                person_embs[pid] = (r["name"], [])
-            person_embs[pid][1].append(np.frombuffer(r["embedding"], dtype=np.float32))
+            sid = r["person_id"]
+            if sid not in subject_embs:
+                subject_embs[sid] = (r["name"], [])
+            subject_embs[sid][1].append(np.frombuffer(r["embedding"], dtype=np.float32))
 
         result: list[tuple[int, str, np.ndarray]] = []
-        for pid, (name, embs) in person_embs.items():
+        for sid, (name, embs) in subject_embs.items():
             centroid = compute_centroid(np.array(embs))
-            result.append((pid, name, centroid))
+            result.append((sid, name, centroid))
         return result
 
     @_locked
-    def rename_person(self, person_id: int, name: str) -> None:
-        self.conn.execute("UPDATE persons SET name = ? WHERE id = ?", (name, person_id))
+    def rename_subject(self, subject_id: int, name: str) -> None:
+        self.conn.execute("UPDATE subjects SET name = ? WHERE id = ?", (name, subject_id))
         self.conn.commit()
 
     @_locked
-    def assign_face_to_person(self, face_id: int, person_id: int) -> None:
-        self.conn.execute("UPDATE faces SET person_id = ? WHERE id = ?", (person_id, face_id))
+    def assign_face_to_subject(self, face_id: int, subject_id: int) -> None:
+        """Assign a face to a subject, validating species/kind compatibility."""
+        face = self.get_face(face_id)
+        subject = self.get_subject(subject_id)
+        if face and subject and not self._is_species_kind_compatible(face.species, subject.kind):
+            raise ValueError(f"Cannot assign {face.species} face to a {subject.kind} subject")
+        self.conn.execute("UPDATE faces SET person_id = ? WHERE id = ?", (subject_id, face_id))
         self.conn.commit()
 
     @_locked
-    def assign_cluster_to_person(self, cluster_id: int, person_id: int) -> None:
+    def assign_cluster_to_subject(self, cluster_id: int, subject_id: int) -> None:
+        """Assign all unassigned faces in a cluster to a subject, validating compatibility."""
+        subject = self.get_subject(subject_id)
+        if subject:
+            faces = self.get_cluster_faces(cluster_id, limit=1)
+            if faces and not self._is_species_kind_compatible(faces[0].species, subject.kind):
+                raise ValueError(
+                    f"Cannot assign {faces[0].species} face to a {subject.kind} subject"
+                )
         self.conn.execute(
             "UPDATE faces SET person_id = ? WHERE cluster_id = ? AND person_id IS NULL",
-            (person_id, cluster_id),
+            (subject_id, cluster_id),
         )
         self.conn.commit()
 
     @_locked
-    def merge_persons(self, source_id: int, target_id: int) -> None:
-        """Merge source person into target: reassign faces, delete source."""
+    def merge_subjects(self, source_id: int, target_id: int) -> None:
+        """Merge source subject into target: reassign faces, delete source."""
         self.conn.execute(
             "UPDATE faces SET person_id = ? WHERE person_id = ?",
             (target_id, source_id),
         )
-        self.conn.execute("DELETE FROM persons WHERE id = ?", (source_id,))
+        self.conn.execute("DELETE FROM subjects WHERE id = ?", (source_id,))
         self.conn.commit()
 
     @_locked
-    def get_person_faces(self, person_id: int, limit: int = 200, offset: int = 0) -> list[Face]:
+    def get_subject_faces(self, subject_id: int, limit: int = 200, offset: int = 0) -> list[Face]:
         rows = self.conn.execute(
             """SELECT f.* FROM faces f
                LEFT JOIN photos p ON f.photo_id = p.id
                WHERE f.person_id = ?
                ORDER BY p.taken_at DESC, f.id
                LIMIT ? OFFSET ?""",
-            (person_id, limit, offset),
+            (subject_id, limit, offset),
         ).fetchall()
         result = []
         for row in rows:
@@ -584,8 +629,8 @@ class FaceDB:
             result.append(Face(**d))
         return result
 
-    def get_person_faces_with_paths(
-        self, person_id: int, limit: int = 200, offset: int = 0
+    def get_subject_faces_with_paths(
+        self, subject_id: int, limit: int = 200, offset: int = 0
     ) -> list[tuple[Face, str]]:
         """Return faces with their photo's file_path, sorted by path (date-based dirs)."""
         rows = self.conn.execute(
@@ -594,7 +639,7 @@ class FaceDB:
                WHERE f.person_id = ?
                ORDER BY p.file_path DESC, f.id
                LIMIT ? OFFSET ?""",
-            (person_id, limit, offset),
+            (subject_id, limit, offset),
         ).fetchall()
         result = []
         for row in rows:
@@ -604,34 +649,34 @@ class FaceDB:
             result.append((Face(**d), path))
         return result
 
-    def get_random_avatars(self, person_ids: list[int]) -> dict[int, int]:
-        """Pick one random face ID per person for avatar thumbnails."""
-        if not person_ids:
+    def get_random_avatars(self, subject_ids: list[int]) -> dict[int, int]:
+        """Pick one random face ID per subject for avatar thumbnails."""
+        if not subject_ids:
             return {}
-        placeholders = ",".join("?" * len(person_ids))
+        placeholders = ",".join("?" * len(subject_ids))
         rows = self.conn.execute(
             f"""SELECT person_id, id FROM (
                     SELECT person_id, id, ROW_NUMBER() OVER (
                         PARTITION BY person_id ORDER BY RANDOM()
                     ) AS rn FROM faces WHERE person_id IN ({placeholders})
                 ) WHERE rn = 1""",
-            tuple(person_ids),
+            tuple(subject_ids),
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
-    def get_photos_with_all_persons(
-        self, person_ids: list[int], limit: int = 0, offset: int = 0
+    def get_photos_with_all_subjects(
+        self, subject_ids: list[int], limit: int = 0, offset: int = 0
     ) -> list[Photo]:
-        """Find photos that contain ALL given persons (intersection).
+        """Find photos that contain ALL given subjects (intersection).
 
-        Uses faces index: filter by person_ids first, group by photo, keep
-        only photos matching all requested persons.
+        Uses faces index: filter by person_id first, group by photo, keep
+        only photos matching all requested subjects.
         """
-        if not person_ids:
+        if not subject_ids:
             return []
-        placeholders = ",".join("?" * len(person_ids))
+        placeholders = ",".join("?" * len(subject_ids))
         pagination = ""
-        params: tuple[int | str, ...] = (*person_ids, len(person_ids))
+        params: tuple[int | str, ...] = (*subject_ids, len(subject_ids))
         if limit > 0:
             pagination = " LIMIT ? OFFSET ?"
             params = (*params, limit, offset)
@@ -650,11 +695,11 @@ class FaceDB:
         ).fetchall()
         return [Photo(**dict(r)) for r in rows]
 
-    def count_photos_with_all_persons(self, person_ids: list[int]) -> int:
-        """Count photos containing ALL given persons."""
-        if not person_ids:
+    def count_photos_with_all_subjects(self, subject_ids: list[int]) -> int:
+        """Count photos containing ALL given subjects."""
+        if not subject_ids:
             return 0
-        placeholders = ",".join("?" * len(person_ids))
+        placeholders = ",".join("?" * len(subject_ids))
         row = self.conn.execute(
             f"""
             SELECT COUNT(*) FROM (
@@ -664,13 +709,13 @@ class FaceDB:
                 HAVING COUNT(DISTINCT person_id) = ?
             )
             """,
-            (*person_ids, len(person_ids)),
+            (*subject_ids, len(subject_ids)),
         ).fetchone()
         return int(row[0]) if row else 0
 
     @_locked
-    def get_person_photos(self, person_id: int) -> list[Photo]:
-        """All unique photos containing a person, newest first (by path)."""
+    def get_subject_photos(self, subject_id: int) -> list[Photo]:
+        """All unique photos containing a subject, newest first (by path)."""
         rows = self.conn.execute(
             """
             SELECT DISTINCT p.* FROM photos p
@@ -678,7 +723,7 @@ class FaceDB:
             WHERE f.person_id = ?
             ORDER BY p.file_path DESC
             """,
-            (person_id,),
+            (subject_id,),
         ).fetchall()
         return [Photo(**dict(r)) for r in rows]
 
@@ -697,7 +742,7 @@ class FaceDB:
 
     @_locked
     def unassign_face(self, face_id: int) -> None:
-        """Remove person assignment from a face."""
+        """Remove subject assignment from a face."""
         self.conn.execute("UPDATE faces SET person_id = NULL WHERE id = ?", (face_id,))
         self.conn.commit()
 
@@ -729,27 +774,11 @@ class FaceDB:
         return [r[0] for r in rows]
 
     @_locked
-    def delete_person(self, person_id: int) -> None:
-        """Delete a person and unassign their faces."""
-        self.conn.execute("UPDATE faces SET person_id = NULL WHERE person_id = ?", (person_id,))
-        self.conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
+    def delete_subject(self, subject_id: int) -> None:
+        """Delete a subject and unassign their faces."""
+        self.conn.execute("UPDATE faces SET person_id = NULL WHERE person_id = ?", (subject_id,))
+        self.conn.execute("DELETE FROM subjects WHERE id = ?", (subject_id,))
         self.conn.commit()
-
-    @_locked
-    def has_person_species(self, person_id: int, species: str) -> bool:
-        """Check if a person has any faces of the given species (or 'pet' for any pet)."""
-        if species == "pet":
-            placeholders = ",".join("?" * len(self.PET_SPECIES))
-            row = self.conn.execute(
-                f"SELECT 1 FROM faces WHERE person_id = ? AND species IN ({placeholders}) LIMIT 1",
-                (person_id, *self.PET_SPECIES),
-            ).fetchone()
-        else:
-            row = self.conn.execute(
-                "SELECT 1 FROM faces WHERE person_id = ? AND species = ? LIMIT 1",
-                (person_id, species),
-            ).fetchone()
-        return row is not None
 
     @_locked
     def get_unclustered_embeddings(self, species: str = "human") -> list[tuple[int, np.ndarray]]:
@@ -764,17 +793,31 @@ class FaceDB:
         return [(r[0], np.frombuffer(r[1], dtype=np.float32)) for r in rows]
 
     @_locked
-    def search_persons(self, query: str) -> list[Person]:
-        rows = self.conn.execute(
-            """
-            SELECT p.id, p.name, COUNT(f.id) as face_count
-            FROM persons p LEFT JOIN faces f ON f.person_id = p.id
-            WHERE p.name LIKE ?
-            GROUP BY p.id ORDER BY p.name
-            """,
-            (f"%{query}%",),
-        ).fetchall()
-        return [Person(id=r["id"], name=r["name"], face_count=r["face_count"]) for r in rows]
+    def search_subjects(self, query: str, kind: str | None = None) -> list[Subject]:
+        if kind:
+            rows = self.conn.execute(
+                """
+                SELECT s.id, s.name, s.kind, COUNT(f.id) as face_count
+                FROM subjects s LEFT JOIN faces f ON f.person_id = s.id
+                WHERE s.name LIKE ? AND s.kind = ?
+                GROUP BY s.id ORDER BY s.name
+                """,
+                (f"%{query}%", kind),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT s.id, s.name, s.kind, COUNT(f.id) as face_count
+                FROM subjects s LEFT JOIN faces f ON f.person_id = s.id
+                WHERE s.name LIKE ?
+                GROUP BY s.id ORDER BY s.name
+                """,
+                (f"%{query}%",),
+            ).fetchall()
+        return [
+            Subject(id=r["id"], name=r["name"], kind=r["kind"], face_count=r["face_count"])
+            for r in rows
+        ]
 
     # --- Stats ---
 
@@ -788,7 +831,7 @@ class FaceDB:
         return {
             "total_photos": self._count("SELECT COUNT(*) FROM photos"),
             "total_faces": self._count(f"SELECT COUNT(*) FROM faces WHERE {clause}", params),
-            "total_persons": self._count("SELECT COUNT(*) FROM persons"),
+            "total_subjects": self._count("SELECT COUNT(*) FROM subjects"),
             "named_faces": self._count(
                 f"SELECT COUNT(*) FROM faces WHERE person_id IS NOT NULL AND {clause}",
                 params,
@@ -810,12 +853,12 @@ class FaceDB:
 
     @_locked
     def export_json(self) -> str:
-        """Export as JSON: person -> photos -> face rectangles."""
-        persons = self.get_persons()
-        data: dict[str, list[Any]] = {"persons": [], "unnamed_faces": []}
+        """Export as JSON: subject -> photos -> face rectangles."""
+        subjects = self.get_subjects()
+        data: dict[str, list[Any]] = {"subjects": [], "unnamed_faces": []}
 
-        for person in persons:
-            faces = self.get_person_faces(person.id, limit=10000)
+        for subject in subjects:
+            faces = self.get_subject_faces(subject.id, limit=10000)
             photos_map: dict[str, list[dict[str, Any]]] = {}
             for face in faces:
                 photo = self.get_photo(face.photo_id)
@@ -831,10 +874,11 @@ class FaceDB:
                             "confidence": face.confidence,
                         }
                     )
-            data["persons"].append(
+            data["subjects"].append(
                 {
-                    "id": person.id,
-                    "name": person.name,
+                    "id": subject.id,
+                    "name": subject.name,
+                    "kind": subject.kind,
                     "photos": [
                         {"file_path": fp, "faces": rects} for fp, rects in photos_map.items()
                     ],

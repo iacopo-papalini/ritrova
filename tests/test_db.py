@@ -186,8 +186,8 @@ class TestFaceOperations(TestCase):
 
     def test_dismiss_faces(self) -> None:
         _, fid = _add_photo_with_face(self.db)
-        person_id = self.db.create_person("Test")
-        self.db.assign_face_to_person(fid, person_id)
+        subject_id = self.db.create_subject("Test")
+        self.db.assign_face_to_subject(fid, subject_id)
         self.db.update_cluster_ids({fid: 1})
 
         self.db.dismiss_faces([fid])
@@ -198,11 +198,11 @@ class TestFaceOperations(TestCase):
 
     def test_unassign_face(self) -> None:
         _, fid = _add_photo_with_face(self.db)
-        person_id = self.db.create_person("Test")
-        self.db.assign_face_to_person(fid, person_id)
+        subject_id = self.db.create_subject("Test")
+        self.db.assign_face_to_subject(fid, subject_id)
         face = self.db.get_face(fid)
         assert face is not None
-        assert face.person_id == person_id
+        assert face.person_id == subject_id
 
         self.db.unassign_face(fid)
         face = self.db.get_face(fid)
@@ -234,125 +234,117 @@ class TestFaceOperations(TestCase):
         assert face.cluster_id == 1
 
 
-class TestPersonOperations(TestCase):
+class TestSubjectOperations(TestCase):
     @pytest.fixture(autouse=True)
     def _setup_db(self, db: FaceDB) -> None:
         self.db = db
 
-    def test_create_person(self) -> None:
-        pid = self.db.create_person("Alice")
-        person = self.db.get_person(pid)
-        assert person is not None
-        assert person.name == "Alice"
-        assert person.face_count == 0
+    def test_create_subject(self) -> None:
+        sid = self.db.create_subject("Alice")
+        subject = self.db.get_subject(sid)
+        assert subject is not None
+        assert subject.name == "Alice"
+        assert subject.face_count == 0
 
-    def test_create_person_idempotent(self) -> None:
-        pid1 = self.db.create_person("Alice")
-        pid2 = self.db.create_person("Alice")
-        assert pid1 == pid2
+    def test_create_subject_idempotent(self) -> None:
+        sid1 = self.db.create_subject("Alice")
+        sid2 = self.db.create_subject("Alice")
+        assert sid1 == sid2
 
-    def test_get_persons(self) -> None:
-        self.db.create_person("Bob")
-        self.db.create_person("Alice")
-        persons = self.db.get_persons()
-        assert len(persons) == 2
+    def test_get_subjects(self) -> None:
+        self.db.create_subject("Bob")
+        self.db.create_subject("Alice")
+        subjects = self.db.get_subjects()
+        assert len(subjects) == 2
         # Ordered by name
-        assert persons[0].name == "Alice"
-        assert persons[1].name == "Bob"
+        assert subjects[0].name == "Alice"
+        assert subjects[1].name == "Bob"
 
-    def test_rename_person(self) -> None:
-        pid = self.db.create_person("Alice")
-        self.db.rename_person(pid, "Alicia")
-        person = self.db.get_person(pid)
-        assert person is not None
-        assert person.name == "Alicia"
+    def test_rename_subject(self) -> None:
+        sid = self.db.create_subject("Alice")
+        self.db.rename_subject(sid, "Alicia")
+        subject = self.db.get_subject(sid)
+        assert subject is not None
+        assert subject.name == "Alicia"
 
-    def test_assign_face_to_person(self) -> None:
+    def test_assign_face_to_subject(self) -> None:
         _, fid = _add_photo_with_face(self.db)
-        pid = self.db.create_person("Alice")
-        self.db.assign_face_to_person(fid, pid)
-        person = self.db.get_person(pid)
-        assert person is not None
-        assert person.face_count == 1
+        sid = self.db.create_subject("Alice")
+        self.db.assign_face_to_subject(fid, sid)
+        subject = self.db.get_subject(sid)
+        assert subject is not None
+        assert subject.face_count == 1
 
-    def test_assign_cluster_to_person(self) -> None:
+    def test_assign_cluster_to_subject(self) -> None:
         _, fid1 = _add_photo_with_face(self.db, path="/a.jpg")
         _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
         self.db.update_cluster_ids({fid1: 1, fid2: 1})
-        pid = self.db.create_person("Alice")
-        self.db.assign_cluster_to_person(1, pid)
-        person = self.db.get_person(pid)
-        assert person is not None
-        assert person.face_count == 2
+        sid = self.db.create_subject("Alice")
+        self.db.assign_cluster_to_subject(1, sid)
+        subject = self.db.get_subject(sid)
+        assert subject is not None
+        assert subject.face_count == 2
 
-    def test_merge_persons(self) -> None:
-        pid_a = self.db.create_person("Alice")
-        pid_b = self.db.create_person("Alice2")
+    def test_merge_subjects(self) -> None:
+        sid_a = self.db.create_subject("Alice")
+        sid_b = self.db.create_subject("Alice2")
         _, fid = _add_photo_with_face(self.db)
-        self.db.assign_face_to_person(fid, pid_a)
+        self.db.assign_face_to_subject(fid, sid_a)
 
-        self.db.merge_persons(pid_a, pid_b)
+        self.db.merge_subjects(sid_a, sid_b)
         # Source deleted
-        assert self.db.get_person(pid_a) is None
+        assert self.db.get_subject(sid_a) is None
         # Target has the face
-        person = self.db.get_person(pid_b)
-        assert person is not None
-        assert person.face_count == 1
+        subject = self.db.get_subject(sid_b)
+        assert subject is not None
+        assert subject.face_count == 1
 
-    def test_delete_person(self) -> None:
-        pid = self.db.create_person("Alice")
+    def test_delete_subject(self) -> None:
+        sid = self.db.create_subject("Alice")
         _, fid = _add_photo_with_face(self.db)
-        self.db.assign_face_to_person(fid, pid)
+        self.db.assign_face_to_subject(fid, sid)
 
-        self.db.delete_person(pid)
-        assert self.db.get_person(pid) is None
+        self.db.delete_subject(sid)
+        assert self.db.get_subject(sid) is None
         # Face should be unassigned, not deleted
         face = self.db.get_face(fid)
         assert face is not None
         assert face.person_id is None
 
-    def test_search_persons(self) -> None:
-        self.db.create_person("Alice")
-        self.db.create_person("Bob")
-        self.db.create_person("Alicia")
-        results = self.db.search_persons("Ali")
+    def test_search_subjects(self) -> None:
+        self.db.create_subject("Alice")
+        self.db.create_subject("Bob")
+        self.db.create_subject("Alicia")
+        results = self.db.search_subjects("Ali")
         assert len(results) == 2
 
-    def test_get_person_faces(self) -> None:
-        pid = self.db.create_person("Alice")
+    def test_get_subject_faces(self) -> None:
+        sid = self.db.create_subject("Alice")
         _, fid = _add_photo_with_face(self.db)
-        self.db.assign_face_to_person(fid, pid)
-        faces = self.db.get_person_faces(pid)
+        self.db.assign_face_to_subject(fid, sid)
+        faces = self.db.get_subject_faces(sid)
         assert len(faces) == 1
         assert faces[0].id == fid
 
-    def test_get_person_photos(self) -> None:
-        pid = self.db.create_person("Alice")
+    def test_get_subject_photos(self) -> None:
+        sid = self.db.create_subject("Alice")
         photo_id, fid = _add_photo_with_face(self.db)
-        self.db.assign_face_to_person(fid, pid)
-        photos = self.db.get_person_photos(pid)
+        self.db.assign_face_to_subject(fid, sid)
+        photos = self.db.get_subject_photos(sid)
         assert len(photos) == 1
         assert photos[0].id == photo_id
 
-    def test_has_person_species_human(self) -> None:
-        pid = self.db.create_person("Alice")
-        _add_photo_with_face(self.db, path="/a.jpg", species="human")
-        faces = self.db.get_photo_faces(
-            self.db.query("SELECT id FROM photos WHERE file_path = '/a.jpg'")[0][0]
-        )
-        self.db.assign_face_to_person(faces[0].id, pid)
-        assert self.db.has_person_species(pid, "human")
-        assert not self.db.has_person_species(pid, "pet")
+    def test_subject_kind_person(self) -> None:
+        sid = self.db.create_subject("Alice", kind="person")
+        subject = self.db.get_subject(sid)
+        assert subject is not None
+        assert subject.kind == "person"
 
-    def test_has_person_species_pet(self) -> None:
-        pid = self.db.create_person("Figaro")
-        _add_photo_with_face(self.db, path="/a.jpg", species="dog")
-        faces = self.db.get_photo_faces(
-            self.db.query("SELECT id FROM photos WHERE file_path = '/a.jpg'")[0][0]
-        )
-        self.db.assign_face_to_person(faces[0].id, pid)
-        assert self.db.has_person_species(pid, "pet")
-        assert not self.db.has_person_species(pid, "human")
+    def test_subject_kind_pet(self) -> None:
+        sid = self.db.create_subject("Figaro", kind="pet")
+        subject = self.db.get_subject(sid)
+        assert subject is not None
+        assert subject.kind == "pet"
 
 
 class TestSpeciesFilter(TestCase):
@@ -401,7 +393,7 @@ class TestStats(TestCase):
         stats = self.db.get_stats()
         assert stats["total_photos"] == 0
         assert stats["total_faces"] == 0
-        assert stats["total_persons"] == 0
+        assert stats["total_subjects"] == 0
         assert stats["named_faces"] == 0
         assert stats["unnamed_clusters"] == 0
         assert stats["unclustered_faces"] == 0
@@ -412,14 +404,14 @@ class TestStats(TestCase):
         _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
         _, fid3 = _add_photo_with_face(self.db, path="/c.jpg")
 
-        pid = self.db.create_person("Alice")
-        self.db.assign_face_to_person(fid1, pid)
+        sid = self.db.create_subject("Alice")
+        self.db.assign_face_to_subject(fid1, sid)
         self.db.update_cluster_ids({fid2: 1, fid3: 1})
 
         stats = self.db.get_stats()
         assert stats["total_photos"] == 3
         assert stats["total_faces"] == 3
-        assert stats["total_persons"] == 1
+        assert stats["total_subjects"] == 1
         assert stats["named_faces"] == 1
         assert stats["unnamed_clusters"] == 1
         assert stats["unclustered_faces"] == 1  # fid1 assigned but unclustered
@@ -435,10 +427,10 @@ class TestGetUnclusteredEmbeddings(TestCase):
         _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
         _, fid3 = _add_photo_with_face(self.db, path="/c.jpg")
 
-        # Cluster fid1, assign fid2 to a person
+        # Cluster fid1, assign fid2 to a subject
         self.db.update_cluster_ids({fid1: 1})
-        pid = self.db.create_person("Alice")
-        self.db.assign_face_to_person(fid2, pid)
+        sid = self.db.create_subject("Alice")
+        self.db.assign_face_to_subject(fid2, sid)
 
         result = self.db.get_unclustered_embeddings(species="human")
         assert len(result) == 1
@@ -468,22 +460,22 @@ class TestExport(TestCase):
     def test_export_json_structure(self) -> None:
         import json
 
-        pid = self.db.create_person("Alice")
+        sid = self.db.create_subject("Alice")
         _, fid = _add_photo_with_face(self.db)
-        self.db.assign_face_to_person(fid, pid)
+        self.db.assign_face_to_subject(fid, sid)
 
         data = json.loads(self.db.export_json())
-        assert "persons" in data
+        assert "subjects" in data
         assert "unnamed_faces" in data
-        assert len(data["persons"]) == 1
-        assert data["persons"][0]["name"] == "Alice"
-        assert len(data["persons"][0]["photos"]) == 1
+        assert len(data["subjects"]) == 1
+        assert data["subjects"][0]["name"] == "Alice"
+        assert len(data["subjects"][0]["photos"]) == 1
 
     def test_export_empty_db(self) -> None:
         import json
 
         data = json.loads(self.db.export_json())
-        assert data["persons"] == []
+        assert data["subjects"] == []
         assert data["unnamed_faces"] == []
 
 

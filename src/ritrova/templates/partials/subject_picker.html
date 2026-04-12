@@ -1,6 +1,7 @@
-{# Reusable person/pet typeahead picker.
-   Must be inside an x-data="personPicker({...})" scope.
-   Supports single-select and multi-select modes. #}
+{# Reusable subject typeahead picker.
+   Must be inside an x-data="subjectPicker({...})" scope.
+   Supports single-select and multi-select modes.
+   Keyboard: Arrow Down/Up to navigate, Enter to select, Escape to close. #}
 
 {# Multi-select: show selected as chips #}
 <template x-if="multi && selected.length > 0">
@@ -19,8 +20,11 @@
   <input type="text"
          x-model="query"
          @focus="open = true"
-         @input="open = true"
+         @input="open = true; hi = 0"
          @keydown.escape="open = false"
+         @keydown.arrow-down.prevent="onArrowDown()"
+         @keydown.arrow-up.prevent="onArrowUp()"
+         @keydown.enter.prevent="onEnter()"
          placeholder="Type to search..."
          class="w-full rounded-lg border border-gallery-border bg-gallery-card px-3 py-2 text-sm text-gallery-text
                 placeholder-gallery-muted outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
@@ -33,15 +37,17 @@
 
   {# Dropdown results #}
   <div x-show="open && !loading && (filtered.length > 0 || showCreate)"
-       x-cloak
+       x-cloak x-ref="dropdown"
        @click.outside="open = false"
        class="absolute z-50 mt-1 w-full rounded-lg border border-gallery-border bg-gallery-card shadow-xl
               max-h-60 overflow-y-auto">
-    <template x-for="p in filtered" :key="p.id">
+    <template x-for="(p, idx) in filtered" :key="p.id">
       <button @click="pick(p)"
+              @mouseenter="hi = idx"
+              :data-hi="hi === idx"
               class="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gallery-text
-                     transition-colors hover:bg-gallery-accent/10 cursor-pointer"
-              :class="isSelected(p.id) ? 'bg-gallery-accent/10 text-gallery-accent' : ''">
+                     transition-colors cursor-pointer"
+              :class="hi === idx ? 'bg-gallery-accent/15 text-gallery-accent' : isSelected(p.id) ? 'bg-gallery-accent/10 text-gallery-accent' : 'hover:bg-gallery-accent/10'">
         <img x-show="p.face_id" :src="p.face_id ? `/api/faces/${p.face_id}/thumbnail?size=60` : ''"
              class="h-7 w-7 shrink-0 rounded-full object-cover">
         <div x-show="!p.face_id"
@@ -54,8 +60,11 @@
     {# Create new option #}
     <template x-if="showCreate">
       <button @click="create()"
+              @mouseenter="hi = filtered.length"
+              :data-hi="hi === filtered.length"
               class="flex w-full items-center gap-2 border-t border-gallery-border px-3 py-2 text-sm
-                     text-gallery-accent transition-colors hover:bg-gallery-accent/10 cursor-pointer">
+                     transition-colors cursor-pointer"
+              :class="hi === filtered.length ? 'bg-gallery-accent/15 text-gallery-accent' : 'text-gallery-accent hover:bg-gallery-accent/10'">
         <span>+</span>
         <span>Create "<span x-text="query.trim()"></span>"</span>
       </button>
