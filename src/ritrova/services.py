@@ -21,11 +21,10 @@ def compute_cluster_hint(db: FaceDB, cluster_id: int) -> dict[str, Any] | None:
     if not findings:
         return None
 
-    cluster_species = findings[0].species
-    kind = "pet" if cluster_species in db.PET_SPECIES else "person"
-    dim = EMBEDDING_DIMS.get(kind)
-
     centroid = compute_centroid(np.array([f.embedding for f in findings]))
+    # Derive kind from actual embedding dimension, not species label
+    dim = len(centroid)
+    kind = "pet" if dim == EMBEDDING_DIMS["pet"] else "person"
     subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
 
     best_name: str | None = None

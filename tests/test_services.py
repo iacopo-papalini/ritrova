@@ -26,7 +26,9 @@ def _add_source_with_finding(
     seed: int = 42,
 ) -> tuple[int, int]:
     pid = db.add_source(path, width=100, height=100)
-    emb = embedding if embedding is not None else _make_embedding(seed)
+    # Use 768-dim for pet species to match real SigLIP embeddings
+    dim = 768 if species in FaceDB.PET_SPECIES else 512
+    emb = embedding if embedding is not None else _make_embedding(seed, dim=dim)
     db.add_findings_batch([(pid, (10, 10, 50, 50), emb, 0.95)], species=species)
     findings = db.get_source_findings(pid)
     return pid, findings[0].id

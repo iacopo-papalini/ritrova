@@ -20,7 +20,8 @@ def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
 def _add_finding(db: FaceDB, path: str, seed: int = 42, species: str = "human") -> tuple[int, int]:
     """Add source + finding, return (source_id, finding_id)."""
     pid = db.add_source(path, width=100, height=100)
-    db.add_findings_batch([(pid, (10, 10, 50, 50), _emb(seed), 0.95)], species=species)
+    dim = 768 if species in FaceDB.PET_SPECIES else 512
+    db.add_findings_batch([(pid, (10, 10, 50, 50), _emb(seed, dim=dim), 0.95)], species=species)
     findings = db.get_source_findings(pid)
     return pid, findings[0].id
 
@@ -261,7 +262,9 @@ class TestTogetherAPI(TestCase):
         sid_pet = self.db.create_subject("Figaro", kind="pet")
         source_id = self.db.add_source("/family.jpg", width=100, height=100)
         self.db.add_findings_batch([(source_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
-        self.db.add_findings_batch([(source_id, (50, 50, 30, 30), _emb(2), 0.9)], species="dog")
+        self.db.add_findings_batch(
+            [(source_id, (50, 50, 30, 30), _emb(2, dim=768), 0.9)], species="dog"
+        )
         findings = self.db.get_source_findings(source_id)
         self.db.assign_finding_to_subject(findings[0].id, sid_human)
         self.db.assign_finding_to_subject(findings[1].id, sid_pet)

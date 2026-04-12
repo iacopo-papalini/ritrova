@@ -29,7 +29,8 @@ def _emb(seed: int, dim: int = 512) -> np.ndarray:
 
 def _add_finding(db: FaceDB, path: str, seed: int, species: str = "human") -> int:
     pid = db.add_source(path, width=100, height=100)
-    db.add_findings_batch([(pid, (10, 10, 50, 50), _emb(seed), 0.95)], species=species)
+    dim = 768 if species in FaceDB.PET_SPECIES else 512
+    db.add_findings_batch([(pid, (10, 10, 50, 50), _emb(seed, dim=dim), 0.95)], species=species)
     return db.get_source_findings(pid)[0].id
 
 

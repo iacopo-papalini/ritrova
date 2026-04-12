@@ -429,11 +429,11 @@ def rank_subjects_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, st
         return []
 
     centroid = _findings_centroid(cluster_findings)
-    cluster_species = cluster_findings[0].species
-    # Map face species to subject kind
-    kind = "pet" if cluster_species in db.PET_SPECIES else "person"
+    # Derive kind from actual embedding dimension, not species label
+    # (species may have been corrected but embedding stays in its original space)
+    dim = len(centroid)
+    kind = "pet" if dim == EMBEDDING_DIMS["pet"] else "person"
 
-    dim = EMBEDDING_DIMS.get(kind)
     subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
     subjects_by_kind = {s.id: s.face_count for s in db.get_subjects_by_kind(kind)}
     results = []
