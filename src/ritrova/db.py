@@ -604,9 +604,19 @@ class FaceDB:
         self.conn.execute("UPDATE subjects SET name = ? WHERE id = ?", (name, subject_id))
         self.conn.commit()
 
+    def _expected_species(self, subject_kind: str) -> str:
+        """Return the species string a finding should have for a given subject kind."""
+        return "human" if subject_kind == "person" else "dog"
+
     @_locked
-    def assign_finding_to_subject(self, finding_id: int, subject_id: int) -> None:
-        """Assign a finding to a subject, validating species/kind compatibility."""
+    def assign_finding_to_subject(
+        self, finding_id: int, subject_id: int, *, correct_species: bool = False
+    ) -> None:
+        """Assign a finding to a subject.
+
+        Raises ValueError on species/kind mismatch unless correct_species=True,
+        in which case the finding's species is corrected to match.
+        """
         finding = self.get_finding(finding_id)
         subject = self.get_subject(subject_id)
         if (
@@ -614,21 +624,40 @@ class FaceDB:
             and subject
             and not self._is_species_kind_compatible(finding.species, subject.kind)
         ):
-            raise ValueError(f"Cannot assign {finding.species} finding to a {subject.kind} subject")
+            if not correct_species:
+                raise ValueError(
+                    f"Cannot assign {finding.species} finding to a {subject.kind} subject"
+                )
+            new_species = self._expected_species(subject.kind)
+            self.conn.execute(
+                "UPDATE findings SET species = ? WHERE id = ?", (new_species, finding_id)
+            )
         self.conn.execute(
             "UPDATE findings SET person_id = ? WHERE id = ?", (subject_id, finding_id)
         )
         self.conn.commit()
 
     @_locked
-    def assign_cluster_to_subject(self, cluster_id: int, subject_id: int) -> None:
-        """Assign all unassigned findings in a cluster to a subject."""
+    def assign_cluster_to_subject(
+        self, cluster_id: int, subject_id: int, *, correct_species: bool = False
+    ) -> None:
+        """Assign all unassigned findings in a cluster to a subject.
+
+        Raises ValueError on species/kind mismatch unless correct_species=True,
+        in which case the findings' species is corrected to match.
+        """
         subject = self.get_subject(subject_id)
         if subject:
             findings = self.get_cluster_findings(cluster_id, limit=1)
             if findings and not self._is_species_kind_compatible(findings[0].species, subject.kind):
-                raise ValueError(
-                    f"Cannot assign {findings[0].species} finding to a {subject.kind} subject"
+                if not correct_species:
+                    raise ValueError(
+                        f"Cannot assign {findings[0].species} finding to a {subject.kind} subject"
+                    )
+                new_species = self._expected_species(subject.kind)
+                self.conn.execute(
+                    "UPDATE findings SET species = ? WHERE cluster_id = ? AND person_id IS NULL",
+                    (new_species, cluster_id),
                 )
         self.conn.execute(
             "UPDATE findings SET person_id = ? WHERE cluster_id = ? AND person_id IS NULL",

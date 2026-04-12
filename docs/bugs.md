@@ -13,10 +13,8 @@
 **Action:** Delete empty orphan sources, re-scan pets on videos.
 
 ### BUG-19: Cross-species assignment should confirm and correct, not block
-**Reported:** 2026-04-11 | **Status:** Open
-**Symptom:** Assigning a cluster to a person subject raises a 500 ValueError when the cluster's faces were detected as "dog" by the pet detector, even though the faces are actually human (misdetection).
-**Expected:** The UI should show a confirmation dialog ("These faces were detected as dog — assign to person and correct species?"). On confirm, the assignment proceeds and `faces.species` is corrected to match the subject's kind.
-**Scope:** Affects `assign_face_to_subject` and `assign_cluster_to_subject` in db.py. The hard `ValueError` needs to become a check that the API layer can handle gracefully, returning a 409 with details instead of a 500. The UI re-submits with a `force` flag to correct species and assign.
+**Reported:** 2026-04-11 | **Closed:** 2026-04-11
+**Fix:** API returns 409 with `{error, needs_confirm}` on species/kind mismatch. UI shows `confirm()` dialog. On confirm, re-sends with `force=true`. DB methods accept `correct_species=True` to update the finding's species to match the subject's kind. Applies to cluster assign, single finding assign, and claim-faces endpoints.
 
 ### BUG-20: UI silently swallows server errors
 **Reported:** 2026-04-11 | **Status:** Open

@@ -98,7 +98,20 @@
                  const fd = new FormData();
                  fd.append('person_id', subject.id);
                  fetch('/api/findings/{{ face.id }}/assign', { method: 'POST', body: fd })
-                   .then(r => { if (r.ok) location.reload(); });
+                   .then(r => {
+                     if (r.ok) { location.reload(); return; }
+                     if (r.status === 409) {
+                       return r.json().then(data => {
+                         if (data.needs_confirm && confirm(data.error + '\n\nAssign anyway and correct the species?')) {
+                           const fd2 = new FormData();
+                           fd2.append('person_id', subject.id);
+                           fd2.append('force', 'true');
+                           fetch('/api/findings/{{ face.id }}/assign', { method: 'POST', body: fd2 })
+                             .then(r2 => { if (r2.ok) location.reload(); });
+                         }
+                       });
+                     }
+                   });
                }
              })">
           {% include "partials/subject_picker.html" %}

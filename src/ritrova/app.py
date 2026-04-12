@@ -295,9 +295,16 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         )
 
     @app.post("/api/subjects/{subject_id}/claim-faces")
-    def claim_faces(subject_id: int, face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
-        for fid in face_ids:
-            db.assign_finding_to_subject(fid, subject_id)
+    def claim_faces(
+        subject_id: int,
+        face_ids: list[int] = Body(..., embed=True),
+        force: bool = Body(False, embed=True),
+    ) -> JSONResponse:
+        try:
+            for fid in face_ids:
+                db.assign_finding_to_subject(fid, subject_id, correct_species=force)
+        except ValueError as e:
+            return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
         return JSONResponse({"ok": True, "claimed": len(face_ids)})
 
     @app.get("/api/clusters/{cluster_id}/hint")
@@ -454,12 +461,18 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.post("/api/clusters/{cluster_id}/assign", response_model=None)
     def assign_cluster_to_existing(
-        request: Request, cluster_id: int, person_id: int = Form(...)
-    ) -> RedirectResponse | HTMLResponse:
+        request: Request,
+        cluster_id: int,
+        person_id: int = Form(...),
+        force: bool = Form(False),
+    ) -> RedirectResponse | HTMLResponse | JSONResponse:
         subject = db.get_subject(person_id)
         if not subject:
             raise HTTPException(404, "Subject not found")
-        db.assign_cluster_to_subject(cluster_id, person_id)
+        try:
+            db.assign_cluster_to_subject(cluster_id, person_id, correct_species=force)
+        except ValueError as e:
+            return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
         if request.headers.get("HX-Request"):
             return HTMLResponse("")
         return RedirectResponse(_next_similar_cluster(person_id, cluster_id), status_code=303)
@@ -500,8 +513,13 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         return JSONResponse({"ok": True, "excluded": len(face_ids)})
 
     @app.post("/api/findings/{finding_id}/assign")
-    def assign_finding(finding_id: int, person_id: int = Form(...)) -> JSONResponse:
-        db.assign_finding_to_subject(finding_id, person_id)
+    def assign_finding(
+        finding_id: int, person_id: int = Form(...), force: bool = Form(False)
+    ) -> JSONResponse:
+        try:
+            db.assign_finding_to_subject(finding_id, person_id, correct_species=force)
+        except ValueError as e:
+            return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
         return JSONResponse({"ok": True})
 
     @app.post("/api/findings/{finding_id}/unassign")
