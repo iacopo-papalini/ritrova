@@ -2,6 +2,18 @@
 
 ## Open
 
+### FEAT-14: Video findings browsing — frame viewer and subject video section
+**Reported:** 2026-04-11 | **Priority:** Medium
+Video findings have a `frame_path` (extracted JPEG in `tmp/frames/`) but no way to view them in the UI. The lightbox calls `/api/sources/{id}/image` which returns 404 for video sources. Needs:
+- A `/api/findings/{id}/frame` endpoint that serves the full frame JPEG for video findings (falls back to source image for photo findings)
+- Lightbox triggered by finding ID, not source ID, so it can show the right image
+- A "Videos" section on the subject detail page showing video sources that contain the subject, with frame thumbnails
+- Possibly inline video playback or a link to the source video file
+
+### FEAT-15: Together "alone" filter — exclude sources with other subjects
+**Reported:** 2026-04-11 | **Priority:** Medium
+Add an "alone" checkbox to the Together page. When checked, results only include sources where the selected subjects appear and NO other named subjects. E.g. "Eva and Caterina alone" excludes photos that also contain Iacopo. Query change: add `HAVING COUNT(DISTINCT person_id) = ?` where the count matches exactly the number of selected subjects (not just "at least").
+
 ### FEAT-5: Global single-step UNDO for all write operations
 **Reported:** 2026-04-10 | **Priority:** High
 Every write action undoable. Toast with Undo button, auto-dismiss ~15s. In-memory inverse action store on server. Affects every write endpoint.

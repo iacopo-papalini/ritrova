@@ -143,15 +143,15 @@ class TestScanPhotos(TestCase):
         assert result["errors"] == 1
         assert result["processed"] == 0
 
-    def test_stores_faces_in_db(self) -> None:
+    def test_stores_findings_in_db(self) -> None:
         _make_jpeg(self.photos_dir / "a.jpg")
         detector = self._mock_detector()
 
         scan_photos(self.db, self.photos_dir, detector)
-        assert self.db.get_face_count() == 1
-        assert self.db.get_photo_count() == 1
+        assert self.db.get_finding_count() == 1
+        assert self.db.get_source_count() == 1
 
-    def test_multiple_faces_per_photo(self) -> None:
+    def test_multiple_findings_per_source(self) -> None:
         _make_jpeg(self.photos_dir / "a.jpg")
         faces: list[dict[str, object]] = [
             {"bbox": (10, 10, 50, 50), "embedding": _emb(1), "confidence": 0.95},
@@ -161,7 +161,7 @@ class TestScanPhotos(TestCase):
 
         result = scan_photos(self.db, self.photos_dir, detector)
         assert result["faces_found"] == 2
-        assert self.db.get_face_count() == 2
+        assert self.db.get_finding_count() == 2
 
 
 class TestScanPets(TestCase):

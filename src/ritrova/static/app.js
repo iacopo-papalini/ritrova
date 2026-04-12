@@ -181,7 +181,7 @@ document.addEventListener('htmx:responseError', (evt) => {
 });
 
 // --------------- Legacy helpers (kept for backward compat) ---------------
-async function assignFace(event, faceId) {
+async function assignFinding(event, faceId) {
   event.preventDefault();
   const form = event.target;
   const select = form.querySelector('select');
@@ -191,15 +191,15 @@ async function assignFace(event, faceId) {
   const body = new FormData();
   body.append('person_id', personId);
 
-  const resp = await fetch(`/api/faces/${faceId}/assign`, {method: 'POST', body});
+  const resp = await fetch(`/api/findings/${faceId}/assign`, {method: 'POST', body});
   if (resp.ok) {
     location.reload();
   }
   return false;
 }
 
-async function unassignFace(faceId) {
-  const resp = await fetch(`/api/faces/${faceId}/unassign`, {method: 'POST'});
+async function unassignFinding(faceId) {
+  const resp = await fetch(`/api/findings/${faceId}/unassign`, {method: 'POST'});
   if (resp.ok) {
     location.reload();
   }

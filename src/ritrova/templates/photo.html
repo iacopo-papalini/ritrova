@@ -16,16 +16,16 @@
         Photo
       </h1>
       <span class="text-gallery-muted text-sm truncate max-w-md">
-        {{ photo.file_path.split('/')[-1] }}
+        {{ source.file_path.split('/')[-1] }}
       </span>
     </div>
-    {% if photo.taken_at %}
+    {% if source.taken_at %}
     <p class="text-gallery-muted text-sm mt-1 ml-8">
-      Taken {{ photo.taken_at }} &mdash; {{ photo.width }}&times;{{ photo.height }}
+      Taken {{ source.taken_at }} &mdash; {{ source.width }}&times;{{ source.height }}
     </p>
     {% else %}
     <p class="text-gallery-muted text-sm mt-1 ml-8">
-      {{ photo.width }}&times;{{ photo.height }}
+      {{ source.width }}&times;{{ source.height }}
     </p>
     {% endif %}
   </div>
@@ -33,12 +33,12 @@
   {# ── Photo viewer with face box overlays ─────────────────── #}
   <div class="mb-8">
     <div class="relative inline-block max-w-full">
-      <img src="/api/photos/{{ photo.id }}/image"
+      <img src="/api/sources/{{ source.id }}/image"
            id="photo-img"
            alt="photo"
            class="max-h-[70vh] w-auto rounded-xl shadow-lg">
 
-      {% for face in faces_data %}
+      {% for face in findings_data %}
       <a href="#face-{{ face.id }}"
          class="absolute border-2 rounded-sm transition-all duration-200
                 {% if face.person_name %}border-gallery-accent/70 hover:border-gallery-accent
@@ -64,10 +64,10 @@
       Faces in this photo
     </h2>
     <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-      {% for face in faces_data %}
+      {% for face in findings_data %}
       <div class="rounded-xl bg-gallery-card p-3 transition-colors" id="face-{{ face.id }}"
            x-data="{ assigning: false }">
-        <img src="/api/faces/{{ face.id }}/thumbnail?size=180"
+        <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
              alt="face"
              class="aspect-square w-full rounded-lg object-cover mb-3">
 
@@ -80,7 +80,7 @@
             {{ face.person_name }}
           </a>
           <button @click="
-                    fetch('/api/faces/{{ face.id }}/unassign', { method: 'POST' })
+                    fetch('/api/findings/{{ face.id }}/unassign', { method: 'POST' })
                       .then(r => { if (r.ok) location.reload(); })"
                   class="rounded-lg bg-gallery-danger/15 px-2 py-1.5 text-sm text-gallery-danger
                          hover:bg-gallery-danger/25 transition-colors cursor-pointer"
@@ -97,7 +97,7 @@
                onSelect(subject) {
                  const fd = new FormData();
                  fd.append('person_id', subject.id);
-                 fetch('/api/faces/{{ face.id }}/assign', { method: 'POST', body: fd })
+                 fetch('/api/findings/{{ face.id }}/assign', { method: 'POST', body: fd })
                    .then(r => { if (r.ok) location.reload(); });
                }
              })">
@@ -111,10 +111,7 @@
 
   {# ── Metadata ────────────────────────────────────────────── #}
   <div class="text-gallery-muted text-xs space-y-1">
-    {% if photo.video_path %}
-    <p>From video: <span class="text-gallery-text/70">{{ photo.video_path }}</span></p>
-    {% endif %}
-    <p>Path: <span class="text-gallery-text/70">{{ photo.file_path }}</span></p>
+    <p>Path: <span class="text-gallery-text/70">{{ source.file_path }}</span></p>
   </div>
 
 </div>

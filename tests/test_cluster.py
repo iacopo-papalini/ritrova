@@ -27,10 +27,10 @@ def _emb(seed: int, dim: int = 512) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
-def _add_face(db: FaceDB, path: str, seed: int, species: str = "human") -> int:
-    pid = db.add_photo(path, 100, 100)
-    db.add_faces_batch([(pid, (10, 10, 50, 50), _emb(seed), 0.95)], species=species)
-    return db.get_photo_faces(pid)[0].id
+def _add_finding(db: FaceDB, path: str, seed: int, species: str = "human") -> int:
+    pid = db.add_source(path, width=100, height=100)
+    db.add_findings_batch([(pid, (10, 10, 50, 50), _emb(seed), 0.95)], species=species)
+    return db.get_source_findings(pid)[0].id
 
 
 class TestAutoAssign(TestCase):
@@ -41,30 +41,30 @@ class TestAutoAssign(TestCase):
     def test_matches_cluster_to_subject(self) -> None:
         # Subject "Alice" with seed=1 embedding
         sid = self.db.create_subject("Alice")
-        fid = _add_face(self.db, "/a1.jpg", seed=1)
-        self.db.assign_face_to_subject(fid, sid)
+        fid = _add_finding(self.db, "/a1.jpg", seed=1)
+        self.db.assign_finding_to_subject(fid, sid)
 
         # Unnamed cluster with same embedding (seed=1)
-        fid2 = _add_face(self.db, "/b1.jpg", seed=1)
-        fid3 = _add_face(self.db, "/b2.jpg", seed=1)
+        fid2 = _add_finding(self.db, "/b1.jpg", seed=1)
+        fid3 = _add_finding(self.db, "/b2.jpg", seed=1)
         self.db.update_cluster_ids({fid2: 10, fid3: 10})
 
         result = auto_assign(self.db, min_similarity=0.50)
         assert result["assigned_clusters"] == 1
 
-        # Verify faces assigned to Alice
-        face = self.db.get_face(fid2)
-        assert face is not None
-        assert face.person_id == sid
+        # Verify findings assigned to Alice
+        finding = self.db.get_finding(fid2)
+        assert finding is not None
+        assert finding.person_id == sid
 
     def test_below_threshold_skips(self) -> None:
         sid = self.db.create_subject("Alice")
-        fid = _add_face(self.db, "/a1.jpg", seed=1)
-        self.db.assign_face_to_subject(fid, sid)
+        fid = _add_finding(self.db, "/a1.jpg", seed=1)
+        self.db.assign_finding_to_subject(fid, sid)
 
         # Cluster with very different embedding
-        fid2 = _add_face(self.db, "/b1.jpg", seed=999)
-        fid3 = _add_face(self.db, "/b2.jpg", seed=999)
+        fid2 = _add_finding(self.db, "/b1.jpg", seed=999)
+        fid3 = _add_finding(self.db, "/b2.jpg", seed=999)
         self.db.update_cluster_ids({fid2: 10, fid3: 10})
 
         result = auto_assign(self.db, min_similarity=0.95)
@@ -73,18 +73,18 @@ class TestAutoAssign(TestCase):
 
     def test_sweeps_singletons(self) -> None:
         sid = self.db.create_subject("Alice")
-        fid = _add_face(self.db, "/a1.jpg", seed=1)
-        self.db.assign_face_to_subject(fid, sid)
+        fid = _add_finding(self.db, "/a1.jpg", seed=1)
+        self.db.assign_finding_to_subject(fid, sid)
 
-        # Unclustered face with same embedding
-        _add_face(self.db, "/b1.jpg", seed=1)
+        # Unclustered finding with same embedding
+        _add_finding(self.db, "/b1.jpg", seed=1)
 
         result = auto_assign(self.db, min_similarity=0.50)
         assert result["assigned_singletons"] >= 1
 
     def test_no_subjects(self) -> None:
-        fid = _add_face(self.db, "/a1.jpg", seed=1)
-        fid2 = _add_face(self.db, "/a2.jpg", seed=1)
+        fid = _add_finding(self.db, "/a1.jpg", seed=1)
+        fid2 = _add_finding(self.db, "/a2.jpg", seed=1)
         self.db.update_cluster_ids({fid: 10, fid2: 10})
 
         result = auto_assign(self.db)
@@ -98,29 +98,29 @@ class TestAutoMergeClusters(TestCase):
 
     def test_similar_clusters_merge(self) -> None:
         # Two clusters with identical embeddings
-        fid1 = _add_face(self.db, "/a1.jpg", seed=1)
-        fid2 = _add_face(self.db, "/a2.jpg", seed=1)
-        fid3 = _add_face(self.db, "/b1.jpg", seed=1)
-        fid4 = _add_face(self.db, "/b2.jpg", seed=1)
+        fid1 = _add_finding(self.db, "/a1.jpg", seed=1)
+        fid2 = _add_finding(self.db, "/a2.jpg", seed=1)
+        fid3 = _add_finding(self.db, "/b1.jpg", seed=1)
+        fid4 = _add_finding(self.db, "/b2.jpg", seed=1)
         self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
 
         result = auto_merge_clusters(self.db, min_similarity=0.50)
         assert result["merged"] >= 1
 
     def test_keeps_larger_cluster(self) -> None:
-        fid1 = _add_face(self.db, "/a1.jpg", seed=1)
-        fid2 = _add_face(self.db, "/a2.jpg", seed=1)
-        fid3 = _add_face(self.db, "/a3.jpg", seed=1)
-        fid4 = _add_face(self.db, "/b1.jpg", seed=1)
-        fid5 = _add_face(self.db, "/b2.jpg", seed=1)
-        # Cluster 10 has 3 faces, cluster 20 has 2
+        fid1 = _add_finding(self.db, "/a1.jpg", seed=1)
+        fid2 = _add_finding(self.db, "/a2.jpg", seed=1)
+        fid3 = _add_finding(self.db, "/a3.jpg", seed=1)
+        fid4 = _add_finding(self.db, "/b1.jpg", seed=1)
+        fid5 = _add_finding(self.db, "/b2.jpg", seed=1)
+        # Cluster 10 has 3 findings, cluster 20 has 2
         self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 10, fid4: 20, fid5: 20})
 
         auto_merge_clusters(self.db, min_similarity=0.50)
         # All should now be in cluster 10 (larger)
-        face = self.db.get_face(fid4)
-        assert face is not None
-        assert face.cluster_id == 10
+        finding = self.db.get_finding(fid4)
+        assert finding is not None
+        assert finding.cluster_id == 10
 
 
 class TestSuggestMerges(TestCase):
@@ -129,10 +129,10 @@ class TestSuggestMerges(TestCase):
         self.db = db
 
     def test_finds_pair(self) -> None:
-        fid1 = _add_face(self.db, "/a1.jpg", seed=1)
-        fid2 = _add_face(self.db, "/a2.jpg", seed=1)
-        fid3 = _add_face(self.db, "/b1.jpg", seed=1)
-        fid4 = _add_face(self.db, "/b2.jpg", seed=1)
+        fid1 = _add_finding(self.db, "/a1.jpg", seed=1)
+        fid2 = _add_finding(self.db, "/a2.jpg", seed=1)
+        fid3 = _add_finding(self.db, "/b1.jpg", seed=1)
+        fid4 = _add_finding(self.db, "/b2.jpg", seed=1)
         self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
 
         suggestions = suggest_merges(self.db, min_similarity=50.0)
@@ -140,10 +140,10 @@ class TestSuggestMerges(TestCase):
         assert suggestions[0].similarity_pct > 90
 
     def test_respects_threshold(self) -> None:
-        fid1 = _add_face(self.db, "/a1.jpg", seed=1)
-        fid2 = _add_face(self.db, "/a2.jpg", seed=1)
-        fid3 = _add_face(self.db, "/b1.jpg", seed=999)
-        fid4 = _add_face(self.db, "/b2.jpg", seed=999)
+        fid1 = _add_finding(self.db, "/a1.jpg", seed=1)
+        fid2 = _add_finding(self.db, "/a2.jpg", seed=1)
+        fid3 = _add_finding(self.db, "/b1.jpg", seed=999)
+        fid4 = _add_finding(self.db, "/b2.jpg", seed=999)
         self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
 
         suggestions = suggest_merges(self.db, min_similarity=99.0)
@@ -152,21 +152,21 @@ class TestSuggestMerges(TestCase):
     def test_skips_subject_to_subject_pairs(self) -> None:
         """Two named subjects with similar embeddings should NOT be suggested."""
         sid_a = self.db.create_subject("Alice")
-        fid1 = _add_face(self.db, "/a1.jpg", seed=1)
-        self.db.assign_face_to_subject(fid1, sid_a)
+        fid1 = _add_finding(self.db, "/a1.jpg", seed=1)
+        self.db.assign_finding_to_subject(fid1, sid_a)
 
         sid_b = self.db.create_subject("Alice2")
-        fid2 = _add_face(self.db, "/b1.jpg", seed=1)
-        self.db.assign_face_to_subject(fid2, sid_b)
+        fid2 = _add_finding(self.db, "/b1.jpg", seed=1)
+        self.db.assign_finding_to_subject(fid2, sid_b)
 
         suggestions = suggest_merges(self.db, min_similarity=50.0)
         assert len(suggestions) == 0
 
     def test_kind_filter(self) -> None:
-        fid1 = _add_face(self.db, "/a1.jpg", seed=1, species="human")
-        fid2 = _add_face(self.db, "/a2.jpg", seed=1, species="human")
-        fid3 = _add_face(self.db, "/b1.jpg", seed=1, species="dog")
-        fid4 = _add_face(self.db, "/b2.jpg", seed=1, species="dog")
+        fid1 = _add_finding(self.db, "/a1.jpg", seed=1, species="human")
+        fid2 = _add_finding(self.db, "/a2.jpg", seed=1, species="human")
+        fid3 = _add_finding(self.db, "/b1.jpg", seed=1, species="dog")
+        fid4 = _add_finding(self.db, "/b2.jpg", seed=1, species="dog")
         self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
 
         person_suggestions = suggest_merges(self.db, min_similarity=50.0, kind="person")
@@ -181,11 +181,11 @@ class TestFindSimilarCluster(TestCase):
 
     def test_best_match(self) -> None:
         sid = self.db.create_subject("Alice")
-        fid = _add_face(self.db, "/a1.jpg", seed=1)
-        self.db.assign_face_to_subject(fid, sid)
+        fid = _add_finding(self.db, "/a1.jpg", seed=1)
+        self.db.assign_finding_to_subject(fid, sid)
 
-        fid2 = _add_face(self.db, "/b1.jpg", seed=1)
-        fid3 = _add_face(self.db, "/b2.jpg", seed=1)
+        fid2 = _add_finding(self.db, "/b1.jpg", seed=1)
+        fid3 = _add_finding(self.db, "/b2.jpg", seed=1)
         self.db.update_cluster_ids({fid2: 10, fid3: 10})
 
         result = find_similar_cluster(self.db, sid)
@@ -193,11 +193,11 @@ class TestFindSimilarCluster(TestCase):
 
     def test_none_below_threshold(self) -> None:
         sid = self.db.create_subject("Alice")
-        fid = _add_face(self.db, "/a1.jpg", seed=1)
-        self.db.assign_face_to_subject(fid, sid)
+        fid = _add_finding(self.db, "/a1.jpg", seed=1)
+        self.db.assign_finding_to_subject(fid, sid)
 
-        fid2 = _add_face(self.db, "/b1.jpg", seed=999)
-        fid3 = _add_face(self.db, "/b2.jpg", seed=999)
+        fid2 = _add_finding(self.db, "/b1.jpg", seed=999)
+        fid3 = _add_finding(self.db, "/b2.jpg", seed=999)
         self.db.update_cluster_ids({fid2: 10, fid3: 10})
 
         result = find_similar_cluster(self.db, sid, min_similarity=0.99)
@@ -215,27 +215,27 @@ class TestClusterFaces(TestCase):
         assert result["clusters"] == 0
 
     def test_identical_embeddings_cluster_together(self) -> None:
-        _add_face(self.db, "/a.jpg", seed=1)
-        _add_face(self.db, "/b.jpg", seed=1)
-        _add_face(self.db, "/c.jpg", seed=1)
+        _add_finding(self.db, "/a.jpg", seed=1)
+        _add_finding(self.db, "/b.jpg", seed=1)
+        _add_finding(self.db, "/c.jpg", seed=1)
 
         result = cluster_faces(self.db)
         assert result["total_faces"] == 3
         assert result["clusters"] >= 1
 
     def test_distant_embeddings_stay_separate(self) -> None:
-        _add_face(self.db, "/a.jpg", seed=1)
-        _add_face(self.db, "/b.jpg", seed=1)
-        _add_face(self.db, "/c.jpg", seed=999)
-        _add_face(self.db, "/d.jpg", seed=999)
+        _add_finding(self.db, "/a.jpg", seed=1)
+        _add_finding(self.db, "/b.jpg", seed=1)
+        _add_finding(self.db, "/c.jpg", seed=999)
+        _add_finding(self.db, "/d.jpg", seed=999)
 
         result = cluster_faces(self.db, threshold=0.3)
         assert result["clusters"] >= 2
 
     def test_species_isolation(self) -> None:
         """Clustering humans doesn't wipe pet clusters."""
-        _add_face(self.db, "/dog1.jpg", seed=1, species="dog")
-        _add_face(self.db, "/dog2.jpg", seed=1, species="dog")
+        _add_finding(self.db, "/dog1.jpg", seed=1, species="dog")
+        _add_finding(self.db, "/dog2.jpg", seed=1, species="dog")
         self.db.update_cluster_ids(
             {
                 self.db.get_all_embeddings(species="dog")[0][0]: 100,
@@ -243,14 +243,14 @@ class TestClusterFaces(TestCase):
             }
         )
 
-        _add_face(self.db, "/h1.jpg", seed=2)
-        _add_face(self.db, "/h2.jpg", seed=2)
+        _add_finding(self.db, "/h1.jpg", seed=2)
+        _add_finding(self.db, "/h2.jpg", seed=2)
 
         cluster_faces(self.db, species="human")
 
         # Pet cluster should still exist
-        dog_faces = self.db.get_cluster_faces(100)
-        assert len(dog_faces) == 2
+        dog_findings = self.db.get_cluster_findings(100)
+        assert len(dog_findings) == 2
 
 
 class TestFindSimilarUnclustered(TestCase):
@@ -260,11 +260,11 @@ class TestFindSimilarUnclustered(TestCase):
 
     def test_finds_similar(self) -> None:
         sid = self.db.create_subject("Alice")
-        fid = _add_face(self.db, "/a.jpg", seed=1)
-        self.db.assign_face_to_subject(fid, sid)
+        fid = _add_finding(self.db, "/a.jpg", seed=1)
+        self.db.assign_finding_to_subject(fid, sid)
 
-        # Unclustered face with same embedding
-        _add_face(self.db, "/b.jpg", seed=1)
+        # Unclustered finding with same embedding
+        _add_finding(self.db, "/b.jpg", seed=1)
 
         results = find_similar_unclustered(self.db, sid, min_similarity=0.5)
         assert len(results) >= 1
@@ -272,10 +272,10 @@ class TestFindSimilarUnclustered(TestCase):
 
     def test_no_match_below_threshold(self) -> None:
         sid = self.db.create_subject("Alice")
-        fid = _add_face(self.db, "/a.jpg", seed=1)
-        self.db.assign_face_to_subject(fid, sid)
+        fid = _add_finding(self.db, "/a.jpg", seed=1)
+        self.db.assign_finding_to_subject(fid, sid)
 
-        _add_face(self.db, "/b.jpg", seed=999)
+        _add_finding(self.db, "/b.jpg", seed=999)
 
         results = find_similar_unclustered(self.db, sid, min_similarity=0.99)
         assert len(results) == 0
@@ -292,21 +292,21 @@ class TestCompareSubjects(TestCase):
         self.db = db
 
     def test_finds_swaps(self) -> None:
-        """When a face is closer to the other subject's centroid, it's flagged."""
+        """When a finding is closer to the other subject's centroid, it's flagged."""
         sid_a = self.db.create_subject("Alice")
         sid_b = self.db.create_subject("Bob")
 
-        # Give Alice a face with seed=1 centroid
-        fid_a = _add_face(self.db, "/a.jpg", seed=1)
-        self.db.assign_face_to_subject(fid_a, sid_a)
+        # Give Alice a finding with seed=1 centroid
+        fid_a = _add_finding(self.db, "/a.jpg", seed=1)
+        self.db.assign_finding_to_subject(fid_a, sid_a)
 
-        # Give Bob a face with seed=999 centroid
-        fid_b = _add_face(self.db, "/b.jpg", seed=999)
-        self.db.assign_face_to_subject(fid_b, sid_b)
+        # Give Bob a finding with seed=999 centroid
+        fid_b = _add_finding(self.db, "/b.jpg", seed=999)
+        self.db.assign_finding_to_subject(fid_b, sid_b)
 
-        # Assign a seed=999 face to Alice — should be flagged as swap to Bob
-        fid_wrong = _add_face(self.db, "/wrong.jpg", seed=999)
-        self.db.assign_face_to_subject(fid_wrong, sid_a)
+        # Assign a seed=999 finding to Alice — should be flagged as swap to Bob
+        fid_wrong = _add_finding(self.db, "/wrong.jpg", seed=999)
+        self.db.assign_finding_to_subject(fid_wrong, sid_a)
 
         result = compare_subjects(self.db, sid_a, sid_b)
         assert len(result["swaps_a_to_b"]) >= 1
@@ -326,16 +326,16 @@ class TestRankSubjectsForCluster(TestCase):
 
     def test_ranks_by_similarity(self) -> None:
         sid_close = self.db.create_subject("Close")
-        fid = _add_face(self.db, "/close.jpg", seed=1)
-        self.db.assign_face_to_subject(fid, sid_close)
+        fid = _add_finding(self.db, "/close.jpg", seed=1)
+        self.db.assign_finding_to_subject(fid, sid_close)
 
         sid_far = self.db.create_subject("Far")
-        fid2 = _add_face(self.db, "/far.jpg", seed=999)
-        self.db.assign_face_to_subject(fid2, sid_far)
+        fid2 = _add_finding(self.db, "/far.jpg", seed=999)
+        self.db.assign_finding_to_subject(fid2, sid_far)
 
         # Cluster with seed=1 embedding
-        fid3 = _add_face(self.db, "/c1.jpg", seed=1)
-        fid4 = _add_face(self.db, "/c2.jpg", seed=1)
+        fid3 = _add_finding(self.db, "/c1.jpg", seed=1)
+        fid4 = _add_finding(self.db, "/c2.jpg", seed=1)
         self.db.update_cluster_ids({fid3: 10, fid4: 10})
 
         ranked = rank_subjects_for_cluster(self.db, 10)
@@ -367,7 +367,7 @@ class TestClusterExact(TestCase):
         embs = np.vstack([group_a, group_b])
         labels = _cluster_exact(embs, threshold=0.3, min_size=2)
         assert len(set(labels) - {-1}) >= 2
-        # Faces 0-4 should be in one cluster, 5-9 in another
+        # Findings 0-4 should be in one cluster, 5-9 in another
         assert labels[0] == labels[4]
         assert labels[5] == labels[9]
         assert labels[0] != labels[5]
@@ -436,7 +436,7 @@ class TestClusterFaiss(TestCase):
             )
 
     def test_min_size_filters(self) -> None:
-        """Single isolated face should be noise."""
+        """Single isolated finding should be noise."""
         group = _make_group(5, seed=1)
         loner = _make_group(1, seed=999)
         embs = np.vstack([group, loner])
@@ -463,6 +463,6 @@ class TestClusterFaiss(TestCase):
                 same_exact = labels_exact[i] == labels_exact[j] and labels_exact[i] != -1
                 same_faiss = labels_faiss[i] == labels_faiss[j] and labels_faiss[i] != -1
                 assert same_exact == same_faiss, (
-                    f"Faces {i},{j}: exact says {'same' if same_exact else 'diff'}, "
+                    f"Findings {i},{j}: exact says {'same' if same_exact else 'diff'}, "
                     f"faiss says {'same' if same_faiss else 'diff'}"
                 )

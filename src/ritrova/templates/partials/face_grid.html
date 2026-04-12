@@ -1,16 +1,16 @@
 {# Face grid fragment -- returned by /api/clusters/{id}/faces-html for htmx infinite scroll #}
-{% for face in faces %}
+{% for face in findings %}
 <div class="group relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150"
      @click="toggle({{ face.id }})"
      :class="selected.has({{ face.id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'">
-  <img src="/api/faces/{{ face.id }}/thumbnail?size=180"
+  <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
        loading="lazy"
        alt="face"
-       @click.stop="$store.lightbox.show({{ face.photo_id }})"
+       @click.stop="$store.lightbox.show({{ face.source_id }})"
        class="aspect-square w-full object-cover">
   <!-- Remove single face button -->
   <button @click.stop="if(confirm('Remove this face from cluster?'))
-            fetch('/api/faces/exclude', {
+            fetch('/api/findings/exclude', {
               method: 'POST', headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({face_ids: [{{ face.id }}], cluster_id: {{ cluster_id }}})
             }).then(r => { if(r.ok) $el.closest('.group').remove() })"
@@ -30,8 +30,8 @@
   </div>
 </div>
 {% endfor %}
-{% if offset + faces|length < total %}
-<div hx-get="/api/clusters/{{ cluster_id }}/faces-html?offset={{ offset + faces|length }}&limit={{ limit }}"
+{% if offset + findings|length < total %}
+<div hx-get="/api/clusters/{{ cluster_id }}/faces-html?offset={{ offset + findings|length }}&limit={{ limit }}"
      hx-trigger="revealed"
      hx-swap="outerHTML"
      class="col-span-full flex justify-center py-8">

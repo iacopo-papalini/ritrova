@@ -8,7 +8,7 @@
   <a href="/clusters/{{ cluster.cluster_id }}" class="block">
     <div class="grid grid-cols-3 gap-0.5">
       {% for fid in cluster.sample_face_ids[:6] %}
-      <img src="/api/faces/{{ fid }}/thumbnail?size=120"
+      <img src="/api/findings/{{ fid }}/thumbnail?size=120"
            loading="lazy"
            alt="face"
            class="aspect-square w-full object-cover">

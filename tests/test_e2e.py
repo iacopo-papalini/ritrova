@@ -32,33 +32,33 @@ def app_url(tmp_path_factory: pytest.TempPathFactory) -> str:
     img_path = tmp / "photo.jpg"
     img.save(str(img_path), "JPEG")
 
-    # Seed data: 2 subjects with faces
+    # Seed data: 2 subjects with findings
     sid_alice = db.create_subject("Alice")
-    photo_id = db.add_photo(str(img_path), 200, 200)
-    db.add_faces_batch([(photo_id, (10, 10, 50, 50), _emb(1), 0.95)], species="human")
-    faces = db.get_photo_faces(photo_id)
-    db.assign_face_to_subject(faces[0].id, sid_alice)
+    source_id = db.add_source(str(img_path), width=200, height=200)
+    db.add_findings_batch([(source_id, (10, 10, 50, 50), _emb(1), 0.95)], species="human")
+    findings = db.get_source_findings(source_id)
+    db.assign_finding_to_subject(findings[0].id, sid_alice)
 
     sid_bob = db.create_subject("Bob")
-    photo_id2 = db.add_photo(str(img_path) + "2", 200, 200)
-    db.add_faces_batch([(photo_id2, (10, 10, 50, 50), _emb(2), 0.95)], species="human")
-    faces2 = db.get_photo_faces(photo_id2)
-    db.assign_face_to_subject(faces2[0].id, sid_bob)
+    source_id2 = db.add_source(str(img_path) + "2", width=200, height=200)
+    db.add_findings_batch([(source_id2, (10, 10, 50, 50), _emb(2), 0.95)], species="human")
+    findings2 = db.get_source_findings(source_id2)
+    db.assign_finding_to_subject(findings2[0].id, sid_bob)
 
     # Subject with gnarly characters: apostrophe, emoji, brackets
     sid_weird = db.create_subject("Al'ice \U0001f9d1<test>")
-    photo_id5 = db.add_photo(str(img_path) + "5", 200, 200)
-    db.add_faces_batch([(photo_id5, (10, 10, 50, 50), _emb(5), 0.95)], species="human")
-    faces5 = db.get_photo_faces(photo_id5)
-    db.assign_face_to_subject(faces5[0].id, sid_weird)
+    source_id5 = db.add_source(str(img_path) + "5", width=200, height=200)
+    db.add_findings_batch([(source_id5, (10, 10, 50, 50), _emb(5), 0.95)], species="human")
+    findings5 = db.get_source_findings(source_id5)
+    db.assign_finding_to_subject(findings5[0].id, sid_weird)
 
     # An unassigned cluster
-    photo_id3 = db.add_photo(str(img_path) + "3", 200, 200)
-    db.add_faces_batch([(photo_id3, (10, 10, 50, 50), _emb(3), 0.95)], species="human")
-    photo_id4 = db.add_photo(str(img_path) + "4", 200, 200)
-    db.add_faces_batch([(photo_id4, (10, 10, 50, 50), _emb(3), 0.95)], species="human")
-    f3 = db.get_photo_faces(photo_id3)
-    f4 = db.get_photo_faces(photo_id4)
+    source_id3 = db.add_source(str(img_path) + "3", width=200, height=200)
+    db.add_findings_batch([(source_id3, (10, 10, 50, 50), _emb(3), 0.95)], species="human")
+    source_id4 = db.add_source(str(img_path) + "4", width=200, height=200)
+    db.add_findings_batch([(source_id4, (10, 10, 50, 50), _emb(3), 0.95)], species="human")
+    f3 = db.get_source_findings(source_id3)
+    f4 = db.get_source_findings(source_id4)
     db.update_cluster_ids({f3[0].id: 100, f4[0].id: 100})
 
     db.close()

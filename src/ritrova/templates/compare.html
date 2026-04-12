@@ -78,7 +78,7 @@
       <button @click="
                 const faceIds = ids;
                 if (!faceIds.length) return;
-                fetch('/api/faces/swap', {
+                fetch('/api/findings/swap', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ face_ids: faceIds, target_person_id: {{ subject_b.id }} })
@@ -96,7 +96,7 @@
            @click="toggle({{ face_id }})"
            :class="selected.has({{ face_id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'"
            title="{{ path }}">
-        <img src="/api/faces/{{ face_id }}/thumbnail?size=180"
+        <img src="/api/findings/{{ face_id }}/thumbnail?size=180"
              loading="lazy"
              alt="face"
              class="aspect-square w-full object-cover">
@@ -166,7 +166,7 @@
       <button @click="
                 const faceIds = ids;
                 if (!faceIds.length) return;
-                fetch('/api/faces/swap', {
+                fetch('/api/findings/swap', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ face_ids: faceIds, target_person_id: {{ subject_a.id }} })
@@ -184,7 +184,7 @@
            @click="toggle({{ face_id }})"
            :class="selected.has({{ face_id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'"
            title="{{ path }}">
-        <img src="/api/faces/{{ face_id }}/thumbnail?size=180"
+        <img src="/api/findings/{{ face_id }}/thumbnail?size=180"
              loading="lazy"
              alt="face"
              class="aspect-square w-full object-cover">

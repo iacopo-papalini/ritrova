@@ -220,10 +220,10 @@ def cleanup(
 
     # Find unassigned, non-dismissed faces
     rows = db.query(
-        "SELECT f.id, f.photo_id, f.bbox_x, f.bbox_y, f.bbox_w, f.bbox_h "
-        "FROM faces f "
+        "SELECT f.id, f.source_id, f.bbox_x, f.bbox_y, f.bbox_w, f.bbox_h "
+        "FROM findings f "
         "WHERE f.person_id IS NULL "
-        "AND f.id NOT IN (SELECT face_id FROM dismissed_faces)"
+        "AND f.id NOT IN (SELECT finding_id FROM dismissed_findings)"
     )
     total = len(rows)
     print(f"Checking {total} unassigned faces...")
@@ -253,7 +253,7 @@ def cleanup(
 
     def check_quality(row: tuple[int, ...]) -> tuple[int | None, str | None]:
         fid, pid, bx, by, bw, bh = row
-        photo = db.get_photo(pid)
+        photo = db.get_source(pid)
         if not photo:
             return None, None
         resolved = db.resolve_path(photo.file_path)
@@ -302,7 +302,7 @@ def cleanup(
     if dry_run:
         print("Dry run — no changes made.")
     elif to_dismiss:
-        db.dismiss_faces(to_dismiss)
+        db.dismiss_findings(to_dismiss)
         print(f"Dismissed {len(to_dismiss)} faces.")
 
     db.close()
@@ -350,12 +350,12 @@ def stats(ctx: click.Context) -> None:
     db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
     s = db.get_stats()
 
-    print(f"Photos scanned:    {s['total_photos']}")
-    print(f"Faces detected:    {s['total_faces']}")
+    print(f"Sources scanned:   {s['total_sources']}")
+    print(f"Findings detected: {s['total_findings']}")
     print(f"Subjects named:    {s['total_subjects']}")
-    print(f"Named faces:       {s['named_faces']}")
+    print(f"Named findings:    {s['named_findings']}")
     print(f"Unnamed clusters:  {s['unnamed_clusters']}")
-    print(f"Unclustered faces: {s['unclustered_faces']}")
+    print(f"Unclustered:       {s['unclustered_findings']}")
     db.close()
 
 
@@ -368,7 +368,7 @@ def backfill_gps(ctx: click.Context) -> None:
 
     photos_dir = _require_photos_dir(ctx)
     db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
-    rows = db.query("SELECT id, file_path FROM photos WHERE latitude IS NULL")
+    rows = db.query("SELECT id, file_path FROM sources WHERE latitude IS NULL")
     updated = 0
     total = len(rows)
     for i, r in enumerate(rows, 1):
@@ -379,13 +379,13 @@ def backfill_gps(ctx: click.Context) -> None:
         gps = get_exif_gps(resolved)
         if gps:
             db.run(
-                "UPDATE photos SET latitude = ?, longitude = ? WHERE id = ?",
+                "UPDATE sources SET latitude = ?, longitude = ? WHERE id = ?",
                 (gps[0], gps[1], pid),
             )
             updated += 1
         if i % 500 == 0 or i == total:
             print(f"\r  [{i}/{total}] updated={updated}", end="", flush=True)
-    print(f"\nUpdated {updated} of {total} photos with GPS coordinates.")
+    print(f"\nUpdated {updated} of {total} sources with GPS coordinates.")
     db.close()
 
 
@@ -403,24 +403,14 @@ def migrate_paths(ctx: click.Context) -> None:
     db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
     base = str(db.base_dir) + "/"
 
-    rows = db.query("SELECT id, file_path, video_path FROM photos")
+    rows = db.query("SELECT id, file_path FROM sources")
     migrated = 0
     for r in rows:
-        pid, fp, vp = r[0], r[1], r[2]
-        new_fp = fp
-        new_vp = vp
-
+        sid, fp = r[0], r[1]
         if fp and fp.startswith(base):
             new_fp = fp[len(base) :]
-        if vp and vp.startswith(base):
-            new_vp = vp[len(base) :]
-
-        if new_fp != fp or new_vp != vp:
-            db.run(
-                "UPDATE photos SET file_path = ?, video_path = ? WHERE id = ?",
-                (new_fp, new_vp, pid),
-            )
+            db.run("UPDATE sources SET file_path = ? WHERE id = ?", (new_fp, sid))
             migrated += 1
 
-    print(f"Migrated {migrated} of {len(rows)} photo paths to relative.")
+    print(f"Migrated {migrated} of {len(rows)} source paths to relative.")
     db.close()

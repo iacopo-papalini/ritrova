@@ -10,18 +10,18 @@
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
 
     <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
-         x-data="{ current: 0, target: {{ stats.total_photos }} }"
+         x-data="{ current: 0, target: {{ stats.total_sources }} }"
          x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
       <p class="font-display text-4xl font-bold text-gallery-accent"
-         x-text="current.toLocaleString()">{{ stats.total_photos }}</p>
+         x-text="current.toLocaleString()">{{ stats.total_sources }}</p>
       <p class="mt-1 text-sm text-gallery-muted">Photos scanned</p>
     </div>
 
     <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
-         x-data="{ current: 0, target: {{ stats.total_faces }} }"
+         x-data="{ current: 0, target: {{ stats.total_findings }} }"
          x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
       <p class="font-display text-4xl font-bold text-gallery-accent"
-         x-text="current.toLocaleString()">{{ stats.total_faces }}</p>
+         x-text="current.toLocaleString()">{{ stats.total_findings }}</p>
       <p class="mt-1 text-sm text-gallery-muted">Faces detected</p>
     </div>
 
@@ -34,10 +34,10 @@
     </div>
 
     <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
-         x-data="{ current: 0, target: {{ stats.named_faces }} }"
+         x-data="{ current: 0, target: {{ stats.named_findings }} }"
          x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
       <p class="font-display text-4xl font-bold text-gallery-accent"
-         x-text="current.toLocaleString()">{{ stats.named_faces }}</p>
+         x-text="current.toLocaleString()">{{ stats.named_findings }}</p>
       <p class="mt-1 text-sm text-gallery-muted">Faces identified</p>
     </div>
 
@@ -50,18 +50,18 @@
     </div>
 
     <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
-         x-data="{ current: 0, target: {{ stats.unclustered_faces }} }"
+         x-data="{ current: 0, target: {{ stats.unclustered_findings }} }"
          x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
       <p class="font-display text-4xl font-bold text-gallery-accent"
-         x-text="current.toLocaleString()">{{ stats.unclustered_faces }}</p>
+         x-text="current.toLocaleString()">{{ stats.unclustered_findings }}</p>
       <p class="mt-1 text-sm text-gallery-muted">Unclustered faces</p>
     </div>
 
     <div class="rounded-xl border border-gallery-border bg-gallery-card p-5"
-         x-data="{ current: 0, target: {{ stats.dismissed_faces }} }"
+         x-data="{ current: 0, target: {{ stats.dismissed_findings }} }"
          x-init="$nextTick(() => { let start = performance.now(); let d = 600; (function step(now) { let t = Math.min((now - start) / d, 1); current = Math.floor(t * target); if (t < 1) requestAnimationFrame(step); })(performance.now()) })">
       <p class="font-display text-4xl font-bold text-gallery-accent"
-         x-text="current.toLocaleString()">{{ stats.dismissed_faces }}</p>
+         x-text="current.toLocaleString()">{{ stats.dismissed_findings }}</p>
       <p class="mt-1 text-sm text-gallery-muted">Dismissed (non-faces)</p>
     </div>
 

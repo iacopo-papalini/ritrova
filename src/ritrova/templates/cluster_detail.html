@@ -16,7 +16,7 @@
         Cluster #{{ cluster_id }}
       </h1>
       <span class="text-gallery-muted text-sm">
-        ({{ total }} face{{ 's' if total != 1 else '' }}{% if total > faces|length %}, showing {{ faces|length }}{% endif %})
+        ({{ total }} face{{ 's' if total != 1 else '' }}{% if total > findings|length %}, showing {{ findings|length }}{% endif %})
       </span>
     </div>
   </div>
@@ -77,7 +77,7 @@
     <button @click="
               const faceIds = ids;
               if (!faceIds.length) return;
-              fetch('/api/faces/exclude', {
+              fetch('/api/findings/exclude', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ face_ids: faceIds, cluster_id: {{ cluster_id }} })
@@ -89,7 +89,7 @@
     <button @click="
               const faceIds = ids;
               if (!faceIds.length || !confirm('Permanently dismiss ' + faceIds.length + ' as non-faces?')) return;
-              fetch('/api/faces/dismiss', {
+              fetch('/api/findings/dismiss', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ face_ids: faceIds })
@@ -111,19 +111,19 @@
 
   <!-- Face grid with htmx infinite scroll -->
   <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
-    {% for face in faces %}
+    {% for face in findings %}
     <div class="group relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150"
          @click="toggle({{ face.id }})"
          :class="selected.has({{ face.id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'">
-      <img src="/api/faces/{{ face.id }}/thumbnail?size=180"
+      <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
            loading="lazy"
            alt="face"
-           title="{{ face_paths.get(face.id, '') }}"
-           @click.stop="$store.lightbox.show({{ face.photo_id }})"
+           title="{{ finding_paths.get(face.id, '') }}"
+           @click.stop="$store.lightbox.show({{ face.source_id }})"
            class="aspect-square w-full object-cover">
       <!-- Remove single face button (visible on hover) -->
       <button @click.stop="if(confirm('Remove this face from cluster?'))
-                fetch('/api/faces/exclude', {
+                fetch('/api/findings/exclude', {
                   method: 'POST', headers: {'Content-Type': 'application/json'},
                   body: JSON.stringify({face_ids: [{{ face.id }}], cluster_id: {{ cluster_id }}})
                 }).then(r => { if(r.ok) $el.closest('.group').remove() })"
@@ -143,8 +143,8 @@
       </div>
     </div>
     {% endfor %}
-    {% if total > faces|length %}
-    <div hx-get="/api/clusters/{{ cluster_id }}/faces-html?offset={{ faces|length }}&limit=200"
+    {% if total > findings|length %}
+    <div hx-get="/api/clusters/{{ cluster_id }}/faces-html?offset={{ findings|length }}&limit=200"
          hx-trigger="revealed"
          hx-swap="outerHTML"
          class="col-span-full flex justify-center py-8">

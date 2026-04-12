@@ -4,7 +4,7 @@
           transition-all duration-200 hover:border-gallery-accent/40
           hover:ring-1 hover:ring-gallery-accent/20">
   {% if avatars.get(subject.id) %}
-  <img src="/api/faces/{{ avatars[subject.id] }}/thumbnail?size=120"
+  <img src="/api/findings/{{ avatars[subject.id] }}/thumbnail?size=120"
        alt="{{ subject.name }}"
        class="h-14 w-14 shrink-0 rounded-full object-cover">
   {% else %}

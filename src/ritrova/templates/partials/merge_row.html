@@ -15,7 +15,7 @@
       </div>
       <div class="flex gap-1 flex-wrap">
         {% for fid in s.sample_face_ids_a %}
-        <img src="/api/faces/{{ fid }}/thumbnail?size=100"
+        <img src="/api/findings/{{ fid }}/thumbnail?size=100"
              class="w-16 h-16 rounded object-cover" loading="lazy" alt="face">
         {% endfor %}
       </div>
@@ -78,7 +78,7 @@
       </div>
       <div class="flex gap-1 flex-wrap">
         {% for fid in s.sample_face_ids_b %}
-        <img src="/api/faces/{{ fid }}/thumbnail?size=100"
+        <img src="/api/findings/{{ fid }}/thumbnail?size=100"
              class="w-16 h-16 rounded object-cover" loading="lazy" alt="face">
         {% endfor %}
       </div>

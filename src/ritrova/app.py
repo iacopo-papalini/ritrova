@@ -27,24 +27,24 @@ from .services import (
 )
 
 KindType = Literal["people", "pets"]
-# URL kind -> face species (for face-level filtering)
+# URL kind -> finding species (for finding-level filtering)
 _KIND_TO_SPECIES: dict[str, str] = {"people": "human", "pets": "pet"}
 
 
 def _species_for_kind(kind: KindType) -> str:
-    """Map URL kind to face species for face-level queries."""
+    """Map URL kind to finding species for finding-level queries."""
     return _KIND_TO_SPECIES[kind]
 
 
 def _kind_for_species(species: str) -> KindType:
-    """Map a face species string to the URL kind."""
+    """Map a finding species string to the URL kind."""
     if species in ("pet", "cat", "dog"):
         return "pets"
     return "people"
 
 
 def _subject_kind_for_species(species: str) -> str:
-    """Map a face species to subject kind."""
+    """Map a finding species to subject kind."""
     if species in ("pet", "cat", "dog", "other_pet"):
         return "pet"
     return "person"
@@ -62,7 +62,7 @@ _DATE_RE = re.compile(r"(\d{4})-(\d{2})")
 
 
 def _month_from_path(file_path: str) -> str:
-    """Extract YYYY-MM from directory names in a photo path (most reliable date source)."""
+    """Extract YYYY-MM from directory names in a source path (most reliable date source)."""
     for part in reversed(Path(file_path).parts):
         m = _DATE_RE.search(part)
         if m:
@@ -112,23 +112,23 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     def cluster_detail(
         request: Request, cluster_id: int, suggested_person: int | None = None
     ) -> HTMLResponse:
-        total = db.get_cluster_face_count(cluster_id)
+        total = db.get_cluster_finding_count(cluster_id)
         if total == 0:
             raise HTTPException(404, "Cluster not found")
-        faces = db.get_cluster_faces(cluster_id, limit=200)
-        photos = db.get_photos_batch([f.photo_id for f in faces])
+        findings = db.get_cluster_findings(cluster_id, limit=200)
+        sources = db.get_sources_batch([f.source_id for f in findings])
         face_paths = {
-            f.id: photos[f.photo_id].file_path if f.photo_id in photos else "" for f in faces
+            f.id: sources[f.source_id].file_path if f.source_id in sources else "" for f in findings
         }
         ranked = rank_subjects_for_cluster(db, cluster_id)
-        species = faces[0].species if faces else "human"
+        species = findings[0].species if findings else "human"
         kind = _kind_for_species(species)
         return templates.TemplateResponse(
             name="cluster_detail.html",
             context={
                 "cluster_id": cluster_id,
-                "faces": faces,
-                "face_paths": face_paths,
+                "findings": findings,
+                "finding_paths": face_paths,
                 "total": total,
                 "ranked_subjects": ranked,
                 "kind": kind,
@@ -141,14 +141,14 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         request: Request, species: str = "human", offset: int = 0, limit: int = 200
     ) -> HTMLResponse:
         kind = _subject_kind_for_species(species)
-        faces = db.get_singleton_faces(species=species, limit=limit, offset=offset)
-        face_hints = compute_singleton_hints(db, faces, kind)
+        findings = db.get_singleton_findings(species=species, limit=limit, offset=offset)
+        face_hints = compute_singleton_hints(db, findings, kind)
         total = db.get_singleton_count(species=species)
         return templates.TemplateResponse(
             name="partials/singleton_grid.html",
             context={
-                "faces": faces,
-                "face_hints": face_hints,
+                "findings": findings,
+                "finding_hints": face_hints,
                 "species": species,
                 "offset": offset,
                 "limit": limit,
@@ -159,36 +159,36 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.get("/photos/{photo_id}", response_class=HTMLResponse)
     def photo_page(request: Request, photo_id: int) -> HTMLResponse:
-        photo = db.get_photo(photo_id)
-        if not photo:
+        source = db.get_source(photo_id)
+        if not source:
             raise HTTPException(404, "Photo not found")
-        faces = db.get_photo_faces(photo_id)
+        findings = db.get_source_findings(photo_id)
         subjects = db.get_subjects()
-        faces_data = []
-        for face in faces:
+        findings_data = []
+        for finding in findings:
             subject_name = None
-            if face.person_id:
-                s = db.get_subject(face.person_id)
+            if finding.person_id:
+                s = db.get_subject(finding.person_id)
                 subject_name = s.name if s else None
-            faces_data.append(
+            findings_data.append(
                 {
-                    "id": face.id,
-                    "bbox_x_pct": face.bbox_x / photo.width * 100,
-                    "bbox_y_pct": face.bbox_y / photo.height * 100,
-                    "bbox_w_pct": face.bbox_w / photo.width * 100,
-                    "bbox_h_pct": face.bbox_h / photo.height * 100,
-                    "person_id": face.person_id,
+                    "id": finding.id,
+                    "bbox_x_pct": finding.bbox_x / source.width * 100,
+                    "bbox_y_pct": finding.bbox_y / source.height * 100,
+                    "bbox_w_pct": finding.bbox_w / source.width * 100,
+                    "bbox_h_pct": finding.bbox_h / source.height * 100,
+                    "person_id": finding.person_id,
                     "person_name": subject_name,
-                    "confidence": face.confidence,
+                    "confidence": finding.confidence,
                 }
             )
-        species = faces[0].species if faces else "human"
+        species = findings[0].species if findings else "human"
         kind = _kind_for_species(species)
         return templates.TemplateResponse(
             name="photo.html",
             context={
-                "photo": photo,
-                "faces_data": faces_data,
+                "source": source,
+                "findings_data": findings_data,
                 "subjects": subjects,
                 "kind": kind,
             },
@@ -217,8 +217,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                         "similarity_pct": s.similarity_pct,
                         "size_a": s.size_a,
                         "size_b": s.size_b,
-                        "sample_face_ids_a": s.sample_face_ids_a,
-                        "sample_face_ids_b": s.sample_face_ids_b,
+                        "sample_face_ids_a": s.sample_finding_ids_a,
+                        "sample_face_ids_b": s.sample_finding_ids_b,
                         "name_a": subjects_map.get(s.cluster_a) if s.kind_a == "subject" else None,
                         "name_b": subjects_map.get(s.cluster_b) if s.kind_b == "subject" else None,
                     }
@@ -247,8 +247,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "similarity_pct": s.similarity_pct,
                 "size_a": s.size_a,
                 "size_b": s.size_b,
-                "sample_face_ids_a": s.sample_face_ids_a,
-                "sample_face_ids_b": s.sample_face_ids_b,
+                "sample_face_ids_a": s.sample_finding_ids_a,
+                "sample_face_ids_b": s.sample_finding_ids_b,
                 "name_a": subjects_map.get(s.cluster_a) if s.kind_a == "subject" else None,
                 "name_b": subjects_map.get(s.cluster_b) if s.kind_b == "subject" else None,
             }
@@ -268,13 +268,13 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             request=request,
         )
 
-    @app.post("/api/faces/swap")
-    def swap_faces(
+    @app.post("/api/findings/swap")
+    def swap_findings(
         face_ids: list[int] = Body(...),
         target_person_id: int = Body(...),
     ) -> JSONResponse:
         for fid in face_ids:
-            db.assign_face_to_subject(fid, target_person_id)
+            db.assign_finding_to_subject(fid, target_person_id)
         return JSONResponse({"ok": True, "swapped": len(face_ids)})
 
     @app.get("/search", response_class=HTMLResponse)
@@ -297,7 +297,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     @app.post("/api/subjects/{subject_id}/claim-faces")
     def claim_faces(subject_id: int, face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
         for fid in face_ids:
-            db.assign_face_to_subject(fid, subject_id)
+            db.assign_finding_to_subject(fid, subject_id)
         return JSONResponse({"ok": True, "claimed": len(face_ids)})
 
     @app.get("/api/clusters/{cluster_id}/hint")
@@ -323,107 +323,108 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     @app.get("/api/clusters/{cluster_id}/faces")
     def cluster_faces_api(cluster_id: int, offset: int = 0, limit: int = 200) -> JSONResponse:
         rows = db.query(
-            "SELECT id, photo_id FROM faces WHERE cluster_id = ? LIMIT ? OFFSET ?",
+            "SELECT id, source_id FROM findings WHERE cluster_id = ? LIMIT ? OFFSET ?",
             (cluster_id, limit, offset),
         )
-        return JSONResponse([{"id": r[0], "photo_id": r[1]} for r in rows])
+        return JSONResponse([{"id": r[0], "source_id": r[1]} for r in rows])
 
     @app.get("/api/clusters/{cluster_id}/faces-html", response_class=HTMLResponse)
     def cluster_faces_html(
         request: Request, cluster_id: int, offset: int = 0, limit: int = 200
     ) -> HTMLResponse:
         rows = db.query(
-            "SELECT id, photo_id FROM faces WHERE cluster_id = ? LIMIT ? OFFSET ?",
+            "SELECT id, source_id FROM findings WHERE cluster_id = ? LIMIT ? OFFSET ?",
             (cluster_id, limit, offset),
         )
-        faces = [{"id": r[0], "photo_id": r[1]} for r in rows]
+        faces = [{"id": r[0], "source_id": r[1]} for r in rows]
         return templates.TemplateResponse(
             name="partials/face_grid.html",
             context={
-                "faces": faces,
+                "findings": faces,
                 "cluster_id": cluster_id,
                 "offset": offset,
                 "limit": limit,
-                "total": db.get_cluster_face_count(cluster_id),
+                "total": db.get_cluster_finding_count(cluster_id),
             },
             request=request,
         )
 
-    @app.get("/api/subjects/{subject_id}/faces")
+    @app.get("/api/subjects/{subject_id}/findings")
     def subject_faces_api(subject_id: int, offset: int = 0, limit: int = 200) -> JSONResponse:
         rows = db.query(
-            "SELECT id, photo_id FROM faces WHERE person_id = ? LIMIT ? OFFSET ?",
+            "SELECT id, source_id FROM findings WHERE person_id = ? LIMIT ? OFFSET ?",
             (subject_id, limit, offset),
         )
-        return JSONResponse([{"id": r[0], "photo_id": r[1]} for r in rows])
+        return JSONResponse([{"id": r[0], "source_id": r[1]} for r in rows])
 
-    @app.get("/api/subjects/{subject_id}/faces-html", response_class=HTMLResponse)
+    @app.get("/api/subjects/{subject_id}/findings-html", response_class=HTMLResponse)
     def subject_faces_html(
         request: Request, subject_id: int, offset: int = 0, limit: int = 200
     ) -> HTMLResponse:
-        faces_with_paths = db.get_subject_faces_with_paths(subject_id, limit=limit, offset=offset)
-        face_groups = _group_by_month(faces_with_paths, key="faces")
+        findings_with_paths = db.get_subject_findings_with_paths(
+            subject_id, limit=limit, offset=offset
+        )
+        finding_groups = _group_by_month(findings_with_paths, key="findings")
         subject = db.get_subject(subject_id)
         total = subject.face_count if subject else 0
         return templates.TemplateResponse(
-            name="partials/subject_face_grid.html",
+            name="partials/subject_finding_grid.html",
             context={
-                "face_groups": face_groups,
+                "finding_groups": finding_groups,
                 "subject_id": subject_id,
                 "offset": offset,
                 "limit": limit,
                 "total": total,
-                "faces_count": len(faces_with_paths),
+                "findings_count": len(findings_with_paths),
             },
             request=request,
         )
 
     # ── API: images ────────────────────────────────────────
 
-    @app.get("/api/faces/{face_id}/thumbnail")
-    def face_thumbnail(face_id: int, size: int = 150) -> StreamingResponse:
+    @app.get("/api/findings/{finding_id}/thumbnail")
+    def finding_thumbnail(finding_id: int, size: int = 150) -> StreamingResponse:
         size = min(size, 500)
-        cache_path = thumbnails_dir / f"{face_id}_{size}.jpg"
+        cache_path = thumbnails_dir / f"{finding_id}_{size}.jpg"
         if cache_path.exists():
             return StreamingResponse(io.BytesIO(cache_path.read_bytes()), media_type="image/jpeg")
 
-        face = db.get_face(face_id)
-        if not face:
+        finding = db.get_finding(finding_id)
+        if not finding:
             raise HTTPException(404)
-        photo = db.get_photo(face.photo_id)
-        if not photo:
-            raise HTTPException(404)
-        resolved = db.resolve_path(photo.file_path)
+        resolved = db.resolve_finding_image(finding)
         if not resolved.exists():
             raise HTTPException(404)
 
         buf = crop_face_thumbnail(
-            resolved, face.bbox_x, face.bbox_y, face.bbox_w, face.bbox_h, size
+            resolved, finding.bbox_x, finding.bbox_y, finding.bbox_w, finding.bbox_h, size
         )
         cache_path.write_bytes(buf.getvalue())
         return StreamingResponse(buf, media_type="image/jpeg")
 
-    @app.get("/api/photos/{photo_id}/image")
-    def photo_image(photo_id: int, max_size: int = 1600) -> StreamingResponse:
-        photo = db.get_photo(photo_id)
-        if not photo:
+    @app.get("/api/sources/{source_id}/image")
+    def source_image(source_id: int, max_size: int = 1600) -> StreamingResponse:
+        source = db.get_source(source_id)
+        if not source:
             raise HTTPException(404)
-        resolved = db.resolve_path(photo.file_path)
+        if source.type == "video":
+            raise HTTPException(404, "No image for video sources")
+        resolved = db.resolve_path(source.file_path)
         if not resolved.exists():
             raise HTTPException(404)
         buf = resize_photo(resolved, min(max_size, 2000))
         return StreamingResponse(buf, media_type="image/jpeg")
 
-    @app.get("/api/photos/{photo_id}/info")
-    def photo_info(photo_id: int) -> JSONResponse:
-        photo = db.get_photo(photo_id)
-        if not photo:
+    @app.get("/api/sources/{source_id}/info")
+    def source_info(source_id: int) -> JSONResponse:
+        source = db.get_source(source_id)
+        if not source:
             raise HTTPException(404)
         return JSONResponse(
             {
-                "file_path": str(db.resolve_path(photo.file_path)),
-                "latitude": photo.latitude,
-                "longitude": photo.longitude,
+                "file_path": str(db.resolve_path(source.file_path)),
+                "latitude": source.latitude,
+                "longitude": source.longitude,
             }
         )
 
@@ -431,8 +432,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     def _next_similar_cluster(subject_id: int, cluster_id: int) -> str:
         """Find the unnamed cluster most similar to this subject, return redirect URL."""
-        faces = db.get_cluster_faces(cluster_id, limit=1)
-        species = faces[0].species if faces else "human"
+        findings = db.get_cluster_findings(cluster_id, limit=1)
+        species = findings[0].species if findings else "human"
         kind = _kind_for_species(species)
         fallback = f"/{kind}/clusters"
 
@@ -444,9 +445,9 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.post("/api/clusters/{cluster_id}/name")
     def name_cluster(cluster_id: int, name: str = Form(...)) -> RedirectResponse:
-        # Determine subject kind from cluster's face species
-        faces = db.get_cluster_faces(cluster_id, limit=1)
-        subject_kind = _subject_kind_for_species(faces[0].species) if faces else "person"
+        # Determine subject kind from cluster's finding species
+        findings = db.get_cluster_findings(cluster_id, limit=1)
+        subject_kind = _subject_kind_for_species(findings[0].species) if findings else "person"
         subject_id = db.create_subject(name, kind=subject_kind)
         db.assign_cluster_to_subject(cluster_id, subject_id)
         return RedirectResponse(_next_similar_cluster(subject_id, cluster_id), status_code=303)
@@ -465,11 +466,11 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.post("/api/clusters/{cluster_id}/dismiss")
     def dismiss_cluster(cluster_id: int) -> JSONResponse:
-        """Dismiss all faces in a cluster as non-faces."""
-        face_ids = db.get_cluster_face_ids(cluster_id)
-        if face_ids:
-            db.dismiss_faces(face_ids)
-        return JSONResponse({"ok": True, "dismissed": len(face_ids)})
+        """Dismiss all findings in a cluster as non-faces."""
+        finding_ids = db.get_cluster_finding_ids(cluster_id)
+        if finding_ids:
+            db.dismiss_findings(finding_ids)
+        return JSONResponse({"ok": True, "dismissed": len(finding_ids)})
 
     @app.post("/api/clusters/merge", response_model=None)
     def merge_clusters_api(
@@ -477,35 +478,35 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         source_cluster: int = Form(...),
         target_cluster: int = Form(...),
     ) -> JSONResponse | HTMLResponse:
-        """Move all faces from source cluster into target cluster."""
+        """Move all findings from source cluster into target cluster."""
         db.merge_clusters(source_cluster, target_cluster)
         if request.headers.get("HX-Request"):
             return HTMLResponse("")
         return JSONResponse({"ok": True})
 
-    @app.post("/api/faces/dismiss")
-    def dismiss_faces(face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
-        """Mark faces as non-faces (statues, paintings, dogs, etc.)."""
-        db.dismiss_faces(face_ids)
+    @app.post("/api/findings/dismiss")
+    def dismiss_findings(face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
+        """Mark findings as non-faces (statues, paintings, dogs, etc.)."""
+        db.dismiss_findings(face_ids)
         return JSONResponse({"ok": True, "dismissed": len(face_ids)})
 
-    @app.post("/api/faces/exclude")
-    def exclude_faces(
+    @app.post("/api/findings/exclude")
+    def exclude_findings(
         face_ids: list[int] = Body(..., embed=True),
         cluster_id: int = Body(..., embed=True),
     ) -> JSONResponse:
         if face_ids:
-            db.exclude_faces(face_ids, cluster_id=cluster_id)
+            db.exclude_findings(face_ids, cluster_id=cluster_id)
         return JSONResponse({"ok": True, "excluded": len(face_ids)})
 
-    @app.post("/api/faces/{face_id}/assign")
-    def assign_face(face_id: int, person_id: int = Form(...)) -> JSONResponse:
-        db.assign_face_to_subject(face_id, person_id)
+    @app.post("/api/findings/{finding_id}/assign")
+    def assign_finding(finding_id: int, person_id: int = Form(...)) -> JSONResponse:
+        db.assign_finding_to_subject(finding_id, person_id)
         return JSONResponse({"ok": True})
 
-    @app.post("/api/faces/{face_id}/unassign")
-    def unassign_face(face_id: int) -> JSONResponse:
-        db.unassign_face(face_id)
+    @app.post("/api/findings/{finding_id}/unassign")
+    def unassign_finding(finding_id: int) -> JSONResponse:
+        db.unassign_finding(finding_id)
         return JSONResponse({"ok": True})
 
     @app.post("/api/subjects/{subject_id}/rename")
@@ -530,7 +531,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.post("/api/subjects/{subject_id}/delete")
     def delete_subject(subject_id: int) -> RedirectResponse:
-        """Unassign all faces and delete the subject."""
+        """Unassign all findings and delete the subject."""
         subject = db.get_subject(subject_id)
         if not subject:
             raise HTTPException(404, "Subject not found")
@@ -588,17 +589,17 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.get("/api/together")
     def together_api(person_ids: str = "") -> JSONResponse:
-        """Find photos containing ALL given subject IDs (comma-separated)."""
+        """Find sources containing ALL given subject IDs (comma-separated)."""
         if not person_ids.strip():
-            return JSONResponse({"photos": [], "total": 0})
+            return JSONResponse({"sources": [], "total": 0})
         ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
-        photos = db.get_photos_with_all_subjects(ids)
+        sources = db.get_sources_with_all_subjects(ids)
         return JSONResponse(
             {
-                "total": len(photos),
-                "photos": [
-                    {"id": p.id, "file_path": p.file_path, "taken_at": p.taken_at}
-                    for p in photos[:200]
+                "total": len(sources),
+                "sources": [
+                    {"id": s.id, "file_path": s.file_path, "taken_at": s.taken_at}
+                    for s in sources[:200]
                 ],
             }
         )
@@ -610,18 +611,18 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         if not person_ids.strip():
             return HTMLResponse("")
         ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
-        total = db.count_photos_with_all_subjects(ids)
-        photos = db.get_photos_with_all_subjects(ids, limit=limit, offset=offset)
-        groups = _group_by_month([(p, p.file_path) for p in photos], key="photos")
+        total = db.count_sources_with_all_subjects(ids)
+        sources = db.get_sources_with_all_subjects(ids, limit=limit, offset=offset)
+        groups = _group_by_month([(s, s.file_path) for s in sources], key="sources")
         return templates.TemplateResponse(
             name="partials/together_results.html",
             context={
-                "photo_groups": groups,
+                "source_groups": groups,
                 "total": total,
                 "person_ids": person_ids,
                 "offset": offset,
                 "limit": limit,
-                "page_count": len(photos),
+                "page_count": len(sources),
             },
             request=request,
         )
@@ -648,19 +649,19 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         species = _species_for_kind(kind)
         subject_kind = _subject_kind_for_species(species)
         total = db.get_singleton_count(species=species)
-        faces = db.get_singleton_faces(species=species, limit=200)
+        findings = db.get_singleton_findings(species=species, limit=200)
         subjects = db.get_subjects_by_kind(subject_kind)
-        photos = db.get_photos_batch([f.photo_id for f in faces])
+        sources = db.get_sources_batch([f.source_id for f in findings])
         face_paths = {
-            f.id: photos[f.photo_id].file_path if f.photo_id in photos else "" for f in faces
+            f.id: sources[f.source_id].file_path if f.source_id in sources else "" for f in findings
         }
-        face_hints = compute_singleton_hints(db, faces, subject_kind)
+        face_hints = compute_singleton_hints(db, findings, subject_kind)
         return templates.TemplateResponse(
             name="singletons.html",
             context={
-                "faces": faces,
-                "face_paths": face_paths,
-                "face_hints": face_hints,
+                "findings": findings,
+                "finding_paths": face_paths,
+                "finding_hints": face_hints,
                 "subjects": subjects,
                 "total": total,
                 "kind": kind,
@@ -733,20 +734,21 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         subject = db.get_subject(subject_id)
         if not subject:
             raise HTTPException(404, "Subject not found")
-        faces_with_paths = db.get_subject_faces_with_paths(subject_id, limit=200)
-        faces = [f for f, _ in faces_with_paths]
-        face_groups = _group_by_month(faces_with_paths, key="faces")
-        photos = db.get_subject_photos(subject_id)
-        photo_groups = _group_by_month([(p, p.file_path) for p in photos], key="photos")
+        findings_with_paths = db.get_subject_findings_with_paths(subject_id, limit=200)
+        findings = [f for f, _ in findings_with_paths]
+        finding_groups = _group_by_month(findings_with_paths, key="findings")
+        all_sources = db.get_subject_sources(subject_id)
+        sources = [s for s in all_sources if s.type == "photo"]
+        source_groups = _group_by_month([(s, s.file_path) for s in sources], key="sources")
         all_subjects = db.get_subjects()
         return templates.TemplateResponse(
             name="subject_detail.html",
             context={
                 "subject": subject,
-                "faces": faces,
-                "face_groups": face_groups,
-                "photos": photos,
-                "photo_groups": photo_groups,
+                "findings": findings,
+                "finding_groups": finding_groups,
+                "sources": sources,
+                "source_groups": source_groups,
                 "all_subjects": all_subjects,
                 "kind": kind,
             },

@@ -48,7 +48,7 @@
               class="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gallery-text
                      transition-colors cursor-pointer"
               :class="hi === idx ? 'bg-gallery-accent/15 text-gallery-accent' : isSelected(p.id) ? 'bg-gallery-accent/10 text-gallery-accent' : 'hover:bg-gallery-accent/10'">
-        <img x-show="p.face_id" :src="p.face_id ? `/api/faces/${p.face_id}/thumbnail?size=60` : ''"
+        <img x-show="p.face_id" :src="p.face_id ? `/api/findings/${p.face_id}/thumbnail?size=60` : ''"
              class="h-7 w-7 shrink-0 rounded-full object-cover">
         <div x-show="!p.face_id"
              class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gallery-border text-xs font-bold text-gallery-muted"

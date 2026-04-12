@@ -9,7 +9,7 @@ import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import pdist
 
-from .db import Face, FaceDB
+from .db import FaceDB, Finding
 from .embeddings import compute_centroid, cosine_similarity, normalize
 
 logger = logging.getLogger(__name__)
@@ -22,15 +22,15 @@ class MergeSuggestion:
     similarity_pct: float
     size_a: int
     size_b: int
-    sample_face_ids_a: list[int]
-    sample_face_ids_b: list[int]
+    sample_finding_ids_a: list[int]
+    sample_finding_ids_b: list[int]
     kind_a: str = "cluster"  # "subject" or "cluster"
     kind_b: str = "cluster"
 
 
-def _faces_centroid(faces: list[Face]) -> np.ndarray:
-    """Compute normalized centroid from a list of Face objects."""
-    embs = np.array([f.embedding for f in faces])
+def _findings_centroid(findings: list[Finding]) -> np.ndarray:
+    """Compute normalized centroid from a list of Finding objects."""
+    embs = np.array([f.embedding for f in findings])
     return compute_centroid(embs)
 
 
@@ -189,7 +189,7 @@ def cluster_faces(
 
     # Offset cluster IDs to avoid collision with other species' clusters
     max_existing = db.query(
-        "SELECT COALESCE(MAX(cluster_id), -1) FROM faces WHERE cluster_id IS NOT NULL"
+        "SELECT COALESCE(MAX(cluster_id), -1) FROM findings WHERE cluster_id IS NOT NULL"
     )
     cluster_offset = max_existing[0][0] + 1 if max_existing else 0
 
@@ -232,12 +232,12 @@ def find_similar_unclustered(
 
     Returns list of (face_id, similarity_pct) sorted by similarity desc.
     """
-    subject_faces = db.get_subject_faces(subject_id, limit=500)
-    if not subject_faces:
+    subject_findings = db.get_subject_findings(subject_id, limit=500)
+    if not subject_findings:
         return []
 
-    centroid = _faces_centroid(subject_faces)
-    species = subject_faces[0].species
+    centroid = _findings_centroid(subject_findings)
+    species = subject_findings[0].species
 
     unclustered = db.get_unclustered_embeddings(species=species)
     if not unclustered:
@@ -290,10 +290,10 @@ def auto_assign(
     unmatched = 0
 
     for cluster in unnamed:
-        faces = db.get_cluster_faces(cluster["cluster_id"], limit=500)
-        if not faces:
+        findings = db.get_cluster_findings(cluster["cluster_id"], limit=500)
+        if not findings:
             continue
-        cluster_centroid = _faces_centroid(faces)
+        cluster_centroid = _findings_centroid(findings)
 
         sims = centroid_matrix @ cluster_centroid
         best_idx = int(sims.argmax())
@@ -333,7 +333,7 @@ def auto_assign(
             best_sim = float(sims[best_idx])
             if best_sim >= min_similarity:
                 sid = subject_centroids[best_idx][0]
-                db.assign_face_to_subject(fid, sid)
+                db.assign_finding_to_subject(fid, sid)
                 assigned_singletons += 1
 
         logger.info(
@@ -359,32 +359,32 @@ def compare_subjects(
 
     Returns faces from A that are closer to B's centroid, and vice versa.
     """
-    faces_a = db.get_subject_faces(subject_a_id, limit=5000)
-    faces_b = db.get_subject_faces(subject_b_id, limit=5000)
-    if not faces_a or not faces_b:
+    findings_a = db.get_subject_findings(subject_a_id, limit=5000)
+    findings_b = db.get_subject_findings(subject_b_id, limit=5000)
+    if not findings_a or not findings_b:
         return {"swaps_a_to_b": [], "swaps_b_to_a": []}
 
-    centroid_a = _faces_centroid(faces_a)
-    centroid_b = _faces_centroid(faces_b)
+    centroid_a = _findings_centroid(findings_a)
+    centroid_b = _findings_centroid(findings_b)
 
     def _find_swaps(
-        faces: list[Face], own_centroid: np.ndarray, other_centroid: np.ndarray
+        findings: list[Finding], own_centroid: np.ndarray, other_centroid: np.ndarray
     ) -> list[tuple[int, float, float, str]]:
         swaps = []
-        for face in faces:
-            emb = normalize(face.embedding)
+        for finding in findings:
+            emb = normalize(finding.embedding)
             sim_own = cosine_similarity(emb, own_centroid)
             sim_other = cosine_similarity(emb, other_centroid)
             if sim_other > sim_own:
-                photo = db.get_photo(face.photo_id)
-                path = photo.file_path if photo else ""
-                swaps.append((face.id, round(sim_own * 100, 1), round(sim_other * 100, 1), path))
+                source = db.get_source(finding.source_id)
+                path = source.file_path if source else ""
+                swaps.append((finding.id, round(sim_own * 100, 1), round(sim_other * 100, 1), path))
         swaps.sort(key=lambda x: x[2] - x[1], reverse=True)
         return swaps
 
     return {
-        "swaps_a_to_b": _find_swaps(faces_a, centroid_a, centroid_b),
-        "swaps_b_to_a": _find_swaps(faces_b, centroid_b, centroid_a),
+        "swaps_a_to_b": _find_swaps(findings_a, centroid_a, centroid_b),
+        "swaps_b_to_a": _find_swaps(findings_b, centroid_b, centroid_a),
     }
 
 
@@ -419,12 +419,12 @@ def rank_subjects_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, st
 
     Returns list of (subject_id, name, face_count, similarity_pct) sorted desc.
     """
-    cluster_faces = db.get_cluster_faces(cluster_id, limit=200)
-    if not cluster_faces:
+    cluster_findings = db.get_cluster_findings(cluster_id, limit=200)
+    if not cluster_findings:
         return []
 
-    centroid = _faces_centroid(cluster_faces)
-    cluster_species = cluster_faces[0].species
+    centroid = _findings_centroid(cluster_findings)
+    cluster_species = cluster_findings[0].species
     # Map face species to subject kind
     kind = "pet" if cluster_species in db.PET_SPECIES else "person"
 
@@ -447,20 +447,20 @@ def find_similar_cluster(
 ) -> int | None:
     """Find the unnamed cluster most similar to a subject. Returns cluster_id or None."""
     species = FaceDB.KIND_TO_SPECIES[kind]
-    subject_faces = db.get_subject_faces(subject_id, limit=500)
-    if not subject_faces:
+    subject_findings = db.get_subject_findings(subject_id, limit=500)
+    if not subject_findings:
         return None
 
-    centroid = _faces_centroid(subject_faces)
+    centroid = _findings_centroid(subject_findings)
 
     best_cluster = None
     best_sim = min_similarity
 
     for cluster in db.get_unnamed_clusters(species=species):
-        faces = db.get_cluster_faces(cluster["cluster_id"], limit=100)
-        if not faces:
+        findings = db.get_cluster_findings(cluster["cluster_id"], limit=100)
+        if not findings:
             continue
-        c = _faces_centroid(faces)
+        c = _findings_centroid(findings)
         sim = cosine_similarity(centroid, c)
         if sim > best_sim:
             best_sim = sim
@@ -484,22 +484,22 @@ def suggest_merges(
     groups: list[tuple[str, int, list[int], np.ndarray]] = []
 
     for subject in db.get_subjects_by_kind(kind):
-        faces = db.get_subject_faces(subject.id, limit=500)
-        if not faces:
+        findings = db.get_subject_findings(subject.id, limit=500)
+        if not findings:
             continue
-        embs = np.array([f.embedding for f in faces])
-        groups.append(("subject", subject.id, [f.id for f in faces], embs))
+        embs = np.array([f.embedding for f in findings])
+        groups.append(("subject", subject.id, [f.id for f in findings], embs))
 
     for cluster in db.get_unnamed_clusters(species=species):
-        faces = db.get_cluster_faces(cluster["cluster_id"], limit=500)
-        if not faces:
+        findings = db.get_cluster_findings(cluster["cluster_id"], limit=500)
+        if not findings:
             continue
-        embs = np.array([f.embedding for f in faces])
+        embs = np.array([f.embedding for f in findings])
         groups.append(
             (
                 "cluster",
                 cluster["cluster_id"],
-                [f.id for f in faces],
+                [f.id for f in findings],
                 embs,
             )
         )
@@ -529,8 +529,8 @@ def suggest_merges(
                     similarity_pct=round(pct, 1),
                     size_a=len(fids_a),
                     size_b=len(fids_b),
-                    sample_face_ids_a=fids_a[:4],
-                    sample_face_ids_b=fids_b[:4],
+                    sample_finding_ids_a=fids_a[:4],
+                    sample_finding_ids_b=fids_b[:4],
                     kind_a=kind_a,
                     kind_b=kind_b,
                 )

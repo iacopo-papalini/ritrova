@@ -1,6 +1,5 @@
 """SQLite database for face recognition data."""
 
-import contextlib
 import functools
 import json
 import sqlite3
@@ -29,22 +28,21 @@ def _locked(method: Callable[..., R]) -> Callable[..., R]:
 
 
 @dataclass
-class Photo:
+class Source:
     id: int
     file_path: str
+    type: str
     width: int
     height: int
-    taken_at: str | None
-    scanned_at: str
-    video_path: str | None = None
+    taken_at: str | None = None
     latitude: float | None = None
     longitude: float | None = None
 
 
 @dataclass
-class Face:
+class Finding:
     id: int
-    photo_id: int
+    source_id: int
     bbox_x: int
     bbox_y: int
     bbox_w: int
@@ -55,6 +53,7 @@ class Face:
     confidence: float
     detected_at: str
     species: str = "human"
+    frame_path: str | None = None
 
 
 @dataclass
@@ -79,13 +78,23 @@ class FaceDB:
 
     def _create_tables(self) -> None:
         self.conn.executescript("""
-            CREATE TABLE IF NOT EXISTS photos (
+            CREATE TABLE IF NOT EXISTS sources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 file_path TEXT UNIQUE NOT NULL,
+                type TEXT NOT NULL DEFAULT 'photo',
                 width INTEGER NOT NULL,
                 height INTEGER NOT NULL,
                 taken_at TEXT,
-                scanned_at TEXT NOT NULL
+                latitude REAL,
+                longitude REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS scans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+                scan_type TEXT NOT NULL,
+                scanned_at TEXT NOT NULL,
+                UNIQUE (source_id, scan_type)
             );
 
             CREATE TABLE IF NOT EXISTS subjects (
@@ -95,9 +104,9 @@ class FaceDB:
                 created_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS faces (
+            CREATE TABLE IF NOT EXISTS findings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+                source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
                 bbox_x INTEGER NOT NULL,
                 bbox_y INTEGER NOT NULL,
                 bbox_w INTEGER NOT NULL,
@@ -106,35 +115,23 @@ class FaceDB:
                 person_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
                 cluster_id INTEGER,
                 confidence REAL NOT NULL DEFAULT 0.0,
-                detected_at TEXT NOT NULL
+                species TEXT NOT NULL DEFAULT 'human',
+                detected_at TEXT NOT NULL,
+                frame_path TEXT
             );
 
-            CREATE INDEX IF NOT EXISTS idx_faces_photo ON faces(photo_id);
-            CREATE INDEX IF NOT EXISTS idx_faces_person ON faces(person_id);
-            CREATE INDEX IF NOT EXISTS idx_faces_cluster ON faces(cluster_id);
-            CREATE INDEX IF NOT EXISTS idx_photos_path ON photos(file_path);
+            CREATE INDEX IF NOT EXISTS idx_findings_source ON findings(source_id);
+            CREATE INDEX IF NOT EXISTS idx_findings_person ON findings(person_id);
+            CREATE INDEX IF NOT EXISTS idx_findings_cluster ON findings(cluster_id);
+            CREATE INDEX IF NOT EXISTS idx_sources_path ON sources(file_path);
 
-            -- Track dismissed (non-face) entries so they're excluded everywhere
-            CREATE TABLE IF NOT EXISTS dismissed_faces (
-                face_id INTEGER PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE
+            CREATE TABLE IF NOT EXISTS dismissed_findings (
+                finding_id INTEGER PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE
             );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_name_kind
+                ON subjects(name, kind);
         """)
-        # Migrations (idempotent — errors suppressed if already applied)
-        for migration in [
-            "ALTER TABLE photos ADD COLUMN video_path TEXT",
-            "ALTER TABLE faces ADD COLUMN species TEXT NOT NULL DEFAULT 'human'",
-            "ALTER TABLE photos ADD COLUMN latitude REAL",
-            "ALTER TABLE photos ADD COLUMN longitude REAL",
-            # persons -> subjects migration (for DBs created before the rename)
-            "ALTER TABLE persons RENAME TO subjects",
-            "ALTER TABLE subjects ADD COLUMN kind TEXT NOT NULL DEFAULT 'person'",
-        ]:
-            with contextlib.suppress(sqlite3.OperationalError):
-                self.conn.execute(migration)
-        # Unique index on (name, kind) — idempotent via IF NOT EXISTS
-        self.conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_name_kind ON subjects(name, kind)"
-        )
         self.conn.commit()
 
     @_locked
@@ -155,24 +152,32 @@ class FaceDB:
         self.conn.close()
 
     def resolve_path(self, stored_path: str) -> Path:
-        """Resolve a DB-stored path to an absolute filesystem path.
-
-        Strips the __pets suffix, then searches base_dir and db_path.parent
-        for the file. Returns the first existing match, or the primary
-        candidate for error reporting.
-        """
-        clean = stored_path.removesuffix("__pets")
-        if clean.startswith("/"):
-            return Path(clean)
-        if ".." in clean.split("/"):
-            msg = f"Path contains '..': {clean}"
+        """Resolve a DB-stored path to an absolute filesystem path."""
+        if stored_path.startswith("/"):
+            return Path(stored_path)
+        if ".." in stored_path.split("/"):
+            msg = f"Path contains '..': {stored_path}"
             raise ValueError(msg)
         # tmp/ paths are app-generated (video frames, etc.) — relative to DB directory
-        if clean.startswith("tmp/"):
-            return self.db_path.parent / clean
+        if stored_path.startswith("tmp/"):
+            return self.db_path.parent / stored_path
         if self.base_dir is not None:
-            return self.base_dir / clean
-        return Path(clean)
+            return self.base_dir / stored_path
+        return Path(stored_path)
+
+    def resolve_finding_image(self, finding: Finding) -> Path:
+        """Resolve the image file to use for a finding's thumbnail.
+
+        Photo findings: the source file.
+        Video findings: the extracted frame JPEG.
+        """
+        if finding.frame_path:
+            return self.db_path.parent / finding.frame_path
+        source = self.get_source(finding.source_id)
+        if source:
+            return self.resolve_path(source.file_path)
+        msg = f"No source found for finding {finding.id}"
+        raise ValueError(msg)
 
     def to_relative(self, absolute_path: str) -> str:
         """Convert an absolute path to a relative path (stripping base_dir prefix)."""
@@ -186,170 +191,196 @@ class FaceDB:
     def _now(self) -> str:
         return datetime.now(UTC).isoformat()
 
-    # --- Photos ---
+    # --- Sources ---
 
     @_locked
-    def add_photo(
+    def add_source(
         self,
         file_path: str,
-        width: int,
-        height: int,
+        source_type: str = "photo",
+        width: int = 0,
+        height: int = 0,
         taken_at: str | None = None,
-        video_path: str | None = None,
         latitude: float | None = None,
         longitude: float | None = None,
     ) -> int:
         cur = self.conn.execute(
-            "INSERT INTO photos (file_path, width, height, taken_at, scanned_at, "
-            "video_path, latitude, longitude) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (file_path, width, height, taken_at, self._now(), video_path, latitude, longitude),
+            "INSERT INTO sources (file_path, type, width, height, taken_at, latitude, longitude) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (file_path, source_type, width, height, taken_at, latitude, longitude),
         )
         self.conn.commit()
         assert cur.lastrowid is not None
         return cur.lastrowid
 
     @_locked
-    def is_photo_scanned(self, file_path: str) -> bool:
-        row = self.conn.execute("SELECT 1 FROM photos WHERE file_path = ?", (file_path,)).fetchone()
-        return row is not None
+    def get_or_create_source(
+        self,
+        file_path: str,
+        source_type: str = "photo",
+        width: int = 0,
+        height: int = 0,
+        taken_at: str | None = None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+    ) -> int:
+        """Return existing source ID or create a new one."""
+        row = self.conn.execute(
+            "SELECT id FROM sources WHERE file_path = ?", (file_path,)
+        ).fetchone()
+        if row:
+            return int(row[0])
+        return self.add_source(file_path, source_type, width, height, taken_at, latitude, longitude)
 
     @_locked
-    def is_pet_scanned(self, file_path: str) -> bool:
-        """Check if a photo has been scanned for pets (separate from face scan)."""
+    def is_scanned(self, file_path: str, scan_type: str) -> bool:
+        """Check if a source has been scanned with the given scan type."""
         row = self.conn.execute(
-            "SELECT 1 FROM photos WHERE file_path = ?",
-            (file_path + "__pets",),
+            """SELECT 1 FROM scans sc
+               JOIN sources s ON s.id = sc.source_id
+               WHERE s.file_path = ? AND sc.scan_type = ?""",
+            (file_path, scan_type),
         ).fetchone()
         return row is not None
 
     @_locked
-    def is_video_scanned(self, video_path: str) -> bool:
-        row = self.conn.execute(
-            "SELECT 1 FROM photos WHERE video_path = ?", (video_path,)
-        ).fetchone()
-        return row is not None
+    def record_scan(self, source_id: int, scan_type: str) -> None:
+        """Record that a scan has been performed on a source."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO scans (source_id, scan_type, scanned_at) VALUES (?, ?, ?)",
+            (source_id, scan_type, self._now()),
+        )
+        self.conn.commit()
 
     @_locked
-    def get_photo(self, photo_id: int) -> Photo | None:
-        row = self.conn.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
+    def get_source(self, source_id: int) -> Source | None:
+        row = self.conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
         if not row:
             return None
-        return Photo(**dict(row))
+        return Source(**dict(row))
 
     @_locked
-    def get_photos_batch(self, photo_ids: list[int]) -> dict[int, Photo]:
-        """Return {photo_id: Photo} for multiple photos in one query."""
-        if not photo_ids:
+    def get_source_by_path(self, file_path: str) -> Source | None:
+        row = self.conn.execute(
+            "SELECT * FROM sources WHERE file_path = ?", (file_path,)
+        ).fetchone()
+        if not row:
+            return None
+        return Source(**dict(row))
+
+    @_locked
+    def get_sources_batch(self, source_ids: list[int]) -> dict[int, Source]:
+        """Return {source_id: Source} for multiple sources in one query."""
+        if not source_ids:
             return {}
-        placeholders = ",".join("?" * len(photo_ids))
+        placeholders = ",".join("?" * len(source_ids))
         rows = self.conn.execute(
-            f"SELECT * FROM photos WHERE id IN ({placeholders})", photo_ids
+            f"SELECT * FROM sources WHERE id IN ({placeholders})", source_ids
         ).fetchall()
-        return {r["id"]: Photo(**dict(r)) for r in rows}
+        return {r["id"]: Source(**dict(r)) for r in rows}
 
     @_locked
-    def get_photo_count(self) -> int:
-        row = self.conn.execute("SELECT COUNT(*) FROM photos").fetchone()
+    def get_source_count(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) FROM sources WHERE type = 'photo'").fetchone()
         return int(row[0]) if row else 0
 
-    # --- Faces ---
+    # --- Findings ---
 
     @_locked
-    def add_faces_batch(
+    def add_findings_batch(
         self,
-        faces_data: list[tuple[int, tuple[int, int, int, int], np.ndarray, float]],
+        findings_data: list[tuple[int, tuple[int, int, int, int], np.ndarray, float]],
         species: str = "human",
+        frame_path: str | None = None,
     ) -> None:
-        """Add multiple faces in a single transaction."""
+        """Add multiple findings in a single transaction."""
         now = self._now()
         self.conn.executemany(
-            "INSERT INTO faces (photo_id, bbox_x, bbox_y, bbox_w, bbox_h, "
-            "embedding, confidence, detected_at, species) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO findings (source_id, bbox_x, bbox_y, bbox_w, bbox_h, "
+            "embedding, confidence, detected_at, species, frame_path) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                (pid, *bbox, emb.tobytes(), conf, now, species)
-                for pid, bbox, emb, conf in faces_data
+                (sid, *bbox, emb.tobytes(), conf, now, species, frame_path)
+                for sid, bbox, emb, conf in findings_data
             ],
         )
         self.conn.commit()
 
     @_locked
-    def get_face(self, face_id: int) -> Face | None:
-        row = self.conn.execute("SELECT * FROM faces WHERE id = ?", (face_id,)).fetchone()
+    def get_finding(self, finding_id: int) -> Finding | None:
+        row = self.conn.execute("SELECT * FROM findings WHERE id = ?", (finding_id,)).fetchone()
         if not row or row["embedding"] is None:
             return None
         d = dict(row)
         d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-        return Face(**d)
+        return Finding(**d)
 
     @_locked
-    def get_photo_faces(self, photo_id: int) -> list[Face]:
-        rows = self.conn.execute("SELECT * FROM faces WHERE photo_id = ?", (photo_id,)).fetchall()
+    def get_source_findings(self, source_id: int) -> list[Finding]:
+        rows = self.conn.execute(
+            "SELECT * FROM findings WHERE source_id = ?", (source_id,)
+        ).fetchall()
         result = []
         for row in rows:
             if row["embedding"] is None:
                 continue
             d = dict(row)
             d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-            result.append(Face(**d))
+            result.append(Finding(**d))
         return result
 
     @_locked
-    def get_face_count(self) -> int:
-        row = self.conn.execute("SELECT COUNT(*) FROM faces").fetchone()
+    def get_finding_count(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) FROM findings").fetchone()
         return int(row[0]) if row else 0
 
     @_locked
     def get_all_embeddings(self, species: str = "human") -> list[tuple[int, np.ndarray]]:
-        """Return all (face_id, embedding) pairs for clustering, excluding dismissed."""
+        """Return all (finding_id, embedding) pairs for clustering, excluding dismissed."""
         clause, params = self.species_filter(species)
         rows = self.conn.execute(
-            f"SELECT id, embedding FROM faces "
-            f"WHERE {clause} AND id NOT IN (SELECT face_id FROM dismissed_faces)",
+            f"SELECT id, embedding FROM findings "
+            f"WHERE {clause} AND id NOT IN (SELECT finding_id FROM dismissed_findings)",
             params,
         ).fetchall()
         return [(row[0], np.frombuffer(row[1], dtype=np.float32)) for row in rows]
 
     @_locked
     def get_unassigned_embeddings(self, species: str = "human") -> list[tuple[int, np.ndarray]]:
-        """Return (face_id, embedding) for unassigned, non-dismissed faces only."""
+        """Return (finding_id, embedding) for unassigned, non-dismissed findings only."""
         clause, params = self.species_filter(species)
         rows = self.conn.execute(
-            f"SELECT id, embedding FROM faces "
+            f"SELECT id, embedding FROM findings "
             f"WHERE person_id IS NULL AND {clause} "
-            f"AND id NOT IN (SELECT face_id FROM dismissed_faces)",
+            f"AND id NOT IN (SELECT finding_id FROM dismissed_findings)",
             params,
         ).fetchall()
         return [(row[0], np.frombuffer(row[1], dtype=np.float32)) for row in rows]
 
     @_locked
-    def update_cluster_ids(self, face_cluster_map: dict[int, int]) -> None:
-        """Update cluster_id for multiple faces."""
+    def update_cluster_ids(self, finding_cluster_map: dict[int, int]) -> None:
+        """Update cluster_id for multiple findings."""
         self.conn.executemany(
-            "UPDATE faces SET cluster_id = ? WHERE id = ?",
-            [(cid, fid) for fid, cid in face_cluster_map.items()],
+            "UPDATE findings SET cluster_id = ? WHERE id = ?",
+            [(cid, fid) for fid, cid in finding_cluster_map.items()],
         )
         self.conn.commit()
 
     @_locked
     def clear_clusters(self, species: str | None = None) -> None:
-        """Reset cluster assignments (preserves person assignments).
-
-        If species is given, only clear clusters for that species group.
-        """
+        """Reset cluster assignments (preserves subject assignments)."""
         if species is None:
-            self.conn.execute("UPDATE faces SET cluster_id = NULL")
+            self.conn.execute("UPDATE findings SET cluster_id = NULL")
         else:
             clause, params = self.species_filter(species)
-            self.conn.execute(f"UPDATE faces SET cluster_id = NULL WHERE {clause}", params)
+            self.conn.execute(f"UPDATE findings SET cluster_id = NULL WHERE {clause}", params)
         self.conn.commit()
 
     @_locked
     def get_cluster_ids(self) -> list[int]:
         """All distinct non-null cluster IDs."""
         rows = self.conn.execute(
-            "SELECT DISTINCT cluster_id FROM faces WHERE cluster_id IS NOT NULL ORDER BY cluster_id"
+            "SELECT DISTINCT cluster_id FROM findings WHERE cluster_id IS NOT NULL ORDER BY cluster_id"
         ).fetchall()
         return [row[0] for row in rows]
 
@@ -367,8 +398,8 @@ class FaceDB:
         rows = self.conn.execute(
             f"""
             SELECT cluster_id, COUNT(*) as face_count,
-                   GROUP_CONCAT(id) as face_ids
-            FROM faces
+                   GROUP_CONCAT(id) as finding_ids
+            FROM findings
             WHERE cluster_id IS NOT NULL AND person_id IS NULL AND {clause}
             GROUP BY cluster_id
             HAVING COUNT(*) >= 2
@@ -378,31 +409,31 @@ class FaceDB:
         ).fetchall()
         result = []
         for row in rows:
-            face_ids = [int(x) for x in row["face_ids"].split(",")]
+            finding_ids = [int(x) for x in row["finding_ids"].split(",")]
             result.append(
                 {
                     "cluster_id": row["cluster_id"],
                     "face_count": row["face_count"],
-                    "sample_face_ids": face_ids[:12],
+                    "sample_face_ids": finding_ids[:12],
                 }
             )
         return result
 
     @_locked
-    def get_singleton_faces(
+    def get_singleton_findings(
         self, species: str = "human", limit: int = 200, offset: int = 0
-    ) -> list[Face]:
-        """Faces in clusters of size 1 or unclustered, unassigned, not dismissed."""
+    ) -> list[Finding]:
+        """Findings in clusters of size 1 or unclustered, unassigned, not dismissed."""
         clause, params = self.species_filter(species)
         rows = self.conn.execute(
             f"""
-            SELECT f.* FROM faces f
+            SELECT f.* FROM findings f
             WHERE f.person_id IS NULL AND {clause}
-            AND f.id NOT IN (SELECT face_id FROM dismissed_faces)
+            AND f.id NOT IN (SELECT finding_id FROM dismissed_findings)
             AND (
                 f.cluster_id IS NULL
                 OR f.cluster_id IN (
-                    SELECT cluster_id FROM faces
+                    SELECT cluster_id FROM findings
                     WHERE cluster_id IS NOT NULL AND person_id IS NULL
                     GROUP BY cluster_id HAVING COUNT(*) = 1
                 )
@@ -417,7 +448,7 @@ class FaceDB:
                 continue
             d = dict(row)
             d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-            result.append(Face(**d))
+            result.append(Finding(**d))
         return result
 
     @_locked
@@ -425,13 +456,13 @@ class FaceDB:
         clause, params = self.species_filter(species)
         row = self.conn.execute(
             f"""
-            SELECT COUNT(*) FROM faces f
+            SELECT COUNT(*) FROM findings f
             WHERE f.person_id IS NULL AND {clause}
-            AND f.id NOT IN (SELECT face_id FROM dismissed_faces)
+            AND f.id NOT IN (SELECT finding_id FROM dismissed_findings)
             AND (
                 f.cluster_id IS NULL
                 OR f.cluster_id IN (
-                    SELECT cluster_id FROM faces
+                    SELECT cluster_id FROM findings
                     WHERE cluster_id IS NOT NULL AND person_id IS NULL
                     GROUP BY cluster_id HAVING COUNT(*) = 1
                 )
@@ -442,38 +473,38 @@ class FaceDB:
         return int(row[0]) if row else 0
 
     @_locked
-    def get_cluster_face_count(self, cluster_id: int) -> int:
+    def get_cluster_finding_count(self, cluster_id: int) -> int:
         row = self.conn.execute(
-            "SELECT COUNT(*) FROM faces WHERE cluster_id = ?",
+            "SELECT COUNT(*) FROM findings WHERE cluster_id = ?",
             (cluster_id,),
         ).fetchone()
         return int(row[0]) if row else 0
 
     @_locked
-    def get_cluster_faces(self, cluster_id: int, limit: int = 200) -> list[Face]:
+    def get_cluster_findings(self, cluster_id: int, limit: int = 200) -> list[Finding]:
         rows = self.conn.execute(
-            "SELECT * FROM faces WHERE cluster_id = ? LIMIT ?",
+            "SELECT * FROM findings WHERE cluster_id = ? LIMIT ?",
             (cluster_id, limit),
         ).fetchall()
         result = []
         for row in rows:
             d = dict(row)
             d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-            result.append(Face(**d))
+            result.append(Finding(**d))
         return result
 
     # --- Subjects ---
 
     def _species_for_kind(self, kind: str) -> str:
-        """Map subject kind to the face species filter value."""
+        """Map subject kind to the finding species filter value."""
         return self.KIND_TO_SPECIES[kind]
 
-    def _is_species_kind_compatible(self, face_species: str, subject_kind: str) -> bool:
-        """Check if a face's species is compatible with a subject's kind."""
+    def _is_species_kind_compatible(self, finding_species: str, subject_kind: str) -> bool:
+        """Check if a finding's species is compatible with a subject's kind."""
         if subject_kind == "person":
-            return face_species == "human"
+            return finding_species == "human"
         if subject_kind == "pet":
-            return face_species in self.PET_SPECIES
+            return finding_species in self.PET_SPECIES
         return True
 
     @_locked
@@ -497,7 +528,7 @@ class FaceDB:
         row = self.conn.execute(
             """
             SELECT s.id, s.name, s.kind, COUNT(f.id) as face_count
-            FROM subjects s LEFT JOIN faces f ON f.person_id = s.id
+            FROM subjects s LEFT JOIN findings f ON f.person_id = s.id
             WHERE s.id = ? GROUP BY s.id
             """,
             (subject_id,),
@@ -512,7 +543,7 @@ class FaceDB:
     def get_subjects(self) -> list[Subject]:
         rows = self.conn.execute("""
             SELECT s.id, s.name, s.kind, COUNT(f.id) as face_count
-            FROM subjects s LEFT JOIN faces f ON f.person_id = s.id
+            FROM subjects s LEFT JOIN findings f ON f.person_id = s.id
             GROUP BY s.id ORDER BY s.name
         """).fetchall()
         return [
@@ -522,11 +553,11 @@ class FaceDB:
 
     @_locked
     def get_subjects_by_kind(self, kind: str) -> list[Subject]:
-        """Return subjects of the given kind with their face counts."""
+        """Return subjects of the given kind with their finding counts."""
         rows = self.conn.execute(
             """
             SELECT s.id, s.name, s.kind, COUNT(f.id) as face_count
-            FROM subjects s LEFT JOIN faces f ON f.person_id = s.id
+            FROM subjects s LEFT JOIN findings f ON f.person_id = s.id
             WHERE s.kind = ?
             GROUP BY s.id ORDER BY s.name
             """,
@@ -539,16 +570,13 @@ class FaceDB:
 
     @_locked
     def get_subject_centroids(self, kind: str = "person") -> list[tuple[int, str, np.ndarray]]:
-        """Return [(subject_id, name, centroid)] for all subjects of a kind.
-
-        Single query for all face embeddings, grouped by subject in Python.
-        """
+        """Return [(subject_id, name, centroid)] for all subjects of a kind."""
         species = self._species_for_kind(kind)
         clause, params = self.species_filter(species)
         rows = self.conn.execute(
             f"""
             SELECT f.person_id, s.name, f.embedding
-            FROM faces f
+            FROM findings f
             JOIN subjects s ON s.id = f.person_id
             WHERE f.person_id IS NOT NULL AND s.kind = ? AND {clause}
             ORDER BY f.person_id
@@ -577,48 +605,56 @@ class FaceDB:
         self.conn.commit()
 
     @_locked
-    def assign_face_to_subject(self, face_id: int, subject_id: int) -> None:
-        """Assign a face to a subject, validating species/kind compatibility."""
-        face = self.get_face(face_id)
+    def assign_finding_to_subject(self, finding_id: int, subject_id: int) -> None:
+        """Assign a finding to a subject, validating species/kind compatibility."""
+        finding = self.get_finding(finding_id)
         subject = self.get_subject(subject_id)
-        if face and subject and not self._is_species_kind_compatible(face.species, subject.kind):
-            raise ValueError(f"Cannot assign {face.species} face to a {subject.kind} subject")
-        self.conn.execute("UPDATE faces SET person_id = ? WHERE id = ?", (subject_id, face_id))
+        if (
+            finding
+            and subject
+            and not self._is_species_kind_compatible(finding.species, subject.kind)
+        ):
+            raise ValueError(f"Cannot assign {finding.species} finding to a {subject.kind} subject")
+        self.conn.execute(
+            "UPDATE findings SET person_id = ? WHERE id = ?", (subject_id, finding_id)
+        )
         self.conn.commit()
 
     @_locked
     def assign_cluster_to_subject(self, cluster_id: int, subject_id: int) -> None:
-        """Assign all unassigned faces in a cluster to a subject, validating compatibility."""
+        """Assign all unassigned findings in a cluster to a subject."""
         subject = self.get_subject(subject_id)
         if subject:
-            faces = self.get_cluster_faces(cluster_id, limit=1)
-            if faces and not self._is_species_kind_compatible(faces[0].species, subject.kind):
+            findings = self.get_cluster_findings(cluster_id, limit=1)
+            if findings and not self._is_species_kind_compatible(findings[0].species, subject.kind):
                 raise ValueError(
-                    f"Cannot assign {faces[0].species} face to a {subject.kind} subject"
+                    f"Cannot assign {findings[0].species} finding to a {subject.kind} subject"
                 )
         self.conn.execute(
-            "UPDATE faces SET person_id = ? WHERE cluster_id = ? AND person_id IS NULL",
+            "UPDATE findings SET person_id = ? WHERE cluster_id = ? AND person_id IS NULL",
             (subject_id, cluster_id),
         )
         self.conn.commit()
 
     @_locked
     def merge_subjects(self, source_id: int, target_id: int) -> None:
-        """Merge source subject into target: reassign faces, delete source."""
+        """Merge source subject into target: reassign findings, delete source."""
         self.conn.execute(
-            "UPDATE faces SET person_id = ? WHERE person_id = ?",
+            "UPDATE findings SET person_id = ? WHERE person_id = ?",
             (target_id, source_id),
         )
         self.conn.execute("DELETE FROM subjects WHERE id = ?", (source_id,))
         self.conn.commit()
 
     @_locked
-    def get_subject_faces(self, subject_id: int, limit: int = 200, offset: int = 0) -> list[Face]:
+    def get_subject_findings(
+        self, subject_id: int, limit: int = 200, offset: int = 0
+    ) -> list[Finding]:
         rows = self.conn.execute(
-            """SELECT f.* FROM faces f
-               LEFT JOIN photos p ON f.photo_id = p.id
+            """SELECT f.* FROM findings f
+               LEFT JOIN sources s ON f.source_id = s.id
                WHERE f.person_id = ?
-               ORDER BY p.taken_at DESC, f.id
+               ORDER BY s.taken_at DESC, f.id
                LIMIT ? OFFSET ?""",
             (subject_id, limit, offset),
         ).fetchall()
@@ -626,31 +662,31 @@ class FaceDB:
         for row in rows:
             d = dict(row)
             d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-            result.append(Face(**d))
+            result.append(Finding(**d))
         return result
 
-    def get_subject_faces_with_paths(
+    def get_subject_findings_with_paths(
         self, subject_id: int, limit: int = 200, offset: int = 0
-    ) -> list[tuple[Face, str]]:
-        """Return faces with their photo's file_path, sorted by path (date-based dirs)."""
+    ) -> list[tuple[Finding, str]]:
+        """Return findings with their source's file_path, sorted by path (date-based dirs)."""
         rows = self.conn.execute(
-            """SELECT f.*, p.file_path AS photo_path FROM faces f
-               LEFT JOIN photos p ON f.photo_id = p.id
+            """SELECT f.*, s.file_path AS source_path FROM findings f
+               LEFT JOIN sources s ON f.source_id = s.id
                WHERE f.person_id = ?
-               ORDER BY p.file_path DESC, f.id
+               ORDER BY s.file_path DESC, f.id
                LIMIT ? OFFSET ?""",
             (subject_id, limit, offset),
         ).fetchall()
         result = []
         for row in rows:
             d = dict(row)
-            path = d.pop("photo_path", "") or ""
+            path = d.pop("source_path", "") or ""
             d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-            result.append((Face(**d), path))
+            result.append((Finding(**d), path))
         return result
 
     def get_random_avatars(self, subject_ids: list[int]) -> dict[int, int]:
-        """Pick one random face ID per subject for avatar thumbnails."""
+        """Pick one random finding ID per subject for avatar thumbnails."""
         if not subject_ids:
             return {}
         placeholders = ",".join("?" * len(subject_ids))
@@ -658,20 +694,16 @@ class FaceDB:
             f"""SELECT person_id, id FROM (
                     SELECT person_id, id, ROW_NUMBER() OVER (
                         PARTITION BY person_id ORDER BY RANDOM()
-                    ) AS rn FROM faces WHERE person_id IN ({placeholders})
+                    ) AS rn FROM findings WHERE person_id IN ({placeholders})
                 ) WHERE rn = 1""",
             tuple(subject_ids),
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
-    def get_photos_with_all_subjects(
+    def get_sources_with_all_subjects(
         self, subject_ids: list[int], limit: int = 0, offset: int = 0
-    ) -> list[Photo]:
-        """Find photos that contain ALL given subjects (intersection).
-
-        Uses faces index: filter by person_id first, group by photo, keep
-        only photos matching all requested subjects.
-        """
+    ) -> list[Source]:
+        """Find sources that contain ALL given subjects (intersection)."""
         if not subject_ids:
             return []
         placeholders = ",".join("?" * len(subject_ids))
@@ -682,30 +714,30 @@ class FaceDB:
             params = (*params, limit, offset)
         rows = self.conn.execute(
             f"""
-            SELECT p.* FROM photos p
+            SELECT s.* FROM sources s
             JOIN (
-                SELECT photo_id FROM faces
+                SELECT source_id FROM findings
                 WHERE person_id IN ({placeholders})
-                GROUP BY photo_id
+                GROUP BY source_id
                 HAVING COUNT(DISTINCT person_id) = ?
-            ) matched ON matched.photo_id = p.id
-            ORDER BY p.file_path DESC{pagination}
+            ) matched ON matched.source_id = s.id
+            ORDER BY s.file_path DESC{pagination}
             """,
             params,
         ).fetchall()
-        return [Photo(**dict(r)) for r in rows]
+        return [Source(**dict(r)) for r in rows]
 
-    def count_photos_with_all_subjects(self, subject_ids: list[int]) -> int:
-        """Count photos containing ALL given subjects."""
+    def count_sources_with_all_subjects(self, subject_ids: list[int]) -> int:
+        """Count sources containing ALL given subjects."""
         if not subject_ids:
             return 0
         placeholders = ",".join("?" * len(subject_ids))
         row = self.conn.execute(
             f"""
             SELECT COUNT(*) FROM (
-                SELECT photo_id FROM faces
+                SELECT source_id FROM findings
                 WHERE person_id IN ({placeholders})
-                GROUP BY photo_id
+                GROUP BY source_id
                 HAVING COUNT(DISTINCT person_id) = ?
             )
             """,
@@ -714,80 +746,81 @@ class FaceDB:
         return int(row[0]) if row else 0
 
     @_locked
-    def get_subject_photos(self, subject_id: int) -> list[Photo]:
-        """All unique photos containing a subject, newest first (by path)."""
+    def get_subject_sources(self, subject_id: int) -> list[Source]:
+        """All unique sources containing a subject, newest first (by path)."""
         rows = self.conn.execute(
             """
-            SELECT DISTINCT p.* FROM photos p
-            JOIN faces f ON f.photo_id = p.id
+            SELECT DISTINCT s.* FROM sources s
+            JOIN findings f ON f.source_id = s.id
             WHERE f.person_id = ?
-            ORDER BY p.file_path DESC
+            ORDER BY s.file_path DESC
             """,
             (subject_id,),
         ).fetchall()
-        return [Photo(**dict(r)) for r in rows]
+        return [Source(**dict(r)) for r in rows]
 
     @_locked
-    def dismiss_faces(self, face_ids: list[int]) -> None:
-        """Mark faces as non-faces (statues, paintings, etc.)."""
+    def dismiss_findings(self, finding_ids: list[int]) -> None:
+        """Mark findings as non-faces (statues, paintings, etc.)."""
         self.conn.executemany(
-            "INSERT OR IGNORE INTO dismissed_faces (face_id) VALUES (?)",
-            [(fid,) for fid in face_ids],
+            "INSERT OR IGNORE INTO dismissed_findings (finding_id) VALUES (?)",
+            [(fid,) for fid in finding_ids],
         )
         self.conn.executemany(
-            "UPDATE faces SET cluster_id = NULL, person_id = NULL WHERE id = ?",
-            [(fid,) for fid in face_ids],
+            "UPDATE findings SET cluster_id = NULL, person_id = NULL WHERE id = ?",
+            [(fid,) for fid in finding_ids],
         )
         self.conn.commit()
 
     @_locked
-    def unassign_face(self, face_id: int) -> None:
-        """Remove subject assignment from a face."""
-        self.conn.execute("UPDATE faces SET person_id = NULL WHERE id = ?", (face_id,))
+    def unassign_finding(self, finding_id: int) -> None:
+        """Remove subject assignment from a finding."""
+        self.conn.execute("UPDATE findings SET person_id = NULL WHERE id = ?", (finding_id,))
         self.conn.commit()
 
     @_locked
-    def exclude_faces(self, face_ids: list[int], cluster_id: int) -> None:
-        """Remove faces from a cluster (set cluster_id to NULL)."""
-        placeholders = ",".join("?" * len(face_ids))
+    def exclude_findings(self, finding_ids: list[int], cluster_id: int) -> None:
+        """Remove findings from a cluster (set cluster_id to NULL)."""
+        placeholders = ",".join("?" * len(finding_ids))
         self.conn.execute(
-            f"UPDATE faces SET cluster_id = NULL WHERE id IN ({placeholders}) AND cluster_id = ?",
-            (*face_ids, cluster_id),
+            f"UPDATE findings SET cluster_id = NULL WHERE id IN ({placeholders}) "
+            f"AND cluster_id = ?",
+            (*finding_ids, cluster_id),
         )
         self.conn.commit()
 
     @_locked
     def merge_clusters(self, source_id: int, target_id: int) -> None:
-        """Move all faces from source cluster to target cluster."""
+        """Move all findings from source cluster to target cluster."""
         self.conn.execute(
-            "UPDATE faces SET cluster_id = ? WHERE cluster_id = ?",
+            "UPDATE findings SET cluster_id = ? WHERE cluster_id = ?",
             (target_id, source_id),
         )
         self.conn.commit()
 
     @_locked
-    def get_cluster_face_ids(self, cluster_id: int) -> list[int]:
-        """Return all face IDs in a cluster."""
+    def get_cluster_finding_ids(self, cluster_id: int) -> list[int]:
+        """Return all finding IDs in a cluster."""
         rows = self.conn.execute(
-            "SELECT id FROM faces WHERE cluster_id = ?", (cluster_id,)
+            "SELECT id FROM findings WHERE cluster_id = ?", (cluster_id,)
         ).fetchall()
         return [r[0] for r in rows]
 
     @_locked
     def delete_subject(self, subject_id: int) -> None:
-        """Delete a subject and unassign their faces."""
-        self.conn.execute("UPDATE faces SET person_id = NULL WHERE person_id = ?", (subject_id,))
+        """Delete a subject and unassign their findings."""
+        self.conn.execute("UPDATE findings SET person_id = NULL WHERE person_id = ?", (subject_id,))
         self.conn.execute("DELETE FROM subjects WHERE id = ?", (subject_id,))
         self.conn.commit()
 
     @_locked
     def get_unclustered_embeddings(self, species: str = "human") -> list[tuple[int, np.ndarray]]:
-        """Return (face_id, embedding) for unclustered, unassigned, non-dismissed faces."""
+        """Return (finding_id, embedding) for unclustered, unassigned, non-dismissed findings."""
         clause, params = self.species_filter(species)
         rows = self.conn.execute(
-            f"SELECT id, embedding FROM faces "
+            f"SELECT id, embedding FROM findings "
             f"WHERE person_id IS NULL AND cluster_id IS NULL AND {clause} "
-            f"AND id NOT IN (SELECT face_id FROM dismissed_faces)",
+            f"AND id NOT IN (SELECT finding_id FROM dismissed_findings)",
             params,
         ).fetchall()
         return [(r[0], np.frombuffer(r[1], dtype=np.float32)) for r in rows]
@@ -798,7 +831,7 @@ class FaceDB:
             rows = self.conn.execute(
                 """
                 SELECT s.id, s.name, s.kind, COUNT(f.id) as face_count
-                FROM subjects s LEFT JOIN faces f ON f.person_id = s.id
+                FROM subjects s LEFT JOIN findings f ON f.person_id = s.id
                 WHERE s.name LIKE ? AND s.kind = ?
                 GROUP BY s.id ORDER BY s.name
                 """,
@@ -808,7 +841,7 @@ class FaceDB:
             rows = self.conn.execute(
                 """
                 SELECT s.id, s.name, s.kind, COUNT(f.id) as face_count
-                FROM subjects s LEFT JOIN faces f ON f.person_id = s.id
+                FROM subjects s LEFT JOIN findings f ON f.person_id = s.id
                 WHERE s.name LIKE ?
                 GROUP BY s.id ORDER BY s.name
                 """,
@@ -829,49 +862,49 @@ class FaceDB:
     def get_stats(self, species: str = "human") -> dict[str, int]:
         clause, params = self.species_filter(species)
         return {
-            "total_photos": self._count("SELECT COUNT(*) FROM photos"),
-            "total_faces": self._count(f"SELECT COUNT(*) FROM faces WHERE {clause}", params),
+            "total_sources": self._count("SELECT COUNT(*) FROM sources WHERE type = 'photo'"),
+            "total_findings": self._count(f"SELECT COUNT(*) FROM findings WHERE {clause}", params),
             "total_subjects": self._count("SELECT COUNT(*) FROM subjects"),
-            "named_faces": self._count(
-                f"SELECT COUNT(*) FROM faces WHERE person_id IS NOT NULL AND {clause}",
+            "named_findings": self._count(
+                f"SELECT COUNT(*) FROM findings WHERE person_id IS NOT NULL AND {clause}",
                 params,
             ),
             "unnamed_clusters": self._count(
-                f"SELECT COUNT(DISTINCT cluster_id) FROM faces "
+                f"SELECT COUNT(DISTINCT cluster_id) FROM findings "
                 f"WHERE cluster_id IS NOT NULL AND person_id IS NULL AND {clause}",
                 params,
             ),
-            "unclustered_faces": self._count(
-                f"SELECT COUNT(*) FROM faces WHERE cluster_id IS NULL AND {clause} "
-                f"AND id NOT IN (SELECT face_id FROM dismissed_faces)",
+            "unclustered_findings": self._count(
+                f"SELECT COUNT(*) FROM findings WHERE cluster_id IS NULL AND {clause} "
+                f"AND id NOT IN (SELECT finding_id FROM dismissed_findings)",
                 params,
             ),
-            "dismissed_faces": self._count("SELECT COUNT(*) FROM dismissed_faces"),
+            "dismissed_findings": self._count("SELECT COUNT(*) FROM dismissed_findings"),
         }
 
     # --- Export ---
 
     @_locked
     def export_json(self) -> str:
-        """Export as JSON: subject -> photos -> face rectangles."""
+        """Export as JSON: subject -> sources -> finding rectangles."""
         subjects = self.get_subjects()
-        data: dict[str, list[Any]] = {"subjects": [], "unnamed_faces": []}
+        data: dict[str, list[Any]] = {"subjects": [], "unnamed_findings": []}
 
         for subject in subjects:
-            faces = self.get_subject_faces(subject.id, limit=10000)
-            photos_map: dict[str, list[dict[str, Any]]] = {}
-            for face in faces:
-                photo = self.get_photo(face.photo_id)
-                if photo:
-                    photos_map.setdefault(photo.file_path, []).append(
+            findings = self.get_subject_findings(subject.id, limit=10000)
+            sources_map: dict[str, list[dict[str, Any]]] = {}
+            for finding in findings:
+                source = self.get_source(finding.source_id)
+                if source:
+                    sources_map.setdefault(source.file_path, []).append(
                         {
                             "bbox": [
-                                face.bbox_x,
-                                face.bbox_y,
-                                face.bbox_w,
-                                face.bbox_h,
+                                finding.bbox_x,
+                                finding.bbox_y,
+                                finding.bbox_w,
+                                finding.bbox_h,
                             ],
-                            "confidence": face.confidence,
+                            "confidence": finding.confidence,
                         }
                     )
             data["subjects"].append(
@@ -879,19 +912,19 @@ class FaceDB:
                     "id": subject.id,
                     "name": subject.name,
                     "kind": subject.kind,
-                    "photos": [
-                        {"file_path": fp, "faces": rects} for fp, rects in photos_map.items()
+                    "sources": [
+                        {"file_path": fp, "findings": rects} for fp, rects in sources_map.items()
                     ],
                 }
             )
 
-        unnamed = self.conn.execute("SELECT * FROM faces WHERE person_id IS NULL").fetchall()
+        unnamed = self.conn.execute("SELECT * FROM findings WHERE person_id IS NULL").fetchall()
         for row in unnamed:
-            photo = self.get_photo(row["photo_id"])
-            if photo:
-                data["unnamed_faces"].append(
+            source = self.get_source(row["source_id"])
+            if source:
+                data["unnamed_findings"].append(
                     {
-                        "photo": photo.file_path,
+                        "source": source.file_path,
                         "bbox": [
                             row["bbox_x"],
                             row["bbox_y"],

@@ -9,48 +9,51 @@ import pytest
 from ritrova.db import FaceDB
 
 
-class TestPhotoOperations(TestCase):
+class TestSourceOperations(TestCase):
     @pytest.fixture(autouse=True)
     def _setup_db(self, db: FaceDB) -> None:
         self.db = db
 
-    def test_add_and_get_photo(self) -> None:
-        pid = self.db.add_photo("/test/photo.jpg", 1920, 1080, taken_at="2024-01-01")
-        photo = self.db.get_photo(pid)
-        assert photo is not None
-        assert photo.file_path == "/test/photo.jpg"
-        assert photo.width == 1920
-        assert photo.height == 1080
-        assert photo.taken_at == "2024-01-01"
+    def test_add_and_get_source(self) -> None:
+        pid = self.db.add_source("/test/photo.jpg", width=1920, height=1080, taken_at="2024-01-01")
+        source = self.db.get_source(pid)
+        assert source is not None
+        assert source.file_path == "/test/photo.jpg"
+        assert source.width == 1920
+        assert source.height == 1080
+        assert source.taken_at == "2024-01-01"
 
-    def test_get_nonexistent_photo(self) -> None:
-        assert self.db.get_photo(999) is None
+    def test_get_nonexistent_source(self) -> None:
+        assert self.db.get_source(999) is None
 
-    def test_is_photo_scanned(self) -> None:
-        assert not self.db.is_photo_scanned("/test/photo.jpg")
-        self.db.add_photo("/test/photo.jpg", 100, 100)
-        assert self.db.is_photo_scanned("/test/photo.jpg")
+    def test_is_scanned_human(self) -> None:
+        assert not self.db.is_scanned("/test/photo.jpg", "human")
+        sid = self.db.add_source("/test/photo.jpg", width=100, height=100)
+        self.db.record_scan(sid, "human")
+        assert self.db.is_scanned("/test/photo.jpg", "human")
 
-    def test_is_pet_scanned(self) -> None:
-        assert not self.db.is_pet_scanned("/test/photo.jpg")
-        self.db.add_photo("/test/photo.jpg__pets", 100, 100)
-        assert self.db.is_pet_scanned("/test/photo.jpg")
+    def test_is_scanned_pet(self) -> None:
+        assert not self.db.is_scanned("/test/photo.jpg", "pet")
+        sid = self.db.add_source("/test/photo.jpg", width=100, height=100)
+        self.db.record_scan(sid, "pet")
+        assert self.db.is_scanned("/test/photo.jpg", "pet")
 
-    def test_is_video_scanned(self) -> None:
-        assert not self.db.is_video_scanned("/test/video.mp4")
-        self.db.add_photo("/test/frame_001.jpg", 100, 100, video_path="/test/video.mp4")
-        assert self.db.is_video_scanned("/test/video.mp4")
+    def test_is_scanned_video(self) -> None:
+        assert not self.db.is_scanned("/test/video.mp4", "human")
+        sid = self.db.add_source("/test/video.mp4", source_type="video", width=100, height=100)
+        self.db.record_scan(sid, "human")
+        assert self.db.is_scanned("/test/video.mp4", "human")
 
-    def test_photo_count(self) -> None:
-        assert self.db.get_photo_count() == 0
-        self.db.add_photo("/test/a.jpg", 100, 100)
-        self.db.add_photo("/test/b.jpg", 100, 100)
-        assert self.db.get_photo_count() == 2
+    def test_source_count(self) -> None:
+        assert self.db.get_source_count() == 0
+        self.db.add_source("/test/a.jpg", width=100, height=100)
+        self.db.add_source("/test/b.jpg", width=100, height=100)
+        assert self.db.get_source_count() == 2
 
-    def test_duplicate_photo_path_raises(self) -> None:
-        self.db.add_photo("/test/photo.jpg", 100, 100)
+    def test_duplicate_source_path_raises(self) -> None:
+        self.db.add_source("/test/photo.jpg", width=100, height=100)
         with pytest.raises(Exception):  # noqa: B017
-            self.db.add_photo("/test/photo.jpg", 200, 200)
+            self.db.add_source("/test/photo.jpg", width=200, height=200)
 
 
 def _make_embedding(dim: int = 512) -> np.ndarray:
@@ -59,32 +62,32 @@ def _make_embedding(dim: int = 512) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
-def _add_photo_with_face(
+def _add_source_with_finding(
     db: FaceDB,
     path: str = "/test/photo.jpg",
     species: str = "human",
     embedding: np.ndarray | None = None,
 ) -> tuple[int, int]:
-    """Helper: add a photo + one face, return (photo_id, face_id)."""
-    pid = db.add_photo(path, 100, 100)
+    """Helper: add a source + one finding, return (source_id, finding_id)."""
+    pid = db.add_source(path, width=100, height=100)
     emb = embedding if embedding is not None else _make_embedding()
-    db.add_faces_batch([(pid, (10, 10, 50, 50), emb, 0.95)], species=species)
-    faces = db.get_photo_faces(pid)
-    return pid, faces[0].id
+    db.add_findings_batch([(pid, (10, 10, 50, 50), emb, 0.95)], species=species)
+    findings = db.get_source_findings(pid)
+    return pid, findings[0].id
 
 
-class TestFaceOperations(TestCase):
+class TestFindingOperations(TestCase):
     @pytest.fixture(autouse=True)
     def _setup_db(self, db: FaceDB) -> None:
         self.db = db
 
-    def test_add_and_get_face(self) -> None:
-        pid = self.db.add_photo("/test/photo.jpg", 100, 100)
+    def test_add_and_get_finding(self) -> None:
+        pid = self.db.add_source("/test/photo.jpg", width=100, height=100)
         emb = _make_embedding()
-        self.db.add_faces_batch([(pid, (10, 20, 30, 40), emb, 0.95)])
-        faces = self.db.get_photo_faces(pid)
-        assert len(faces) == 1
-        f = faces[0]
+        self.db.add_findings_batch([(pid, (10, 20, 30, 40), emb, 0.95)])
+        findings = self.db.get_source_findings(pid)
+        assert len(findings) == 1
+        f = findings[0]
         assert f.bbox_x == 10
         assert f.bbox_y == 20
         assert f.bbox_w == 30
@@ -92,146 +95,146 @@ class TestFaceOperations(TestCase):
         assert f.confidence == pytest.approx(0.95)
         assert f.species == "human"
 
-    def test_get_face_by_id(self) -> None:
-        _, fid = _add_photo_with_face(self.db)
-        face = self.db.get_face(fid)
-        assert face is not None
-        assert face.id == fid
+    def test_get_finding_by_id(self) -> None:
+        _, fid = _add_source_with_finding(self.db)
+        finding = self.db.get_finding(fid)
+        assert finding is not None
+        assert finding.id == fid
 
-    def test_get_nonexistent_face(self) -> None:
-        assert self.db.get_face(999) is None
+    def test_get_nonexistent_finding(self) -> None:
+        assert self.db.get_finding(999) is None
 
     def test_embedding_round_trip(self) -> None:
         emb = _make_embedding()
-        _, fid = _add_photo_with_face(self.db, embedding=emb)
-        face = self.db.get_face(fid)
-        assert face is not None
-        np.testing.assert_array_almost_equal(face.embedding, emb)
+        _, fid = _add_source_with_finding(self.db, embedding=emb)
+        finding = self.db.get_finding(fid)
+        assert finding is not None
+        np.testing.assert_array_almost_equal(finding.embedding, emb)
 
-    def test_face_count(self) -> None:
-        assert self.db.get_face_count() == 0
-        _add_photo_with_face(self.db, path="/a.jpg")
-        _add_photo_with_face(self.db, path="/b.jpg")
-        assert self.db.get_face_count() == 2
+    def test_finding_count(self) -> None:
+        assert self.db.get_finding_count() == 0
+        _add_source_with_finding(self.db, path="/a.jpg")
+        _add_source_with_finding(self.db, path="/b.jpg")
+        assert self.db.get_finding_count() == 2
 
     def test_get_all_embeddings_excludes_dismissed(self) -> None:
-        _, fid1 = _add_photo_with_face(self.db, path="/a.jpg")
-        _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
         assert len(self.db.get_all_embeddings()) == 2
-        self.db.dismiss_faces([fid1])
+        self.db.dismiss_findings([fid1])
         assert len(self.db.get_all_embeddings()) == 1
 
     def test_get_all_embeddings_species_filter(self) -> None:
-        _add_photo_with_face(self.db, path="/a.jpg", species="human")
-        _add_photo_with_face(self.db, path="/b.jpg", species="dog")
+        _add_source_with_finding(self.db, path="/a.jpg", species="human")
+        _add_source_with_finding(self.db, path="/b.jpg", species="dog")
         assert len(self.db.get_all_embeddings(species="human")) == 1
         assert len(self.db.get_all_embeddings(species="dog")) == 1
 
     def test_cluster_operations(self) -> None:
-        _, fid1 = _add_photo_with_face(self.db, path="/a.jpg")
-        _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
-        _, fid3 = _add_photo_with_face(self.db, path="/c.jpg")
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
+        _, fid3 = _add_source_with_finding(self.db, path="/c.jpg")
 
         self.db.update_cluster_ids({fid1: 1, fid2: 1, fid3: 2})
         assert sorted(self.db.get_cluster_ids()) == [1, 2]
-        assert self.db.get_cluster_face_count(1) == 2
-        assert self.db.get_cluster_face_count(2) == 1
+        assert self.db.get_cluster_finding_count(1) == 2
+        assert self.db.get_cluster_finding_count(2) == 1
 
-        faces = self.db.get_cluster_faces(1)
-        assert len(faces) == 2
+        findings = self.db.get_cluster_findings(1)
+        assert len(findings) == 2
 
         self.db.clear_clusters()
         assert self.db.get_cluster_ids() == []
 
     def test_clear_clusters_species_scoped(self) -> None:
-        _, fid_human = _add_photo_with_face(self.db, path="/h.jpg", species="human")
-        _, fid_dog = _add_photo_with_face(self.db, path="/d.jpg", species="dog")
+        _, fid_human = _add_source_with_finding(self.db, path="/h.jpg", species="human")
+        _, fid_dog = _add_source_with_finding(self.db, path="/d.jpg", species="dog")
         self.db.update_cluster_ids({fid_human: 1, fid_dog: 2})
 
         # Clear only human clusters
         self.db.clear_clusters(species="human")
-        human_face = self.db.get_face(fid_human)
-        dog_face = self.db.get_face(fid_dog)
-        assert human_face is not None
-        assert human_face.cluster_id is None
-        assert dog_face is not None
-        assert dog_face.cluster_id == 2
+        human_finding = self.db.get_finding(fid_human)
+        dog_finding = self.db.get_finding(fid_dog)
+        assert human_finding is not None
+        assert human_finding.cluster_id is None
+        assert dog_finding is not None
+        assert dog_finding.cluster_id == 2
 
-    def test_get_cluster_face_ids(self) -> None:
-        _, fid1 = _add_photo_with_face(self.db, path="/a.jpg")
-        _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
+    def test_get_cluster_finding_ids(self) -> None:
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
         self.db.update_cluster_ids({fid1: 5, fid2: 5})
-        ids = self.db.get_cluster_face_ids(5)
+        ids = self.db.get_cluster_finding_ids(5)
         assert sorted(ids) == sorted([fid1, fid2])
 
-    def test_singleton_faces(self) -> None:
-        _, fid1 = _add_photo_with_face(self.db, path="/a.jpg")
-        _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
+    def test_singleton_findings(self) -> None:
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
         # Both unclustered — both are singletons
-        singletons = self.db.get_singleton_faces()
+        singletons = self.db.get_singleton_findings()
         assert len(singletons) == 2
 
         # Put one in a cluster of size 2 — not a singleton anymore
-        _, fid3 = _add_photo_with_face(self.db, path="/c.jpg")
+        _, fid3 = _add_source_with_finding(self.db, path="/c.jpg")
         self.db.update_cluster_ids({fid1: 1, fid3: 1})
-        singletons = self.db.get_singleton_faces()
+        singletons = self.db.get_singleton_findings()
         # fid2 is unclustered, fid1/fid3 in cluster of 2 — only fid2 is singleton
         assert len(singletons) == 1
         assert singletons[0].id == fid2
 
     def test_singleton_count(self) -> None:
-        _add_photo_with_face(self.db, path="/a.jpg")
-        _add_photo_with_face(self.db, path="/b.jpg")
+        _add_source_with_finding(self.db, path="/a.jpg")
+        _add_source_with_finding(self.db, path="/b.jpg")
         assert self.db.get_singleton_count() == 2
 
-    def test_dismiss_faces(self) -> None:
-        _, fid = _add_photo_with_face(self.db)
+    def test_dismiss_findings(self) -> None:
+        _, fid = _add_source_with_finding(self.db)
         subject_id = self.db.create_subject("Test")
-        self.db.assign_face_to_subject(fid, subject_id)
+        self.db.assign_finding_to_subject(fid, subject_id)
         self.db.update_cluster_ids({fid: 1})
 
-        self.db.dismiss_faces([fid])
-        face = self.db.get_face(fid)
-        assert face is not None
-        assert face.person_id is None
-        assert face.cluster_id is None
+        self.db.dismiss_findings([fid])
+        finding = self.db.get_finding(fid)
+        assert finding is not None
+        assert finding.person_id is None
+        assert finding.cluster_id is None
 
-    def test_unassign_face(self) -> None:
-        _, fid = _add_photo_with_face(self.db)
+    def test_unassign_finding(self) -> None:
+        _, fid = _add_source_with_finding(self.db)
         subject_id = self.db.create_subject("Test")
-        self.db.assign_face_to_subject(fid, subject_id)
-        face = self.db.get_face(fid)
-        assert face is not None
-        assert face.person_id == subject_id
+        self.db.assign_finding_to_subject(fid, subject_id)
+        finding = self.db.get_finding(fid)
+        assert finding is not None
+        assert finding.person_id == subject_id
 
-        self.db.unassign_face(fid)
-        face = self.db.get_face(fid)
-        assert face is not None
-        assert face.person_id is None
+        self.db.unassign_finding(fid)
+        finding = self.db.get_finding(fid)
+        assert finding is not None
+        assert finding.person_id is None
 
-    def test_exclude_faces(self) -> None:
-        _, fid1 = _add_photo_with_face(self.db, path="/a.jpg")
-        _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
+    def test_exclude_findings(self) -> None:
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
         self.db.update_cluster_ids({fid1: 1, fid2: 1})
 
-        self.db.exclude_faces([fid1], cluster_id=1)
-        face = self.db.get_face(fid1)
-        assert face is not None
-        assert face.cluster_id is None
+        self.db.exclude_findings([fid1], cluster_id=1)
+        finding = self.db.get_finding(fid1)
+        assert finding is not None
+        assert finding.cluster_id is None
         # fid2 still in cluster
-        face2 = self.db.get_face(fid2)
-        assert face2 is not None
-        assert face2.cluster_id == 1
+        finding2 = self.db.get_finding(fid2)
+        assert finding2 is not None
+        assert finding2.cluster_id == 1
 
     def test_merge_clusters(self) -> None:
-        _, fid1 = _add_photo_with_face(self.db, path="/a.jpg")
-        _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
         self.db.update_cluster_ids({fid1: 1, fid2: 2})
 
         self.db.merge_clusters(source_id=2, target_id=1)
-        face = self.db.get_face(fid2)
-        assert face is not None
-        assert face.cluster_id == 1
+        finding = self.db.get_finding(fid2)
+        assert finding is not None
+        assert finding.cluster_id == 1
 
 
 class TestSubjectOperations(TestCase):
@@ -267,17 +270,17 @@ class TestSubjectOperations(TestCase):
         assert subject is not None
         assert subject.name == "Alicia"
 
-    def test_assign_face_to_subject(self) -> None:
-        _, fid = _add_photo_with_face(self.db)
+    def test_assign_finding_to_subject(self) -> None:
+        _, fid = _add_source_with_finding(self.db)
         sid = self.db.create_subject("Alice")
-        self.db.assign_face_to_subject(fid, sid)
+        self.db.assign_finding_to_subject(fid, sid)
         subject = self.db.get_subject(sid)
         assert subject is not None
         assert subject.face_count == 1
 
     def test_assign_cluster_to_subject(self) -> None:
-        _, fid1 = _add_photo_with_face(self.db, path="/a.jpg")
-        _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
         self.db.update_cluster_ids({fid1: 1, fid2: 1})
         sid = self.db.create_subject("Alice")
         self.db.assign_cluster_to_subject(1, sid)
@@ -288,28 +291,28 @@ class TestSubjectOperations(TestCase):
     def test_merge_subjects(self) -> None:
         sid_a = self.db.create_subject("Alice")
         sid_b = self.db.create_subject("Alice2")
-        _, fid = _add_photo_with_face(self.db)
-        self.db.assign_face_to_subject(fid, sid_a)
+        _, fid = _add_source_with_finding(self.db)
+        self.db.assign_finding_to_subject(fid, sid_a)
 
         self.db.merge_subjects(sid_a, sid_b)
         # Source deleted
         assert self.db.get_subject(sid_a) is None
-        # Target has the face
+        # Target has the finding
         subject = self.db.get_subject(sid_b)
         assert subject is not None
         assert subject.face_count == 1
 
     def test_delete_subject(self) -> None:
         sid = self.db.create_subject("Alice")
-        _, fid = _add_photo_with_face(self.db)
-        self.db.assign_face_to_subject(fid, sid)
+        _, fid = _add_source_with_finding(self.db)
+        self.db.assign_finding_to_subject(fid, sid)
 
         self.db.delete_subject(sid)
         assert self.db.get_subject(sid) is None
-        # Face should be unassigned, not deleted
-        face = self.db.get_face(fid)
-        assert face is not None
-        assert face.person_id is None
+        # Finding should be unassigned, not deleted
+        finding = self.db.get_finding(fid)
+        assert finding is not None
+        assert finding.person_id is None
 
     def test_search_subjects(self) -> None:
         self.db.create_subject("Alice")
@@ -318,21 +321,21 @@ class TestSubjectOperations(TestCase):
         results = self.db.search_subjects("Ali")
         assert len(results) == 2
 
-    def test_get_subject_faces(self) -> None:
+    def test_get_subject_findings(self) -> None:
         sid = self.db.create_subject("Alice")
-        _, fid = _add_photo_with_face(self.db)
-        self.db.assign_face_to_subject(fid, sid)
-        faces = self.db.get_subject_faces(sid)
-        assert len(faces) == 1
-        assert faces[0].id == fid
+        _, fid = _add_source_with_finding(self.db)
+        self.db.assign_finding_to_subject(fid, sid)
+        findings = self.db.get_subject_findings(sid)
+        assert len(findings) == 1
+        assert findings[0].id == fid
 
-    def test_get_subject_photos(self) -> None:
+    def test_get_subject_sources(self) -> None:
         sid = self.db.create_subject("Alice")
-        photo_id, fid = _add_photo_with_face(self.db)
-        self.db.assign_face_to_subject(fid, sid)
-        photos = self.db.get_subject_photos(sid)
-        assert len(photos) == 1
-        assert photos[0].id == photo_id
+        source_id, fid = _add_source_with_finding(self.db)
+        self.db.assign_finding_to_subject(fid, sid)
+        sources = self.db.get_subject_sources(sid)
+        assert len(sources) == 1
+        assert sources[0].id == source_id
 
     def test_subject_kind_person(self) -> None:
         sid = self.db.create_subject("Alice", kind="person")
@@ -363,12 +366,12 @@ class TestSpeciesFilter(TestCase):
         assert len(params) == len(self.db.PET_SPECIES)
 
     def test_unnamed_clusters_species(self) -> None:
-        _add_photo_with_face(self.db, path="/a.jpg", species="human")
-        _add_photo_with_face(self.db, path="/b.jpg", species="human")
-        _add_photo_with_face(self.db, path="/c.jpg", species="dog")
-        _add_photo_with_face(self.db, path="/d.jpg", species="dog")
+        _add_source_with_finding(self.db, path="/a.jpg", species="human")
+        _add_source_with_finding(self.db, path="/b.jpg", species="human")
+        _add_source_with_finding(self.db, path="/c.jpg", species="dog")
+        _add_source_with_finding(self.db, path="/d.jpg", species="dog")
 
-        # Get face ids and cluster them
+        # Get finding ids and cluster them
         human_embs = self.db.get_all_embeddings(species="human")
         dog_embs = self.db.get_all_embeddings(species="dog")
         self.db.update_cluster_ids(
@@ -391,30 +394,30 @@ class TestStats(TestCase):
 
     def test_empty_db_stats(self) -> None:
         stats = self.db.get_stats()
-        assert stats["total_photos"] == 0
-        assert stats["total_faces"] == 0
+        assert stats["total_sources"] == 0
+        assert stats["total_findings"] == 0
         assert stats["total_subjects"] == 0
-        assert stats["named_faces"] == 0
+        assert stats["named_findings"] == 0
         assert stats["unnamed_clusters"] == 0
-        assert stats["unclustered_faces"] == 0
-        assert stats["dismissed_faces"] == 0
+        assert stats["unclustered_findings"] == 0
+        assert stats["dismissed_findings"] == 0
 
     def test_populated_stats(self) -> None:
-        _, fid1 = _add_photo_with_face(self.db, path="/a.jpg")
-        _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
-        _, fid3 = _add_photo_with_face(self.db, path="/c.jpg")
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
+        _, fid3 = _add_source_with_finding(self.db, path="/c.jpg")
 
         sid = self.db.create_subject("Alice")
-        self.db.assign_face_to_subject(fid1, sid)
+        self.db.assign_finding_to_subject(fid1, sid)
         self.db.update_cluster_ids({fid2: 1, fid3: 1})
 
         stats = self.db.get_stats()
-        assert stats["total_photos"] == 3
-        assert stats["total_faces"] == 3
+        assert stats["total_sources"] == 3
+        assert stats["total_findings"] == 3
         assert stats["total_subjects"] == 1
-        assert stats["named_faces"] == 1
+        assert stats["named_findings"] == 1
         assert stats["unnamed_clusters"] == 1
-        assert stats["unclustered_faces"] == 1  # fid1 assigned but unclustered
+        assert stats["unclustered_findings"] == 1  # fid1 assigned but unclustered
 
 
 class TestGetUnclusteredEmbeddings(TestCase):
@@ -423,30 +426,30 @@ class TestGetUnclusteredEmbeddings(TestCase):
         self.db = db
 
     def test_returns_unclustered_unassigned(self) -> None:
-        _, fid1 = _add_photo_with_face(self.db, path="/a.jpg")
-        _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
-        _, fid3 = _add_photo_with_face(self.db, path="/c.jpg")
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
+        _, fid3 = _add_source_with_finding(self.db, path="/c.jpg")
 
         # Cluster fid1, assign fid2 to a subject
         self.db.update_cluster_ids({fid1: 1})
         sid = self.db.create_subject("Alice")
-        self.db.assign_face_to_subject(fid2, sid)
+        self.db.assign_finding_to_subject(fid2, sid)
 
         result = self.db.get_unclustered_embeddings(species="human")
         assert len(result) == 1
         assert result[0][0] == fid3
 
     def test_excludes_dismissed(self) -> None:
-        _, fid1 = _add_photo_with_face(self.db, path="/a.jpg")
-        _, fid2 = _add_photo_with_face(self.db, path="/b.jpg")
-        self.db.dismiss_faces([fid1])
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
+        self.db.dismiss_findings([fid1])
         result = self.db.get_unclustered_embeddings(species="human")
         assert len(result) == 1
         assert result[0][0] == fid2
 
     def test_species_filter(self) -> None:
-        _add_photo_with_face(self.db, path="/a.jpg", species="human")
-        _add_photo_with_face(self.db, path="/b.jpg", species="dog")
+        _add_source_with_finding(self.db, path="/a.jpg", species="human")
+        _add_source_with_finding(self.db, path="/b.jpg", species="dog")
         assert len(self.db.get_unclustered_embeddings(species="human")) == 1
         assert len(self.db.get_unclustered_embeddings(species="dog")) == 1
         assert len(self.db.get_unclustered_embeddings(species="pet")) == 1
@@ -461,22 +464,22 @@ class TestExport(TestCase):
         import json
 
         sid = self.db.create_subject("Alice")
-        _, fid = _add_photo_with_face(self.db)
-        self.db.assign_face_to_subject(fid, sid)
+        _, fid = _add_source_with_finding(self.db)
+        self.db.assign_finding_to_subject(fid, sid)
 
         data = json.loads(self.db.export_json())
         assert "subjects" in data
-        assert "unnamed_faces" in data
+        assert "unnamed_findings" in data
         assert len(data["subjects"]) == 1
         assert data["subjects"][0]["name"] == "Alice"
-        assert len(data["subjects"][0]["photos"]) == 1
+        assert len(data["subjects"][0]["sources"]) == 1
 
     def test_export_empty_db(self) -> None:
         import json
 
         data = json.loads(self.db.export_json())
         assert data["subjects"] == []
-        assert data["unnamed_faces"] == []
+        assert data["unnamed_findings"] == []
 
 
 class TestPathResolution(TestCase):
@@ -489,10 +492,6 @@ class TestPathResolution(TestCase):
     def test_resolve_relative_path(self) -> None:
         resolved = self.db.resolve_path("subfolder/photo.jpg")
         assert resolved == self.base / "subfolder" / "photo.jpg"
-
-    def test_resolve_strips_pets_suffix(self) -> None:
-        resolved = self.db.resolve_path("photo.jpg__pets")
-        assert resolved == self.base / "photo.jpg"
 
     def test_resolve_rejects_dotdot(self) -> None:
         with pytest.raises(ValueError, match="\\.\\."):

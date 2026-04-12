@@ -138,7 +138,7 @@ def scan_photos(
     for i, image_path in enumerate(images, 1):
         stored_path = db.to_relative(str(image_path.resolve()))
 
-        if db.is_photo_scanned(stored_path):
+        if db.is_scanned(stored_path, "human"):
             skipped += 1
             if i % 500 == 0 or i == total:
                 print(
@@ -158,25 +158,27 @@ def scan_photos(
             taken_at = get_exif_date(image_path)
             gps = get_exif_gps(image_path)
             lat, lon = gps if gps else (None, None)
-            photo_id = db.add_photo(
+            source_id = db.get_or_create_source(
                 stored_path,
-                width,
-                height,
-                taken_at,
+                source_type="photo",
+                width=width,
+                height=height,
+                taken_at=taken_at,
                 latitude=lat,
                 longitude=lon,
             )
 
             batch = [
-                (photo_id, face["bbox"], face["embedding"], face["confidence"])
+                (source_id, face["bbox"], face["embedding"], face["confidence"])
                 for face in detected_faces
                 if cast(float, face["confidence"]) >= min_confidence
             ]
 
             if batch:
-                db.add_faces_batch(batch)
+                db.add_findings_batch(batch)
                 faces_found += len(batch)
 
+            db.record_scan(source_id, "human")
             processed += 1
 
         except OSError:
@@ -314,7 +316,7 @@ def scan_videos(
         abs_video = str(video_path.resolve())
         stored_video = db.to_relative(abs_video)
 
-        if db.is_video_scanned(stored_video):
+        if db.is_scanned(stored_video, "human"):
             skipped += 1
             if i % 50 == 0 or i == total:
                 print(
@@ -337,27 +339,29 @@ def scan_videos(
                 errors += 1
                 continue
 
-            if not unique_faces:
-                vid_hash = hashlib.md5(abs_video.encode()).hexdigest()[:10]
-                db.add_photo(f"__nofaces_{vid_hash}", 0, 0, video_path=stored_video)
-                processed += 1
-                continue
+            # Get or create video source (one row per video file)
+            h_frame, w_frame = (
+                (unique_faces[0]["height"], unique_faces[0]["width"]) if unique_faces else (0, 0)
+            )
+            source_id = db.get_or_create_source(
+                stored_video, source_type="video", width=w_frame, height=h_frame
+            )
 
             vid_hash = hashlib.md5(abs_video.encode()).hexdigest()[:10]
             for j, uf in enumerate(unique_faces):
-                frame_path = frames_dir / f"vid_{vid_hash}_{j}.jpg"
+                frame_file = frames_dir / f"vid_{vid_hash}_{j}.jpg"
                 rgb = cv2.cvtColor(uf["frame"], cv2.COLOR_BGR2RGB)
-                Image.fromarray(rgb).save(str(frame_path), "JPEG", quality=85)
+                Image.fromarray(rgb).save(str(frame_file), "JPEG", quality=85)
 
-                photo_id = db.add_photo(
-                    db.to_relative(str(frame_path)),
-                    uf["width"],
-                    uf["height"],
-                    video_path=stored_video,
+                # Store frame path relative to DB directory
+                rel_frame = str(frame_file.relative_to(db.db_path.parent))
+                db.add_findings_batch(
+                    [(source_id, uf["bbox"], uf["embedding"], uf["confidence"])],
+                    frame_path=rel_frame,
                 )
-                db.add_faces_batch([(photo_id, uf["bbox"], uf["embedding"], uf["confidence"])])
                 faces_found += 1
 
+            db.record_scan(source_id, "human")
             processed += 1
 
         except OSError:
@@ -404,7 +408,7 @@ def scan_pets(
     for i, image_path in enumerate(images, 1):
         stored_path = db.to_relative(str(image_path.resolve()))
 
-        if db.is_pet_scanned(stored_path):
+        if db.is_scanned(stored_path, "pet"):
             skipped += 1
             if i % 500 == 0 or i == total:
                 print(
@@ -423,15 +427,17 @@ def scan_pets(
                 oriented = _ImageOps.exif_transpose(img)
                 w, h = oriented.size
 
-            photo_id = db.add_photo(stored_path + "__pets", w, h)
+            # Find or create the source (may already exist from human scan)
+            source_id = db.get_or_create_source(stored_path, source_type="photo", width=w, height=h)
 
             for pet in good:
-                db.add_faces_batch(
-                    [(photo_id, pet["bbox"], pet["embedding"], pet["confidence"])],
+                db.add_findings_batch(
+                    [(source_id, pet["bbox"], pet["embedding"], pet["confidence"])],
                     species=pet["species"],
                 )
                 pets_found += 1
 
+            db.record_scan(source_id, "pet")
             processed += 1
 
         except Exception:
