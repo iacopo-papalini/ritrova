@@ -14,6 +14,9 @@ from .embeddings import compute_centroid, cosine_similarity, normalize
 
 logger = logging.getLogger(__name__)
 
+# Embedding dimensions by subject kind — determines which vector space to use
+EMBEDDING_DIMS: dict[str, int] = {"person": 512, "pet": 768}
+
 
 @dataclass
 class MergeSuggestion:
@@ -193,8 +196,9 @@ def cluster_faces(
     )
     cluster_offset = max_existing[0][0] + 1 if max_existing else 0
 
-    logger.info("Loading %s embeddings...", species)
-    data = db.get_all_embeddings(species=species)
+    dim = EMBEDDING_DIMS.get("pet" if species in db.PET_SPECIES or species == "pet" else "person")
+    logger.info("Loading %s embeddings (dim=%s)...", species, dim)
+    data = db.get_all_embeddings(species=species, embedding_dim=dim)
     if not data:
         return {"total_faces": 0, "clusters": 0, "noise": 0}
 
@@ -267,13 +271,14 @@ def auto_assign(
     Returns stats dict.
     """
     species = FaceDB.KIND_TO_SPECIES[kind]
+    dim = EMBEDDING_DIMS.get(kind)
     subjects = db.get_subjects_by_kind(kind)
     if not subjects:
         logger.info("No named subjects to match against.")
         return {"assigned_clusters": 0, "assigned_faces": 0, "unmatched": 0}
 
     logger.info("Computing centroids for %d subjects...", len(subjects))
-    subject_centroids = db.get_subject_centroids(kind=kind)
+    subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
 
     if not subject_centroids:
         logger.info("No subjects with matching kind.")
@@ -321,7 +326,7 @@ def auto_assign(
     )
 
     # Also sweep unclustered singletons
-    unclustered = db.get_unclustered_embeddings(species=species)
+    unclustered = db.get_unclustered_embeddings(species=species, embedding_dim=dim)
 
     assigned_singletons = 0
     if unclustered:
@@ -428,7 +433,8 @@ def rank_subjects_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, st
     # Map face species to subject kind
     kind = "pet" if cluster_species in db.PET_SPECIES else "person"
 
-    subject_centroids = db.get_subject_centroids(kind=kind)
+    dim = EMBEDDING_DIMS.get(kind)
+    subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
     subjects_by_kind = {s.id: s.face_count for s in db.get_subjects_by_kind(kind)}
     results = []
     for sid, name, s_centroid in subject_centroids:

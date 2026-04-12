@@ -302,7 +302,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     ) -> JSONResponse:
         try:
             for fid in face_ids:
-                db.assign_finding_to_subject(fid, subject_id, correct_species=force)
+                db.assign_finding_to_subject(fid, subject_id, force=force)
         except ValueError as e:
             return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
         return JSONResponse({"ok": True, "claimed": len(face_ids)})
@@ -470,7 +470,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         if not subject:
             raise HTTPException(404, "Subject not found")
         try:
-            db.assign_cluster_to_subject(cluster_id, person_id, correct_species=force)
+            db.assign_cluster_to_subject(cluster_id, person_id, force=force)
         except ValueError as e:
             return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
         if request.headers.get("HX-Request"):
@@ -517,7 +517,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         finding_id: int, person_id: int = Form(...), force: bool = Form(False)
     ) -> JSONResponse:
         try:
-            db.assign_finding_to_subject(finding_id, person_id, correct_species=force)
+            db.assign_finding_to_subject(finding_id, person_id, force=force)
         except ValueError as e:
             return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
         return JSONResponse({"ok": True})

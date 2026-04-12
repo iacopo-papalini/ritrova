@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from .cluster import EMBEDDING_DIMS
 from .db import FaceDB, Finding
 from .embeddings import compute_centroid, cosine_similarity, normalize
 
@@ -14,18 +15,18 @@ def compute_cluster_hint(db: FaceDB, cluster_id: int) -> dict[str, Any] | None:
     """Return the best matching subject for a cluster, or None.
 
     Returns dict with keys: person_id, name, sim (percentage).
-    (person_id kept because the FK column on faces is still person_id.)
+    (person_id kept because the FK column on findings is still person_id.)
     """
     findings = db.get_cluster_findings(cluster_id, limit=200)
     if not findings:
         return None
 
     cluster_species = findings[0].species
-    # Map face species to subject kind
     kind = "pet" if cluster_species in db.PET_SPECIES else "person"
+    dim = EMBEDDING_DIMS.get(kind)
 
     centroid = compute_centroid(np.array([f.embedding for f in findings]))
-    subject_centroids = db.get_subject_centroids(kind=kind)
+    subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
 
     best_name: str | None = None
     best_sim = 0.0
@@ -53,7 +54,8 @@ def compute_singleton_hints(
     Returns {finding_id: {"person_id": int, "name": str, "sim": float}}.
     (person_id kept because the FK column on findings is still person_id.)
     """
-    subject_centroids = db.get_subject_centroids(kind=kind)
+    dim = EMBEDDING_DIMS.get(kind)
+    subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
     if not subject_centroids:
         return {}
 

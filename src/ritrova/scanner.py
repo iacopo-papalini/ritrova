@@ -178,7 +178,7 @@ def scan_photos(
                 db.add_findings_batch(batch)
                 faces_found += len(batch)
 
-            db.record_scan(source_id, "human")
+            db.record_scan(source_id, "human", detection_strategy="arcface_v1")
             processed += 1
 
         except OSError:
@@ -361,7 +361,7 @@ def scan_videos(
                 )
                 faces_found += 1
 
-            db.record_scan(source_id, "human")
+            db.record_scan(source_id, "human", detection_strategy="arcface_v1")
             processed += 1
 
         except OSError:
@@ -437,7 +437,7 @@ def scan_pets(
                 )
                 pets_found += 1
 
-            db.record_scan(source_id, "pet")
+            db.record_scan(source_id, "pet", detection_strategy="siglip_v1")
             processed += 1
 
         except Exception:

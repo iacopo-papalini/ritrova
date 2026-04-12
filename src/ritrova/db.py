@@ -54,6 +54,7 @@ class Finding:
     detected_at: str
     species: str = "human"
     frame_path: str | None = None
+    embedding_dim: int = 0
 
 
 @dataclass
@@ -132,6 +133,15 @@ class FaceDB:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_name_kind
                 ON subjects(name, kind);
         """)
+        # Migrations (idempotent — errors suppressed if already applied)
+        import contextlib
+
+        for migration in [
+            "ALTER TABLE scans ADD COLUMN detection_strategy TEXT NOT NULL DEFAULT 'unknown'",
+            "ALTER TABLE findings ADD COLUMN embedding_dim INTEGER NOT NULL DEFAULT 0",
+        ]:
+            with contextlib.suppress(sqlite3.OperationalError):
+                self.conn.execute(migration)
         self.conn.commit()
 
     @_locked
@@ -244,11 +254,14 @@ class FaceDB:
         return row is not None
 
     @_locked
-    def record_scan(self, source_id: int, scan_type: str) -> None:
+    def record_scan(
+        self, source_id: int, scan_type: str, detection_strategy: str = "unknown"
+    ) -> None:
         """Record that a scan has been performed on a source."""
         self.conn.execute(
-            "INSERT OR IGNORE INTO scans (source_id, scan_type, scanned_at) VALUES (?, ?, ?)",
-            (source_id, scan_type, self._now()),
+            "INSERT OR IGNORE INTO scans (source_id, scan_type, scanned_at, detection_strategy) "
+            "VALUES (?, ?, ?, ?)",
+            (source_id, scan_type, self._now(), detection_strategy),
         )
         self.conn.commit()
 
@@ -297,10 +310,10 @@ class FaceDB:
         now = self._now()
         self.conn.executemany(
             "INSERT INTO findings (source_id, bbox_x, bbox_y, bbox_w, bbox_h, "
-            "embedding, confidence, detected_at, species, frame_path) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "embedding, confidence, detected_at, species, frame_path, embedding_dim) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                (sid, *bbox, emb.tobytes(), conf, now, species, frame_path)
+                (sid, *bbox, emb.tobytes(), conf, now, species, frame_path, len(emb))
                 for sid, bbox, emb, conf in findings_data
             ],
         )
@@ -334,26 +347,39 @@ class FaceDB:
         row = self.conn.execute("SELECT COUNT(*) FROM findings").fetchone()
         return int(row[0]) if row else 0
 
+    def _dim_filter(self, embedding_dim: int | None) -> tuple[str, tuple[int, ...]]:
+        """Return SQL clause and params for embedding dimension filtering."""
+        if embedding_dim is None:
+            return "1=1", ()
+        return "embedding_dim = ?", (embedding_dim,)
+
     @_locked
-    def get_all_embeddings(self, species: str = "human") -> list[tuple[int, np.ndarray]]:
+    def get_all_embeddings(
+        self, species: str = "human", embedding_dim: int | None = None
+    ) -> list[tuple[int, np.ndarray]]:
         """Return all (finding_id, embedding) pairs for clustering, excluding dismissed."""
         clause, params = self.species_filter(species)
+        dim_clause, dim_params = self._dim_filter(embedding_dim)
         rows = self.conn.execute(
             f"SELECT id, embedding FROM findings "
-            f"WHERE {clause} AND id NOT IN (SELECT finding_id FROM dismissed_findings)",
-            params,
+            f"WHERE {clause} AND {dim_clause} "
+            f"AND id NOT IN (SELECT finding_id FROM dismissed_findings)",
+            (*params, *dim_params),
         ).fetchall()
         return [(row[0], np.frombuffer(row[1], dtype=np.float32)) for row in rows]
 
     @_locked
-    def get_unassigned_embeddings(self, species: str = "human") -> list[tuple[int, np.ndarray]]:
+    def get_unassigned_embeddings(
+        self, species: str = "human", embedding_dim: int | None = None
+    ) -> list[tuple[int, np.ndarray]]:
         """Return (finding_id, embedding) for unassigned, non-dismissed findings only."""
         clause, params = self.species_filter(species)
+        dim_clause, dim_params = self._dim_filter(embedding_dim)
         rows = self.conn.execute(
             f"SELECT id, embedding FROM findings "
-            f"WHERE person_id IS NULL AND {clause} "
+            f"WHERE person_id IS NULL AND {clause} AND {dim_clause} "
             f"AND id NOT IN (SELECT finding_id FROM dismissed_findings)",
-            params,
+            (*params, *dim_params),
         ).fetchall()
         return [(row[0], np.frombuffer(row[1], dtype=np.float32)) for row in rows]
 
@@ -569,19 +595,26 @@ class FaceDB:
         ]
 
     @_locked
-    def get_subject_centroids(self, kind: str = "person") -> list[tuple[int, str, np.ndarray]]:
-        """Return [(subject_id, name, centroid)] for all subjects of a kind."""
+    def get_subject_centroids(
+        self, kind: str = "person", embedding_dim: int | None = None
+    ) -> list[tuple[int, str, np.ndarray]]:
+        """Return [(subject_id, name, centroid)] for all subjects of a kind.
+
+        Filters by embedding_dim to ensure only compatible embeddings are
+        used in centroid computation (e.g. 512 for ArcFace, 768 for SigLIP).
+        """
         species = self._species_for_kind(kind)
         clause, params = self.species_filter(species)
+        dim_clause, dim_params = self._dim_filter(embedding_dim)
         rows = self.conn.execute(
             f"""
             SELECT f.person_id, s.name, f.embedding
             FROM findings f
             JOIN subjects s ON s.id = f.person_id
-            WHERE f.person_id IS NOT NULL AND s.kind = ? AND {clause}
+            WHERE f.person_id IS NOT NULL AND s.kind = ? AND {clause} AND {dim_clause}
             ORDER BY f.person_id
             """,
-            (kind, *params),
+            (kind, *params, *dim_params),
         ).fetchall()
 
         from .embeddings import compute_centroid
@@ -604,34 +637,26 @@ class FaceDB:
         self.conn.execute("UPDATE subjects SET name = ? WHERE id = ?", (name, subject_id))
         self.conn.commit()
 
-    def _expected_species(self, subject_kind: str) -> str:
-        """Return the species string a finding should have for a given subject kind."""
-        return "human" if subject_kind == "person" else "dog"
-
     @_locked
     def assign_finding_to_subject(
-        self, finding_id: int, subject_id: int, *, correct_species: bool = False
+        self, finding_id: int, subject_id: int, *, force: bool = False
     ) -> None:
         """Assign a finding to a subject.
 
-        Raises ValueError on species/kind mismatch unless correct_species=True,
-        in which case the finding's species is corrected to match.
+        Raises ValueError on species/kind mismatch unless force=True.
+        Species is never mutated — the finding keeps its original species
+        and embedding space. Centroid queries filter by embedding_dim to
+        exclude incompatible findings automatically.
         """
         finding = self.get_finding(finding_id)
         subject = self.get_subject(subject_id)
         if (
             finding
             and subject
+            and not force
             and not self._is_species_kind_compatible(finding.species, subject.kind)
         ):
-            if not correct_species:
-                raise ValueError(
-                    f"Cannot assign {finding.species} finding to a {subject.kind} subject"
-                )
-            new_species = self._expected_species(subject.kind)
-            self.conn.execute(
-                "UPDATE findings SET species = ? WHERE id = ?", (new_species, finding_id)
-            )
+            raise ValueError(f"Cannot assign {finding.species} finding to a {subject.kind} subject")
         self.conn.execute(
             "UPDATE findings SET person_id = ? WHERE id = ?", (subject_id, finding_id)
         )
@@ -639,25 +664,19 @@ class FaceDB:
 
     @_locked
     def assign_cluster_to_subject(
-        self, cluster_id: int, subject_id: int, *, correct_species: bool = False
+        self, cluster_id: int, subject_id: int, *, force: bool = False
     ) -> None:
         """Assign all unassigned findings in a cluster to a subject.
 
-        Raises ValueError on species/kind mismatch unless correct_species=True,
-        in which case the findings' species is corrected to match.
+        Raises ValueError on species/kind mismatch unless force=True.
+        Species is never mutated.
         """
         subject = self.get_subject(subject_id)
-        if subject:
+        if subject and not force:
             findings = self.get_cluster_findings(cluster_id, limit=1)
             if findings and not self._is_species_kind_compatible(findings[0].species, subject.kind):
-                if not correct_species:
-                    raise ValueError(
-                        f"Cannot assign {findings[0].species} finding to a {subject.kind} subject"
-                    )
-                new_species = self._expected_species(subject.kind)
-                self.conn.execute(
-                    "UPDATE findings SET species = ? WHERE cluster_id = ? AND person_id IS NULL",
-                    (new_species, cluster_id),
+                raise ValueError(
+                    f"Cannot assign {findings[0].species} finding to a {subject.kind} subject"
                 )
         self.conn.execute(
             "UPDATE findings SET person_id = ? WHERE cluster_id = ? AND person_id IS NULL",
@@ -863,14 +882,17 @@ class FaceDB:
         self.conn.commit()
 
     @_locked
-    def get_unclustered_embeddings(self, species: str = "human") -> list[tuple[int, np.ndarray]]:
+    def get_unclustered_embeddings(
+        self, species: str = "human", embedding_dim: int | None = None
+    ) -> list[tuple[int, np.ndarray]]:
         """Return (finding_id, embedding) for unclustered, unassigned, non-dismissed findings."""
         clause, params = self.species_filter(species)
+        dim_clause, dim_params = self._dim_filter(embedding_dim)
         rows = self.conn.execute(
             f"SELECT id, embedding FROM findings "
-            f"WHERE person_id IS NULL AND cluster_id IS NULL AND {clause} "
+            f"WHERE person_id IS NULL AND cluster_id IS NULL AND {clause} AND {dim_clause} "
             f"AND id NOT IN (SELECT finding_id FROM dismissed_findings)",
-            params,
+            (*params, *dim_params),
         ).fetchall()
         return [(r[0], np.frombuffer(r[1], dtype=np.float32)) for r in rows]
 
