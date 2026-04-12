@@ -588,12 +588,12 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         raise HTTPException(404)
 
     @app.get("/api/together")
-    def together_api(person_ids: str = "") -> JSONResponse:
+    def together_api(person_ids: str = "", alone: bool = False) -> JSONResponse:
         """Find sources containing ALL given subject IDs (comma-separated)."""
         if not person_ids.strip():
             return JSONResponse({"sources": [], "total": 0})
         ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
-        sources = db.get_sources_with_all_subjects(ids)
+        sources = db.get_sources_with_all_subjects(ids, alone=alone)
         return JSONResponse(
             {
                 "total": len(sources),
@@ -606,13 +606,17 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.get("/api/together-html", response_class=HTMLResponse)
     def together_html(
-        request: Request, person_ids: str = "", offset: int = 0, limit: int = 60
+        request: Request,
+        person_ids: str = "",
+        offset: int = 0,
+        limit: int = 60,
+        alone: bool = False,
     ) -> HTMLResponse:
         if not person_ids.strip():
             return HTMLResponse("")
         ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
-        total = db.count_sources_with_all_subjects(ids)
-        sources = db.get_sources_with_all_subjects(ids, limit=limit, offset=offset)
+        total = db.count_sources_with_all_subjects(ids, alone=alone)
+        sources = db.get_sources_with_all_subjects(ids, limit=limit, offset=offset, alone=alone)
         groups = _group_by_month([(s, s.file_path) for s in sources], key="sources")
         return templates.TemplateResponse(
             name="partials/together_results.html",
@@ -620,6 +624,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "source_groups": groups,
                 "total": total,
                 "person_ids": person_ids,
+                "alone": alone,
                 "offset": offset,
                 "limit": limit,
                 "page_count": len(sources),

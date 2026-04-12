@@ -700,48 +700,68 @@ class FaceDB:
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
+    def _together_query(
+        self, subject_ids: list[int], alone: bool = False
+    ) -> tuple[str, tuple[int | str, ...]]:
+        """Build the inner subquery for together (shared by get and count)."""
+        placeholders = ",".join("?" * len(subject_ids))
+        n = len(subject_ids)
+        if alone:
+            # All named findings on the source — require exactly the requested set
+            return (
+                f"""SELECT source_id FROM findings
+                    WHERE person_id IS NOT NULL
+                    GROUP BY source_id
+                    HAVING COUNT(DISTINCT CASE WHEN person_id IN ({placeholders}) THEN person_id END) = ?
+                    AND COUNT(DISTINCT person_id) = ?""",
+                (*subject_ids, n, n),
+            )
+        # At least these subjects (may include others)
+        return (
+            f"""SELECT source_id FROM findings
+                WHERE person_id IN ({placeholders})
+                GROUP BY source_id
+                HAVING COUNT(DISTINCT person_id) = ?""",
+            (*subject_ids, n),
+        )
+
     def get_sources_with_all_subjects(
-        self, subject_ids: list[int], limit: int = 0, offset: int = 0
+        self,
+        subject_ids: list[int],
+        limit: int = 0,
+        offset: int = 0,
+        alone: bool = False,
     ) -> list[Source]:
-        """Find sources that contain ALL given subjects (intersection)."""
+        """Find sources that contain ALL given subjects.
+
+        If alone=True, exclude sources that also contain other named subjects.
+        """
         if not subject_ids:
             return []
-        placeholders = ",".join("?" * len(subject_ids))
+        inner, params = self._together_query(subject_ids, alone)
         pagination = ""
-        params: tuple[int | str, ...] = (*subject_ids, len(subject_ids))
+        full_params: tuple[int | str, ...] = params
         if limit > 0:
             pagination = " LIMIT ? OFFSET ?"
-            params = (*params, limit, offset)
+            full_params = (*params, limit, offset)
         rows = self.conn.execute(
             f"""
             SELECT s.* FROM sources s
-            JOIN (
-                SELECT source_id FROM findings
-                WHERE person_id IN ({placeholders})
-                GROUP BY source_id
-                HAVING COUNT(DISTINCT person_id) = ?
-            ) matched ON matched.source_id = s.id
+            JOIN ({inner}) matched ON matched.source_id = s.id
             ORDER BY s.file_path DESC{pagination}
             """,
-            params,
+            full_params,
         ).fetchall()
         return [Source(**dict(r)) for r in rows]
 
-    def count_sources_with_all_subjects(self, subject_ids: list[int]) -> int:
+    def count_sources_with_all_subjects(self, subject_ids: list[int], alone: bool = False) -> int:
         """Count sources containing ALL given subjects."""
         if not subject_ids:
             return 0
-        placeholders = ",".join("?" * len(subject_ids))
+        inner, params = self._together_query(subject_ids, alone)
         row = self.conn.execute(
-            f"""
-            SELECT COUNT(*) FROM (
-                SELECT source_id FROM findings
-                WHERE person_id IN ({placeholders})
-                GROUP BY source_id
-                HAVING COUNT(DISTINCT person_id) = ?
-            )
-            """,
-            (*subject_ids, len(subject_ids)),
+            f"SELECT COUNT(*) FROM ({inner})",
+            params,
         ).fetchone()
         return int(row[0]) if row else 0
 

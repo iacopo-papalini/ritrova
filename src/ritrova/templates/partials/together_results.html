@@ -27,7 +27,7 @@
 </div>
 {% endfor %}
 {% if offset + page_count < total %}
-<div hx-get="/api/together-html?person_ids={{ person_ids }}&offset={{ offset + page_count }}&limit={{ limit }}"
+<div hx-get="/api/together-html?person_ids={{ person_ids }}&alone={{ alone|lower }}&offset={{ offset + page_count }}&limit={{ limit }}"
      hx-trigger="revealed"
      hx-swap="outerHTML"
      class="flex justify-center py-8">

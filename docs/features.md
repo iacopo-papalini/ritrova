@@ -11,8 +11,8 @@ Video findings have a `frame_path` (extracted JPEG in `tmp/frames/`) but no way 
 - Possibly inline video playback or a link to the source video file
 
 ### FEAT-15: Together "alone" filter — exclude sources with other subjects
-**Reported:** 2026-04-11 | **Priority:** Medium
-Add an "alone" checkbox to the Together page. When checked, results only include sources where the selected subjects appear and NO other named subjects. E.g. "Eva and Caterina alone" excludes photos that also contain Iacopo. Query change: add `HAVING COUNT(DISTINCT person_id) = ?` where the count matches exactly the number of selected subjects (not just "at least").
+**Reported:** 2026-04-11 | **Closed:** 2026-04-11
+**Shipped:** "Just them" checkbox on Together page. When checked, only shows sources where exactly the selected subjects appear and no other named subjects. Uses `HAVING COUNT(DISTINCT person_id) = N` on all named findings per source.
 
 ### FEAT-5: Global single-step UNDO for all write operations
 **Reported:** 2026-04-10 | **Priority:** High

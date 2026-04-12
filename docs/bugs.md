@@ -7,20 +7,10 @@
 **Fix:** `.fr_exclude` marker file. Scanner skips dirs with this file. Created in `data/`. Cleaned 14K bogus entries.
 **To close:** Run a new pet scan and verify exclusion.
 
-### BUG-6: After assigning a pet cluster, page doesn't navigate
-**Reported:** 2026-04-10 | **Status:** Fix applied, pending verification
-**Root cause:** `find_similar_cluster()` was not species-aware.
-**Fix:** Added `species` parameter, passed from `_next_similar_cluster()`.
-
-### BUG-18: Video frame paths broken for pet scanner; video management needs rethink
-**Reported:** 2026-04-11 | **Status:** Open
-**Symptom:** Pet-scanned video frames have wrong stored paths (e.g. `face_recog/data/tmp/frames/vid_xxx.jpg__pets` instead of `tmp/frames/vid_xxx.jpg__pets`). The human scanner stores `tmp/frames/...` correctly, but the pet scanner prefixes with the project-relative path, so `resolve_path()` can't find the actual file.
-**Scope:** This is part of a broader issue with video management:
-- Video frames live in `data/tmp/frames/` as extracted JPEGs — ephemeral but treated as permanent photos
-- The `__pets` pseudo-photo suffix is a hack to track pet-scan state per photo
-- Human and pet scans of the same video frame create separate photo rows with different path conventions
-- No cleanup of orphaned frames when videos are removed
-**Next step:** Design a cleaner video/frame model — possibly a dedicated `video_frames` table or a scan-state table, rather than overloading the `photos` table with suffixed paths. Fix the pet scanner's path normalization as an immediate patch.
+### BUG-18: Orphaned video frame source rows with bad paths
+**Reported:** 2026-04-11 | **Status:** Open (residual)
+**Context:** The sources/findings migration fixed the __pets hack and video model, but left 14,751 orphaned source rows with `face_recog/data/tmp/frames/...` paths (from the old pet scanner bug). 78 of these have findings (95 total). These will be cleaned up on the next pet scan re-run, which will create findings on the correct video source rows.
+**Action:** Delete empty orphan sources, re-scan pets on videos.
 
 ### BUG-19: Cross-species assignment should confirm and correct, not block
 **Reported:** 2026-04-11 | **Status:** Open

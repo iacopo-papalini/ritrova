@@ -270,6 +270,34 @@ class TestTogetherAPI(TestCase):
         data = resp.json()
         assert data["total"] == 1
 
+    def test_alone_excludes_group_photos(self) -> None:
+        sid_a = self.db.create_subject("Alice")
+        sid_b = self.db.create_subject("Bob")
+        sid_c = self.db.create_subject("Charlie")
+        # Source with Alice + Bob (alone=true should include)
+        s1 = self.db.add_source("/duo.jpg", width=100, height=100)
+        self.db.add_findings_batch([(s1, (10, 10, 30, 30), _emb(10), 0.9)], species="human")
+        self.db.add_findings_batch([(s1, (50, 50, 30, 30), _emb(11), 0.9)], species="human")
+        f1 = self.db.get_source_findings(s1)
+        self.db.assign_finding_to_subject(f1[0].id, sid_a)
+        self.db.assign_finding_to_subject(f1[1].id, sid_b)
+        # Source with Alice + Bob + Charlie (alone=true should exclude)
+        s2 = self.db.add_source("/trio.jpg", width=100, height=100)
+        self.db.add_findings_batch([(s2, (10, 10, 30, 30), _emb(12), 0.9)], species="human")
+        self.db.add_findings_batch([(s2, (50, 50, 30, 30), _emb(13), 0.9)], species="human")
+        self.db.add_findings_batch([(s2, (80, 80, 30, 30), _emb(14), 0.9)], species="human")
+        f2 = self.db.get_source_findings(s2)
+        self.db.assign_finding_to_subject(f2[0].id, sid_a)
+        self.db.assign_finding_to_subject(f2[1].id, sid_b)
+        self.db.assign_finding_to_subject(f2[2].id, sid_c)
+
+        # Without alone: both sources match
+        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}")
+        assert resp.json()["total"] == 2
+        # With alone: only the duo
+        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}&alone=true")
+        assert resp.json()["total"] == 1
+
 
 class TestNamespaceCollision(TestCase):
     """Verify subject IDs and cluster IDs don't collide in merge suggestions."""

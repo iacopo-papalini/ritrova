@@ -15,26 +15,35 @@
       {% include "partials/subject_picker.html" %}
     </div>
 
-    <div x-data="{ searching: false }">
-      <button @click="
-                if (selected.length < 2 || searching) return;
-                searching = true;
-                const ids = selected.map(s => s.id).join(',');
-                fetch('/api/together-html?person_ids=' + ids)
-                  .then(r => r.text())
-                  .then(html => { document.getElementById('results').innerHTML = html; })
-                  .finally(() => { searching = false; });
-              "
-              :disabled="selected.length < 2 || searching"
-              class="inline-flex items-center gap-2 rounded-lg bg-gallery-accent px-5 py-2 text-sm font-medium text-gallery-bg
-                     transition-colors hover:bg-gallery-accent/80 cursor-pointer
-                     disabled:opacity-40 disabled:cursor-not-allowed">
-        <svg x-show="searching" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-        </svg>
-        <span x-text="searching ? 'Searching...' : 'Find photos together'"></span>
-      </button>
+    <div x-data="{ searching: false, alone: false }">
+      <div class="flex items-center gap-4">
+        <button @click="
+                  if (selected.length < 2 || searching) return;
+                  searching = true;
+                  const ids = selected.map(s => s.id).join(',');
+                  fetch('/api/together-html?person_ids=' + ids + '&alone=' + alone)
+                    .then(r => r.text())
+                    .then(html => { document.getElementById('results').innerHTML = html; })
+                    .finally(() => { searching = false; });
+                "
+                :disabled="selected.length < 2 || searching"
+                class="inline-flex items-center gap-2 rounded-lg bg-gallery-accent px-5 py-2 text-sm font-medium text-gallery-bg
+                       transition-colors hover:bg-gallery-accent/80 cursor-pointer
+                       disabled:opacity-40 disabled:cursor-not-allowed">
+          <svg x-show="searching" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <span x-text="searching ? 'Searching...' : 'Find photos together'"></span>
+        </button>
+
+        <label class="flex items-center gap-2 text-sm text-gallery-muted cursor-pointer select-none">
+          <input type="checkbox" x-model="alone"
+                 class="rounded border-gallery-border bg-gallery-card text-gallery-accent
+                        focus:ring-gallery-accent/30 cursor-pointer">
+          Just them (exclude group photos)
+        </label>
+      </div>
     </div>
   </div>
 
