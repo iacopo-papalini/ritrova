@@ -359,6 +359,176 @@ def stats(ctx: click.Context) -> None:
     db.close()
 
 
+@cli.group()
+def scans() -> None:
+    """Inspect and prune scan records (and the findings they own)."""
+
+
+@scans.command("list")
+@click.option("--source-pattern", default=None, help="GLOB pattern on source path (e.g. '2024/*')")
+@click.pass_context
+def scans_list(ctx: click.Context, source_pattern: str | None) -> None:
+    """List scans, optionally filtered by a source path pattern."""
+    from .db import FaceDB
+
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    rows = db.find_scans(source_pattern=source_pattern)
+    if not rows:
+        click.echo("(no scans match)")
+    else:
+        click.echo(f"{'id':>6}  {'type':6s}  {'findings':>8}  {'scanned_at':24s}  source")
+        for r in rows:
+            click.echo(
+                f"{r['id']:>6}  {r['scan_type']:6s}  {r['finding_count']:>8}  "
+                f"{r['scanned_at']:24s}  {r['source_path']}"
+            )
+        click.echo(f"\n{len(rows)} scan(s)")
+    db.close()
+
+
+@scans.command("prune")
+@click.option("--scan-id", type=int, default=None, help="Prune a single scan by id")
+@click.option(
+    "--source-pattern",
+    default=None,
+    help="GLOB pattern on source path; prunes every matching scan",
+)
+@click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
+@click.pass_context
+def scans_prune(
+    ctx: click.Context, scan_id: int | None, source_pattern: str | None, yes: bool
+) -> None:
+    """Prune scans (and their findings via cascade). Requires --scan-id and/or --source-pattern."""
+    if scan_id is None and source_pattern is None:
+        msg = "Provide --scan-id and/or --source-pattern (refusing to prune everything)."
+        raise click.UsageError(msg)
+
+    from .db import FaceDB
+
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    targets = db.find_scans(scan_id=scan_id, source_pattern=source_pattern)
+    if not targets:
+        click.echo("(no scans match)")
+        db.close()
+        return
+
+    n_findings = sum(t["finding_count"] for t in targets)
+    n_assigned = db.query(
+        f"SELECT COUNT(*) FROM findings WHERE person_id IS NOT NULL AND scan_id IN "  # noqa: S608
+        f"({','.join(str(t['id']) for t in targets)})"
+    )[0][0]
+
+    click.echo(f"About to prune {len(targets)} scan(s):")
+    for t in targets[:10]:
+        click.echo(f"  scan {t['id']:>6} [{t['scan_type']}]  {t['source_path']}")
+    if len(targets) > 10:
+        click.echo(f"  ... and {len(targets) - 10} more")
+    click.echo(
+        f"\nThis will delete {n_findings} finding(s), of which "
+        f"{n_assigned} have manual subject assignments."
+    )
+    if not yes and not click.confirm("Proceed?", default=False):
+        click.echo("Aborted.")
+        db.close()
+        return
+
+    for t in targets:
+        db.delete_scan(t["id"])
+    click.echo(f"Pruned {len(targets)} scan(s) ({n_findings} findings).")
+    db.close()
+
+
+@cli.command()
+@click.argument("source")
+@click.option(
+    "--scan-type",
+    default="all",
+    type=click.Choice(["all", "human", "pet"]),
+    help="Which scan to redo (default all existing on the source)",
+)
+@click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
+@click.pass_context
+def rescan(ctx: click.Context, source: str, scan_type: str, yes: bool) -> None:
+    """Rescan a single source: delete existing scans + findings, run fresh detection."""
+    from .db import FaceDB
+
+    photos_dir = _require_photos_dir(ctx)
+    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
+
+    # Resolve to a stored path (relative to PHOTOS_DIR) and the absolute path.
+    abs_path = Path(source)
+    if not abs_path.is_absolute():
+        abs_path = (Path(photos_dir) / source).resolve()
+    if not abs_path.exists():
+        raise click.UsageError(f"File not found: {abs_path}")
+    stored_path = db.to_relative(str(abs_path))
+    src = db.get_source_by_path(stored_path)
+    if src is None:
+        raise click.UsageError(
+            f"Source not in DB: {stored_path}\nRun `ritrova scan` (or scan-pets/scan-videos) "
+            "to ingest new files first."
+        )
+
+    existing = [s for s in db.find_scans() if s["source_id"] == src.id]
+    if scan_type != "all":
+        existing = [s for s in existing if s["scan_type"] == scan_type]
+    if not existing:
+        click.echo(f"(no matching scans on {stored_path})")
+        db.close()
+        return
+
+    n_findings = sum(t["finding_count"] for t in existing)
+    n_assigned = db.query(
+        f"SELECT COUNT(*) FROM findings WHERE person_id IS NOT NULL AND scan_id IN "  # noqa: S608
+        f"({','.join(str(t['id']) for t in existing)})"
+    )[0][0]
+    click.echo(
+        f"About to rescan {stored_path}\n"
+        f"Replacing {len(existing)} scan(s): {sorted({t['scan_type'] for t in existing})}\n"
+        f"This will delete {n_findings} finding(s), of which "
+        f"{n_assigned} have manual subject assignments."
+    )
+    if not yes and not click.confirm("Proceed?", default=False):
+        click.echo("Aborted.")
+        db.close()
+        return
+
+    types_to_redo = {t["scan_type"] for t in existing}
+    for t in existing:
+        db.delete_scan(t["id"])
+
+    # Re-run only the appropriate single-source scanners.
+    from .scanner import (
+        scan_one_photo_for_human,
+        scan_one_photo_for_pets,
+        scan_one_video_for_human,
+    )
+
+    if src.type == "video":
+        if "human" in types_to_redo:
+            from .detector import FaceDetector
+
+            detector = FaceDetector()
+            frames_dir = Path(ctx.obj["db_path"]).parent / "tmp" / "frames"
+            ok, n = scan_one_video_for_human(db, abs_path, detector, frames_dir)
+            click.echo(f"  video human scan: {'ok' if ok else 'FAILED'}, {n} face(s)")
+    else:
+        if "human" in types_to_redo:
+            from .detector import FaceDetector
+
+            detector = FaceDetector()
+            ok, n = scan_one_photo_for_human(db, abs_path, detector)
+            click.echo(f"  photo human scan: {'ok' if ok else 'FAILED'}, {n} face(s)")
+        if "pet" in types_to_redo:
+            from .pet_detector import PetDetector
+
+            pet_detector = PetDetector()
+            ok, n = scan_one_photo_for_pets(db, abs_path, pet_detector)
+            click.echo(f"  photo pet scan:   {'ok' if ok else 'FAILED'}, {n} pet(s)")
+
+    db.close()
+
+
 @cli.command("backfill-gps")
 @click.pass_context
 def backfill_gps(ctx: click.Context) -> None:

@@ -18,6 +18,22 @@
       <span class="text-gallery-muted text-sm truncate max-w-md">
         {{ source.file_path.split('/')[-1] }}
       </span>
+      <div class="flex-1"></div>
+      <a href="/api/sources/{{ source.id }}/original"
+         download
+         class="inline-flex items-center gap-1.5 rounded-lg border border-gallery-border bg-gallery-card
+                px-3 py-1.5 text-sm font-medium text-gallery-muted transition-colors
+                hover:border-gallery-accent hover:text-gallery-text"
+         title="Download the unmodified original file">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path fill-rule="evenodd"
+                d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0
+                   011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414
+                   1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z"
+                clip-rule="evenodd" />
+        </svg>
+        Download original
+      </a>
     </div>
     {% if source.taken_at %}
     <p class="text-gallery-muted text-sm mt-1 ml-8">
@@ -101,14 +117,19 @@
                    .then(r => {
                      if (r.ok) { location.reload(); return; }
                      if (r.status === 409) {
-                       return r.json().then(data => {
-                         if (data.needs_confirm && confirm(data.error + '\n\nAssign anyway and correct the species?')) {
-                           const fd2 = new FormData();
-                           fd2.append('person_id', subject.id);
-                           fd2.append('force', 'true');
-                           fetch('/api/findings/{{ face.id }}/assign', { method: 'POST', body: fd2 })
-                             .then(r2 => { if (r2.ok) location.reload(); });
-                         }
+                       return r.json().then(async data => {
+                         if (!data.needs_confirm) return;
+                         const ok = await confirmDialog({
+                           title: 'Different species',
+                           message: data.error + '\n\nAssign anyway and correct the species?',
+                           confirmLabel: 'Assign'
+                         });
+                         if (!ok) return;
+                         const fd2 = new FormData();
+                         fd2.append('person_id', subject.id);
+                         fd2.append('force', 'true');
+                         fetch('/api/findings/{{ face.id }}/assign', { method: 'POST', body: fd2 })
+                           .then(r2 => { if (r2.ok) location.reload(); });
                        });
                      }
                    });

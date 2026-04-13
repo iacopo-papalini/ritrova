@@ -1,0 +1,60 @@
+{# Video player overlay — fixed full-screen, populated by Alpine $store.videoPlayer.
+   Streams the original file from /api/sources/{id}/original (FEAT-17 endpoint).
+#}
+<div x-data
+     x-show="$store.videoPlayer.open"
+     x-cloak
+     @keydown.escape.window="$store.videoPlayer.open && $store.videoPlayer.close()"
+     class="fixed inset-0 z-[120] flex items-center justify-center bg-black/95"
+     @click.self="$store.videoPlayer.close()"
+     role="dialog"
+     aria-modal="true">
+
+  <!-- Toolbar — fixed top-right -->
+  <div class="fixed top-4 right-4 z-[121] flex items-center gap-2">
+    <a x-show="$store.videoPlayer.sourceId"
+       :href="`/api/sources/${$store.videoPlayer.sourceId}/original`"
+       download
+       class="flex h-10 w-10 items-center justify-center rounded-full bg-black/70
+              text-gallery-text transition-colors hover:bg-gallery-accent hover:text-gallery-bg"
+       aria-label="Download original video"
+       title="Download original">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd"
+              d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0
+                 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414
+                 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z"
+              clip-rule="evenodd" />
+      </svg>
+    </a>
+    <button @click="$store.videoPlayer.close()"
+            class="flex h-10 w-10 items-center justify-center rounded-full bg-black/70
+                   text-gallery-text transition-colors hover:bg-gallery-accent hover:text-gallery-bg"
+            aria-label="Close video player">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd"
+              d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0
+                 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414
+                 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586
+                 10 4.293 5.707a1 1 0 010-1.414z"
+              clip-rule="evenodd" />
+      </svg>
+    </button>
+  </div>
+
+  <div class="flex flex-col items-center gap-3">
+    {# Re-key the <video> on sourceId so swapping subjects forces a reload (otherwise
+       the same <video> element keeps the previous src in some browsers). #}
+    <template x-if="$store.videoPlayer.open && $store.videoPlayer.sourceId">
+      <video :src="`/api/sources/${$store.videoPlayer.sourceId}/original`"
+             controls autoplay
+             class="max-h-[85vh] max-w-[95vw] rounded-lg shadow-2xl bg-black"
+             :key="$store.videoPlayer.sourceId">
+      </video>
+    </template>
+
+    <p x-show="$store.videoPlayer.sourceName" x-cloak
+       x-text="$store.videoPlayer.sourceName"
+       class="max-w-[90vw] truncate rounded bg-black/70 px-3 py-1.5 text-sm text-gallery-text/80"></p>
+  </div>
+</div>

@@ -5,11 +5,14 @@
 {% if offset == 0 %}
 <p class="text-gallery-muted text-sm mb-4">{{ total }} photo{{ 's' if total != 1 else '' }} found</p>
 {% endif %}
+{# data-lightbox-group spans all months so arrow-nav walks across them. #}
+<div data-lightbox-group>
 {% for group in source_groups %}
 <h3 class="mt-4 mb-2 text-sm font-medium text-gallery-muted">{{ group.month }}</h3>
 <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
   {% for source in group.sources %}
-  <div @click="$store.lightbox.show({{ source.id }})"
+  <div data-source-id="{{ source.id }}"
+       @click="$store.lightbox.openFromGrid($el, 'source')"
        class="group relative cursor-pointer overflow-hidden rounded-xl bg-gallery-card transition-all duration-200
               hover:ring-2 hover:ring-gallery-accent/40 hover:ring-offset-2 hover:ring-offset-gallery-bg">
     <img src="/api/sources/{{ source.id }}/image?max_size=400"
@@ -26,6 +29,7 @@
   {% endfor %}
 </div>
 {% endfor %}
+</div>{# /data-lightbox-group #}
 {% if offset + page_count < total %}
 <div hx-get="/api/together-html?person_ids={{ person_ids }}&alone={{ alone|lower }}&offset={{ offset + page_count }}&limit={{ limit }}"
      hx-trigger="revealed"

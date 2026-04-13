@@ -57,7 +57,8 @@
     </div>
     <button @click="
               const faceIds = ids;
-              if (!faceIds.length || !confirm('Dismiss ' + faceIds.length + ' as non-faces?')) return;
+              if (!faceIds.length) return;
+              if (!(await confirmDialog({title: `Dismiss ${faceIds.length} as non-faces?`, message: 'This is permanent.', confirmLabel: 'Dismiss', danger: true}))) return;
               fetch('/api/findings/dismiss', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -75,17 +76,19 @@
   </div>
 
   <!-- Face grid with htmx infinite scroll -->
-  <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
+  <div data-lightbox-group
+       class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
     {% for face in findings %}
     {% set hint = finding_hints.get(face.id) %}
     <div class="relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150 group"
          data-face-id="{{ face.id }}"
+         data-finding-id="{{ face.id }}"
          @click="toggle({{ face.id }})"
          :class="selected.has({{ face.id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'">
       <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
            loading="lazy"
            alt="face"
-           @click.stop="$store.lightbox.show({{ face.source_id }})"
+           @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
            class="aspect-square w-full object-cover">
       {% if hint %}
       <!-- Hint overlay: click to quick-assign -->

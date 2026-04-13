@@ -1,0 +1,62 @@
+{# Confirmation dialog — fixed full-screen overlay. Rendered in base.html.
+   Populated by Alpine $store.dialog. Usage from any handler:
+
+     const ok = await $store.dialog.confirm({
+       title: 'Delete subject?',
+       message: 'All faces will become unassigned.',
+       confirmLabel: 'Delete',
+       danger: true
+     });
+     if (!ok) return;
+
+   Or via the global helper:
+     if (!await confirmDialog({...})) return;
+#}
+<div x-data
+     x-show="$store.dialog.open"
+     x-cloak
+     x-transition:enter="transition ease-out duration-150"
+     x-transition:enter-start="opacity-0"
+     x-transition:enter-end="opacity-100"
+     x-transition:leave="transition ease-in duration-100"
+     x-transition:leave-start="opacity-100"
+     x-transition:leave-end="opacity-0"
+     @keydown.escape.window="$store.dialog.open && $store.dialog.cancel()"
+     class="fixed inset-0 z-[150] flex items-center justify-center bg-black/70 backdrop-blur-sm"
+     @click.self="$store.dialog.cancel()"
+     role="dialog"
+     aria-modal="true"
+     :aria-labelledby="$store.dialog.open ? 'dialog-title' : null">
+
+  <div class="w-[min(90vw,28rem)] rounded-xl border border-gallery-border bg-gallery-card p-6 shadow-2xl"
+       x-transition:enter="transition ease-out duration-200"
+       x-transition:enter-start="opacity-0 scale-95"
+       x-transition:enter-end="opacity-100 scale-100">
+
+    <h2 id="dialog-title"
+        class="mb-2 text-lg font-display font-semibold text-gallery-text"
+        x-text="$store.dialog.title"></h2>
+
+    <p x-show="$store.dialog.message"
+       class="mb-5 whitespace-pre-line text-sm text-gallery-muted"
+       x-text="$store.dialog.message"></p>
+
+    <div class="flex justify-end gap-2">
+      <button @click="$store.dialog.cancel()"
+              type="button"
+              class="rounded-lg px-4 py-2 text-sm font-medium text-gallery-muted transition-colors
+                     hover:bg-gallery-card/60 hover:text-gallery-text cursor-pointer"
+              x-text="$store.dialog.cancelLabel"></button>
+
+      <button @click="$store.dialog.ok()"
+              type="button"
+              x-ref="confirmBtn"
+              x-effect="$store.dialog.open && $nextTick(() => $refs.confirmBtn.focus())"
+              class="rounded-lg px-4 py-2 text-sm font-medium transition-colors cursor-pointer"
+              :class="$store.dialog.danger
+                        ? 'bg-gallery-danger text-white hover:bg-gallery-danger/80'
+                        : 'bg-gallery-accent text-gallery-bg hover:bg-gallery-accent/80'"
+              x-text="$store.dialog.confirmLabel"></button>
+    </div>
+  </div>
+</div>

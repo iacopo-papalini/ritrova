@@ -1,5 +1,6 @@
 """Comprehensive tests for ritrova.db module."""
 
+import sqlite3
 from pathlib import Path
 from unittest import TestCase
 
@@ -7,6 +8,87 @@ import numpy as np
 import pytest
 
 from ritrova.db import FaceDB
+
+
+def _seed_legacy_db(
+    path: Path,
+    *,
+    sources: list[tuple[int, str, str]],
+    scans: list[tuple[int, int, str]],
+    findings: list[tuple[int, int, str | None]],
+) -> None:
+    """Write a pre-migration DB by hand: no `findings.scan_id` column.
+
+    Mimics the on-disk shape of an upgrade scenario so we can verify that
+    `FaceDB.__init__` successfully migrates + backfills + enforces NOT NULL.
+
+    `sources` rows: (id, file_path, type)
+    `scans`   rows: (id, source_id, scan_type)
+    `findings` rows: (source_id, embedding_dim, frame_path)
+    """
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE sources (
+            id INTEGER PRIMARY KEY,
+            file_path TEXT UNIQUE NOT NULL,
+            type TEXT NOT NULL DEFAULT 'photo',
+            width INTEGER NOT NULL DEFAULT 0,
+            height INTEGER NOT NULL DEFAULT 0,
+            taken_at TEXT, latitude REAL, longitude REAL
+        );
+        CREATE TABLE scans (
+            id INTEGER PRIMARY KEY,
+            source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+            scan_type TEXT NOT NULL,
+            scanned_at TEXT NOT NULL DEFAULT '2024-01-01',
+            detection_strategy TEXT NOT NULL DEFAULT 'unknown',
+            UNIQUE (source_id, scan_type)
+        );
+        CREATE TABLE subjects (
+            id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'person',
+            created_at TEXT NOT NULL DEFAULT '2024-01-01'
+        );
+        CREATE TABLE findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+            bbox_x INTEGER NOT NULL DEFAULT 0,
+            bbox_y INTEGER NOT NULL DEFAULT 0,
+            bbox_w INTEGER NOT NULL DEFAULT 0,
+            bbox_h INTEGER NOT NULL DEFAULT 0,
+            embedding BLOB NOT NULL,
+            person_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
+            cluster_id INTEGER,
+            confidence REAL NOT NULL DEFAULT 0.0,
+            species TEXT NOT NULL DEFAULT 'human',
+            detected_at TEXT NOT NULL DEFAULT '2024-01-01',
+            frame_path TEXT,
+            embedding_dim INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE dismissed_findings (
+            finding_id INTEGER PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE
+        );
+        CREATE UNIQUE INDEX idx_subjects_name_kind ON subjects(name, kind);
+        """
+    )
+    for sid, fp, t in sources:
+        conn.execute("INSERT INTO sources (id, file_path, type) VALUES (?, ?, ?)", (sid, fp, t))
+    for scan_id, source_id, scan_type in scans:
+        conn.execute(
+            "INSERT INTO scans (id, source_id, scan_type) VALUES (?, ?, ?)",
+            (scan_id, source_id, scan_type),
+        )
+    for source_id, dim, frame_path in findings:
+        emb = np.zeros(dim, dtype=np.float32)
+        emb[0] = 1.0  # non-empty blob for length() check
+        conn.execute(
+            "INSERT INTO findings (source_id, embedding, embedding_dim, frame_path) "
+            "VALUES (?, ?, ?, ?)",
+            (source_id, emb.tobytes(), dim, frame_path),
+        )
+    conn.commit()
+    conn.close()
 
 
 class TestSourceOperations(TestCase):
@@ -69,10 +151,12 @@ def _add_source_with_finding(
     embedding: np.ndarray | None = None,
 ) -> tuple[int, int]:
     """Helper: add a source + one finding, return (source_id, finding_id)."""
+    from ._helpers import add_findings
+
     pid = db.add_source(path, width=100, height=100)
     dim = 768 if species in FaceDB.PET_SPECIES else 512
     emb = embedding if embedding is not None else _make_embedding(dim=dim)
-    db.add_findings_batch([(pid, (10, 10, 50, 50), emb, 0.95)], species=species)
+    add_findings(db, [(pid, (10, 10, 50, 50), emb, 0.95)], species=species)
     findings = db.get_source_findings(pid)
     return pid, findings[0].id
 
@@ -83,9 +167,11 @@ class TestFindingOperations(TestCase):
         self.db = db
 
     def test_add_and_get_finding(self) -> None:
+        from ._helpers import add_findings
+
         pid = self.db.add_source("/test/photo.jpg", width=100, height=100)
         emb = _make_embedding()
-        self.db.add_findings_batch([(pid, (10, 20, 30, 40), emb, 0.95)])
+        add_findings(self.db, [(pid, (10, 20, 30, 40), emb, 0.95)])
         findings = self.db.get_source_findings(pid)
         assert len(findings) == 1
         f = findings[0]
@@ -240,8 +326,9 @@ class TestFindingOperations(TestCase):
 
 class TestSubjectOperations(TestCase):
     @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
+    def _setup_db(self, db: FaceDB, tmp_path: Path) -> None:
         self.db = db
+        self.tmp_path = tmp_path
 
     def test_create_subject(self) -> None:
         sid = self.db.create_subject("Alice")
@@ -337,6 +424,202 @@ class TestSubjectOperations(TestCase):
         sources = self.db.get_subject_sources(sid)
         assert len(sources) == 1
         assert sources[0].id == source_id
+
+    def test_record_scan_returns_id(self) -> None:
+        sid = self.db.add_source("/test/p.jpg", width=10, height=10)
+        scan_id = self.db.record_scan(sid, "human")
+        assert isinstance(scan_id, int)
+        assert scan_id > 0
+
+    def test_add_findings_batch_requires_scan_id_keyword(self) -> None:
+        sid = self.db.add_source("/test/p.jpg", width=10, height=10)
+        emb = _make_embedding()
+        # Positional scan_id is rejected (kwarg-only).
+        with pytest.raises(TypeError):
+            self.db.add_findings_batch([(sid, (0, 0, 10, 10), emb, 0.9)], 1)
+        # Missing entirely is rejected too.
+        with pytest.raises(TypeError):
+            self.db.add_findings_batch([(sid, (0, 0, 10, 10), emb, 0.9)])
+
+    def test_delete_scan_cascades_to_findings(self) -> None:
+        sid = self.db.add_source("/test/p.jpg", width=10, height=10)
+        scan_id = self.db.record_scan(sid, "human")
+        self.db.add_findings_batch([(sid, (0, 0, 10, 10), _make_embedding(), 0.9)], scan_id=scan_id)
+        assert len(self.db.get_source_findings(sid)) == 1
+
+        result = self.db.delete_scan(scan_id)
+        assert result["deleted_findings"] == 1
+        assert result["deleted_with_assignments"] == 0
+        assert self.db.get_source_findings(sid) == []
+        # Scan row is gone.
+        assert (
+            self.db.conn.execute("SELECT 1 FROM scans WHERE id = ?", (scan_id,)).fetchone() is None
+        )
+
+    def test_delete_scan_counts_manual_assignments(self) -> None:
+        subject = self.db.create_subject("Alice")
+        sid = self.db.add_source("/test/p.jpg", width=10, height=10)
+        scan_id = self.db.record_scan(sid, "human")
+        self.db.add_findings_batch(
+            [
+                (sid, (0, 0, 10, 10), _make_embedding(), 0.9),
+                (sid, (5, 5, 10, 10), _make_embedding(), 0.9),
+            ],
+            scan_id=scan_id,
+        )
+        findings = self.db.get_source_findings(sid)
+        self.db.assign_finding_to_subject(findings[0].id, subject)
+
+        result = self.db.delete_scan(scan_id)
+        assert result["deleted_findings"] == 2
+        assert result["deleted_with_assignments"] == 1
+
+    def test_delete_scan_unknown_id_raises(self) -> None:
+        with pytest.raises(ValueError, match="No such scan"):
+            self.db.delete_scan(99999)
+
+    def test_find_scans_by_id_and_pattern(self) -> None:
+        s1 = self.db.add_source("/2024/jan/a.jpg", width=10, height=10)
+        s2 = self.db.add_source("/2024/feb/b.jpg", width=10, height=10)
+        s3 = self.db.add_source("/2025/jan/c.jpg", width=10, height=10)
+        sc1 = self.db.record_scan(s1, "human")
+        sc2 = self.db.record_scan(s2, "human")
+        self.db.record_scan(s3, "human")
+
+        # Pattern only — both 2024 sources match.
+        rows = self.db.find_scans(source_pattern="*2024*")
+        assert {r["id"] for r in rows} == {sc1, sc2}
+
+        # ID only — the single scan.
+        rows = self.db.find_scans(scan_id=sc1)
+        assert len(rows) == 1 and rows[0]["id"] == sc1
+        assert rows[0]["finding_count"] == 0
+
+        # Both filters — intersection.
+        rows = self.db.find_scans(scan_id=sc1, source_pattern="*feb*")
+        assert rows == []  # sc1 is on /jan/, doesn't match /feb/
+
+        # No filters — everything.
+        rows = self.db.find_scans()
+        assert len(rows) == 3
+
+    def test_findings_table_has_not_null_scan_id_after_migration(self) -> None:
+        info = self.db.conn.execute("PRAGMA table_info(findings)").fetchall()
+        scan_col = next(c for c in info if c["name"] == "scan_id")
+        assert scan_col["notnull"] == 1, "scan_id must be NOT NULL post-migration"
+
+    def test_backfill_links_legacy_findings_by_embedding_dim(self) -> None:
+        """Build a pre-migration DB by hand (no `scan_id` column), then open it via
+        FaceDB and assert the migration links each legacy finding to the right scan
+        based on embedding dimension."""
+        path = self.tmp_path / "legacy.db"
+        _seed_legacy_db(
+            path,
+            sources=[(1, "/legacy.jpg", "photo")],
+            scans=[(1, 1, "human"), (2, 1, "pet")],  # both scan types on same source
+            findings=[
+                # (source_id, dim, frame_path) — scan_id deliberately omitted
+                (1, 512, None),  # → human scan
+                (1, 768, None),  # → pet scan
+            ],
+        )
+
+        db = FaceDB(path)  # triggers ALTER + backfill + NOT NULL rebuild
+        try:
+            findings = db.get_source_findings(1)
+            assert {f.embedding_dim or len(f.embedding): f.scan_id for f in findings} == {
+                512: 1,
+                768: 2,
+            }
+        finally:
+            db.close()
+
+    def test_backfill_creates_synthetic_scan_for_orphan(self) -> None:
+        """A pre-migration finding whose scan row no longer exists → synthetic
+        `legacy_backfill` scan created and linked to it."""
+        path = self.tmp_path / "orphan.db"
+        _seed_legacy_db(
+            path,
+            sources=[(1, "/orphan.jpg", "photo")],
+            scans=[],  # no scan rows — finding is fully orphaned
+            findings=[(1, 512, None)],
+        )
+
+        db = FaceDB(path)
+        try:
+            scans = db.find_scans()
+            assert len(scans) == 1
+            assert scans[0]["scan_type"] == "human"
+            assert scans[0]["detection_strategy"] == "legacy_backfill"
+            assert scans[0]["finding_count"] == 1
+            # And the finding got linked to that synthetic scan.
+            findings = db.get_source_findings(1)
+            assert findings[0].scan_id == scans[0]["id"]
+        finally:
+            db.close()
+
+    def test_get_subject_sources_with_findings_videos(self) -> None:
+        """Filter to videos only; return each video paired with the subject's findings on it.
+
+        Regression guard: previously `SELECT s.*, f.*` collided on `id` and `dict(sqlite3.Row)`
+        kept only the first one (source's), so every Finding inherited the source's id. The
+        guard below asserts the **exact set** of finding ids per source matches what
+        `get_source_findings` returns (which is unambiguous), and uses two findings per video
+        so an off-by-one or id-substitution bug is detectable even when ids happen to align.
+        """
+        sid = self.db.create_subject("Alice")
+
+        # Two video sources, each with TWO findings assigned to Alice. Multiple findings per
+        # source means the buggy "all findings inherit source.id" output would collapse to a
+        # single finding (set len == 1) instead of the expected 2.
+        v1_sid = self.db.add_source(
+            "/test/movies/wedding.mp4", source_type="video", width=100, height=100
+        )
+        v2_sid = self.db.add_source(
+            "/test/movies/party.mp4", source_type="video", width=100, height=100
+        )
+        from ._helpers import add_findings
+
+        add_findings(
+            self.db,
+            [
+                (v1_sid, (0, 0, 10, 10), _make_embedding(), 0.9),
+                (v1_sid, (5, 5, 10, 10), _make_embedding(), 0.9),
+            ],
+            species="human",
+            frame_path="tmp/frames/v1.jpg",
+        )
+        add_findings(
+            self.db,
+            [
+                (v2_sid, (0, 0, 10, 10), _make_embedding(), 0.9),
+                (v2_sid, (5, 5, 10, 10), _make_embedding(), 0.9),
+            ],
+            species="human",
+            frame_path="tmp/frames/v2.jpg",
+        )
+        for f in self.db.get_source_findings(v1_sid) + self.db.get_source_findings(v2_sid):
+            self.db.assign_finding_to_subject(f.id, sid)
+
+        # A photo source with the same subject — should be excluded by the type filter.
+        photo_sid, photo_fid = _add_source_with_finding(self.db, path="/test/photos/p.jpg")
+        self.db.assign_finding_to_subject(photo_fid, sid)
+
+        videos = self.db.get_subject_sources_with_findings(sid, source_type="video")
+        assert {src.id for src, _ in videos} == {v1_sid, v2_sid}
+
+        canonical = {
+            v1_sid: {f.id for f in self.db.get_source_findings(v1_sid)},
+            v2_sid: {f.id for f in self.db.get_source_findings(v2_sid)},
+        }
+        for src, findings in videos:
+            assert src.type == "video"
+            # Set equality catches both id collapse (would yield fewer findings) and id mixup
+            # (would yield ids not present in the canonical per-source lookup).
+            assert {f.id for f in findings} == canonical[src.id]
+            for f in findings:
+                assert f.source_id == src.id
+                assert f.frame_path is not None
 
     def test_subject_kind_person(self) -> None:
         sid = self.db.create_subject("Alice", kind="person")

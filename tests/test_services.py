@@ -29,7 +29,9 @@ def _add_source_with_finding(
     # Use 768-dim for pet species to match real SigLIP embeddings
     dim = 768 if species in FaceDB.PET_SPECIES else 512
     emb = embedding if embedding is not None else _make_embedding(seed, dim=dim)
-    db.add_findings_batch([(pid, (10, 10, 50, 50), emb, 0.95)], species=species)
+    from ._helpers import add_findings
+
+    add_findings(db, [(pid, (10, 10, 50, 50), emb, 0.95)], species=species)
     findings = db.get_source_findings(pid)
     return pid, findings[0].id
 

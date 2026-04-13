@@ -2,29 +2,42 @@
 
 ## Open
 
+### FEAT-20: Together — filter by source type (photos / videos / either)
+**Reported:** 2026-04-13 | **Priority:** Low
+The Together page (`/together`) finds sources containing all selected subjects, but mixes photos and videos with no way to scope. Add a 3-way pill or radio next to the existing "Just them" checkbox: **Photos / Videos / Either** (default Either). Backend: extend the `get_sources_with_all_subjects` query (db.py) and the `/api/together-html` endpoint (app.py) with an optional `source_type` filter (`"photo"` / `"video"` / null). Frontend: add the control to `together.html`, pipe it through to the htmx fetch in `together_results.html` rendering.
+
 ### FEAT-16: Lightbox → open source detail page in new tab
-**Reported:** 2026-04-11 | **Priority:** Low
-From the lightbox (quick image view), add a button/link to open `/photos/{source_id}` in a new tab — the full detail page with all recognised faces and assignment controls.
+**Reported:** 2026-04-11 | **Closed:** 2026-04-13
+**Shipped:** External-link button added to the lightbox toolbar (left of Rotate). Links to `/photos/{photoId}` with `target="_blank" rel="noopener"`. Hidden via `x-show` when no photo is loaded.
 
 ### FEAT-17: Download original file from lightbox and source detail page
-**Reported:** 2026-04-11 | **Priority:** Low
-Add a "Download original" button to both the lightbox and the `/photos/{id}` source detail page. Serves the original file from disk (not the resized version). New endpoint `/api/sources/{id}/original` with `Content-Disposition: attachment`.
+**Reported:** 2026-04-11 | **Closed:** 2026-04-13
+**Shipped:** `GET /api/sources/{id}/original` returns the raw file via `FileResponse(filename=…)` — Starlette emits `Content-Disposition: attachment` and content-type is inferred from the extension. Works for both photo and video sources. Download buttons:
+- Lightbox toolbar — icon-only, left of the "Open details" link.
+- `/photos/{id}` header — labelled button at the right end of the header row.
+Client uses the `download` HTML attribute as a belt-and-suspenders on top of the server disposition. 3 tests cover: successful download (body == raw bytes, filename in Content-Disposition), 404 on unknown source, 404 when the file is missing from disk.
 
 ### FEAT-18: Arrow key navigation in lightbox
-**Reported:** 2026-04-11 | **Priority:** Medium
-Left/right arrow keys navigate between images when the lightbox was opened from a thumbnail grid (cluster detail, face samples, together results). The lightbox store needs a list of source IDs for the current context, and prev/next methods. Escape still closes.
+**Reported:** 2026-04-11 | **Closed:** 2026-04-13
+**Shipped:** Lightbox store refactored to hold an `items[]` list with an `index` cursor and `next()`/`prev()` methods (no wrap-around — arrow at end is a no-op). Sibling list is **derived from the DOM at click time** via the new `openFromGrid($el, mode)` helper: it walks to the nearest `[data-lightbox-group]` ancestor and collects all siblings carrying `data-finding-id` (or `data-source-id` for source-mode grids like Together). This works correctly with htmx-paginated grids because the DOM is authoritative when the user clicks. Visible left/right chevron buttons appear when `items.length > 1`, disabled at the ends. ArrowLeft/ArrowRight key handlers live on the lightbox overlay in `base.html`. Backwards-compatible: legacy `$store.lightbox.show(sourceId)` still works as a single-item open. Converted call sites: `face_grid`, `singleton_grid`, `subject_finding_grid`, `together_results`, `cluster_detail`, `singletons`, `subject_detail` (Faces tab).
 
 ### FEAT-19: Replace browser confirm() with app dialog
-**Reported:** 2026-04-11 | **Priority:** Medium
-Browser `confirm()` blocks the main thread, can't be styled, and looks out of place. Replace with an Alpine-driven modal dialog component — reusable across delete, merge, cross-species assign, dismiss. Needs a promise-based API so callers can `await` the result. Ties into BUG-20 (toast component for error feedback).
+**Reported:** 2026-04-11 | **Closed:** 2026-04-13
+**Shipped:** Alpine `$store.dialog` + reusable `partials/dialog.html` (backdrop-blurred, scale-in transition, auto-focuses the confirm button, Escape/backdrop click cancels). Promise-based API:
+```js
+const ok = await confirmDialog({ title, message, confirmLabel, cancelLabel, danger });
+```
+`window.confirmDialog(opts)` is the global helper; falls back to native `window.confirm` if invoked before Alpine boots. All 11 in-app `confirm()` call sites converted (`face_grid.html`, `subject_finding_grid.html`, `singletons.html`, `subject_detail.html` ×3, `cluster_detail.html` ×4, `photo.html`). Cross-species needs_confirm flow (BUG-19) now uses the dialog cleanly with a neutral Assign button; destructive actions (delete, dismiss, exclude, unassign) get the red `danger` variant.
 
 ### FEAT-14: Video findings browsing — frame viewer and subject video section
-**Reported:** 2026-04-11 | **Priority:** Medium
-Video findings have a `frame_path` (extracted JPEG in `tmp/frames/`) but no way to view them in the UI. The lightbox calls `/api/sources/{id}/image` which returns 404 for video sources. Needs:
-- A `/api/findings/{id}/frame` endpoint that serves the full frame JPEG for video findings (falls back to source image for photo findings)
-- Lightbox triggered by finding ID, not source ID, so it can show the right image
-- A "Videos" section on the subject detail page showing video sources that contain the subject, with frame thumbnails
-- Possibly inline video playback or a link to the source video file
+**Reported:** 2026-04-11 | **Closed:** 2026-04-13
+**Shipped:**
+- **`GET /api/findings/{id}/frame?max_size=1600`** serves the right image regardless of source type — extracted frame JPEG for video findings, resized source image for photo findings. Reuses `db.resolve_finding_image()` so the dispatch logic lives in one place.
+- **`GET /api/findings/{id}/info`** returns `{source_id, file_path, latitude, longitude, type}`. `file_path` is always the **source's** path (e.g., `wedding.mp4`), never the internal frame jpeg.
+- **Lightbox is finding-aware**: callers opening from a finding grid no longer pass `source_id`; the store hits the new `/api/findings/{id}/frame` and `/info` endpoints. Source-mode is preserved for grids that iterate sources (Together).
+- **Videos tab** on the subject detail page (third tab, conditional on `videos|length`). Each card shows a representative frame (first finding's thumbnail), filename, and finding count ("3 moments"). Click → opens the new full-screen `$store.videoPlayer` overlay with a native `<video controls autoplay>` streaming from `/api/sources/{id}/original`. Escape / backdrop click / X button closes.
+- New DB query: `get_subject_sources_with_findings(subject_id, source_type)` pairs each source with the subject's findings on it.
+- `subject_detail` route now passes `videos` and `video_groups` (grouped by month) to the template.
 
 ### FEAT-15: Together "alone" filter — exclude sources with other subjects
 **Reported:** 2026-04-11 | **Closed:** 2026-04-11

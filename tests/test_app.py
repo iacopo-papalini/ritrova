@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 from ritrova.app import create_app
 from ritrova.db import FaceDB
 
+from ._helpers import add_findings
+
 
 def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
     rng = np.random.default_rng(seed)
@@ -19,11 +21,36 @@ def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
 
 def _add_finding(db: FaceDB, path: str, seed: int = 42, species: str = "human") -> tuple[int, int]:
     """Add source + finding, return (source_id, finding_id)."""
+    from ._helpers import add_findings
+
     pid = db.add_source(path, width=100, height=100)
     dim = 768 if species in FaceDB.PET_SPECIES else 512
-    db.add_findings_batch([(pid, (10, 10, 50, 50), _emb(seed, dim=dim), 0.95)], species=species)
+    add_findings(db, [(pid, (10, 10, 50, 50), _emb(seed, dim=dim), 0.95)], species=species)
     findings = db.get_source_findings(pid)
     return pid, findings[0].id
+
+
+def _add_video_finding(
+    db: FaceDB, video_path: str, frame_path: str, seed: int = 42, species: str = "human"
+) -> tuple[int, int]:
+    """Add a video source + finding with a frame_path, return (source_id, finding_id).
+
+    `frame_path` is stored relative to the DB directory (e.g., "tmp/frames/foo.jpg") —
+    the caller is responsible for ensuring the file actually exists at db.db_path.parent / frame_path
+    before exercising endpoints that read it.
+    """
+    from ._helpers import add_findings
+
+    sid = db.add_source(video_path, source_type="video", width=100, height=100)
+    dim = 768 if species in FaceDB.PET_SPECIES else 512
+    add_findings(
+        db,
+        [(sid, (10, 10, 50, 50), _emb(seed, dim=dim), 0.95)],
+        species=species,
+        frame_path=frame_path,
+    )
+    findings = db.get_source_findings(sid)
+    return sid, findings[0].id
 
 
 class TestImageEndpoints(TestCase):
@@ -72,6 +99,95 @@ class TestImageEndpoints(TestCase):
 
     def test_source_image_404_unknown(self) -> None:
         resp = self.client.get("/api/sources/99999/image")
+        assert resp.status_code == 404
+
+    def test_source_original_returns_file_with_attachment(self) -> None:
+        source_id, _ = _add_finding(self.db, str(self.image_path), seed=1)
+        resp = self.client.get(f"/api/sources/{source_id}/original")
+        assert resp.status_code == 200
+        # Content-Disposition forces a download with the original filename.
+        disposition = resp.headers.get("content-disposition", "")
+        assert "attachment" in disposition
+        assert self.image_path.name in disposition
+        # Body is the raw file bytes, not a re-encoded thumbnail.
+        assert resp.content == self.image_path.read_bytes()
+
+    def test_source_original_404_unknown_source(self) -> None:
+        resp = self.client.get("/api/sources/99999/original")
+        assert resp.status_code == 404
+
+    def test_source_original_404_when_file_missing(self) -> None:
+        source_id, _ = _add_finding(self.db, str(self.image_path), seed=1)
+        self.image_path.unlink()
+        resp = self.client.get(f"/api/sources/{source_id}/original")
+        assert resp.status_code == 404
+
+    # ── /api/findings/{id}/frame  (FEAT-14) ───────────────────────────
+
+    def test_finding_frame_returns_jpeg_for_photo_finding(self) -> None:
+        """Photo findings: frame endpoint serves the resized source image."""
+        _, finding_id = _add_finding(self.db, str(self.image_path), seed=1)
+        resp = self.client.get(f"/api/findings/{finding_id}/frame")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+        assert len(resp.content) > 0
+
+    def test_finding_frame_returns_jpeg_for_video_finding(self) -> None:
+        """Video findings: frame endpoint serves the extracted frame JPEG."""
+        from PIL import Image
+
+        # Create a real JPEG frame at db.db_path.parent/tmp/frames/test_frame.jpg.
+        frame_rel = "tmp/frames/test_frame.jpg"
+        frame_abs = self.tmp / frame_rel
+        frame_abs.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (160, 90), color="green").save(str(frame_abs), "JPEG")
+
+        _, finding_id = _add_video_finding(self.db, "/some/video.mp4", frame_path=frame_rel, seed=2)
+        resp = self.client.get(f"/api/findings/{finding_id}/frame")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+        assert len(resp.content) > 0
+
+    def test_finding_frame_404_unknown_finding(self) -> None:
+        resp = self.client.get("/api/findings/99999/frame")
+        assert resp.status_code == 404
+
+    def test_finding_frame_404_when_frame_missing(self) -> None:
+        """Video finding with a stored frame_path that no longer exists on disk → 404."""
+        frame_rel = "tmp/frames/doomed.jpg"
+        # Intentionally do NOT create the file.
+        _, finding_id = _add_video_finding(
+            self.db, "/some/other_video.mp4", frame_path=frame_rel, seed=3
+        )
+        resp = self.client.get(f"/api/findings/{finding_id}/frame")
+        assert resp.status_code == 404
+
+    # ── /api/findings/{id}/info  (FEAT-14) ───────────────────────────
+
+    def test_finding_info_photo_returns_source_metadata(self) -> None:
+        source_id, finding_id = _add_finding(self.db, str(self.image_path), seed=1)
+        resp = self.client.get(f"/api/findings/{finding_id}/info")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["source_id"] == source_id
+        assert body["type"] == "photo"
+        assert body["file_path"].endswith("test_photo.jpg")
+
+    def test_finding_info_video_returns_source_metadata(self) -> None:
+        """`file_path` reflects the video's path, NOT the frame jpeg path."""
+        source_id, finding_id = _add_video_finding(
+            self.db, "/movies/wedding.mp4", frame_path="tmp/frames/x.jpg", seed=4
+        )
+        resp = self.client.get(f"/api/findings/{finding_id}/info")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["source_id"] == source_id
+        assert body["type"] == "video"
+        assert body["file_path"].endswith("wedding.mp4")
+        assert "tmp/frames" not in body["file_path"]
+
+    def test_finding_info_404_unknown(self) -> None:
+        resp = self.client.get("/api/findings/99999/info")
         assert resp.status_code == 404
 
 
@@ -234,8 +350,8 @@ class TestTogetherAPI(TestCase):
         sid_b = self.db.create_subject("Bob")
         # One source with both findings
         source_id = self.db.add_source("/group.jpg", width=100, height=100)
-        self.db.add_findings_batch([(source_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
-        self.db.add_findings_batch([(source_id, (50, 50, 30, 30), _emb(2), 0.9)], species="human")
+        add_findings(self.db, [(source_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
+        add_findings(self.db, [(source_id, (50, 50, 30, 30), _emb(2), 0.9)], species="human")
         findings = self.db.get_source_findings(source_id)
         self.db.assign_finding_to_subject(findings[0].id, sid_a)
         self.db.assign_finding_to_subject(findings[1].id, sid_b)
@@ -250,7 +366,7 @@ class TestTogetherAPI(TestCase):
         sid_b = self.db.create_subject("Bob")
         # Source with only Alice
         source_id = self.db.add_source("/solo.jpg", width=100, height=100)
-        self.db.add_findings_batch([(source_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
+        add_findings(self.db, [(source_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
         findings = self.db.get_source_findings(source_id)
         self.db.assign_finding_to_subject(findings[0].id, sid_a)
 
@@ -261,10 +377,8 @@ class TestTogetherAPI(TestCase):
         sid_human = self.db.create_subject("Eva", kind="person")
         sid_pet = self.db.create_subject("Figaro", kind="pet")
         source_id = self.db.add_source("/family.jpg", width=100, height=100)
-        self.db.add_findings_batch([(source_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
-        self.db.add_findings_batch(
-            [(source_id, (50, 50, 30, 30), _emb(2, dim=768), 0.9)], species="dog"
-        )
+        add_findings(self.db, [(source_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
+        add_findings(self.db, [(source_id, (50, 50, 30, 30), _emb(2, dim=768), 0.9)], species="dog")
         findings = self.db.get_source_findings(source_id)
         self.db.assign_finding_to_subject(findings[0].id, sid_human)
         self.db.assign_finding_to_subject(findings[1].id, sid_pet)
@@ -279,16 +393,16 @@ class TestTogetherAPI(TestCase):
         sid_c = self.db.create_subject("Charlie")
         # Source with Alice + Bob (alone=true should include)
         s1 = self.db.add_source("/duo.jpg", width=100, height=100)
-        self.db.add_findings_batch([(s1, (10, 10, 30, 30), _emb(10), 0.9)], species="human")
-        self.db.add_findings_batch([(s1, (50, 50, 30, 30), _emb(11), 0.9)], species="human")
+        add_findings(self.db, [(s1, (10, 10, 30, 30), _emb(10), 0.9)], species="human")
+        add_findings(self.db, [(s1, (50, 50, 30, 30), _emb(11), 0.9)], species="human")
         f1 = self.db.get_source_findings(s1)
         self.db.assign_finding_to_subject(f1[0].id, sid_a)
         self.db.assign_finding_to_subject(f1[1].id, sid_b)
         # Source with Alice + Bob + Charlie (alone=true should exclude)
         s2 = self.db.add_source("/trio.jpg", width=100, height=100)
-        self.db.add_findings_batch([(s2, (10, 10, 30, 30), _emb(12), 0.9)], species="human")
-        self.db.add_findings_batch([(s2, (50, 50, 30, 30), _emb(13), 0.9)], species="human")
-        self.db.add_findings_batch([(s2, (80, 80, 30, 30), _emb(14), 0.9)], species="human")
+        add_findings(self.db, [(s2, (10, 10, 30, 30), _emb(12), 0.9)], species="human")
+        add_findings(self.db, [(s2, (50, 50, 30, 30), _emb(13), 0.9)], species="human")
+        add_findings(self.db, [(s2, (80, 80, 30, 30), _emb(14), 0.9)], species="human")
         f2 = self.db.get_source_findings(s2)
         self.db.assign_finding_to_subject(f2[0].id, sid_a)
         self.db.assign_finding_to_subject(f2[1].id, sid_b)

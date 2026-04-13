@@ -119,6 +119,51 @@ def find_videos(photos_dir: Path) -> list[Path]:
     return unique
 
 
+def scan_one_photo_for_human(
+    db: FaceDB,
+    image_path: Path,
+    detector: FaceDetector,
+    min_confidence: float = 0.65,
+) -> tuple[bool, int]:
+    """Run a human-face scan on a single photo. Returns (success, n_faces).
+
+    Caller is responsible for `is_scanned()` gating (bulk loop) or for
+    `delete_scan()`-ing the prior scan first (rescan command). On success a
+    new scan row is recorded and findings are linked to it.
+    """
+    stored_path = db.to_relative(str(image_path.resolve()))
+    try:
+        detected_faces, width, height = detector.detect(image_path)
+    except OSError:
+        logger.warning("Error reading %s", image_path)
+        return (False, 0)
+    if width == 0 and height == 0:
+        return (False, 0)
+
+    taken_at = get_exif_date(image_path)
+    gps = get_exif_gps(image_path)
+    lat, lon = gps if gps else (None, None)
+    source_id = db.get_or_create_source(
+        stored_path,
+        source_type="photo",
+        width=width,
+        height=height,
+        taken_at=taken_at,
+        latitude=lat,
+        longitude=lon,
+    )
+    scan_id = db.record_scan(source_id, "human", detection_strategy="arcface_v1")
+
+    batch = [
+        (source_id, face["bbox"], face["embedding"], face["confidence"])
+        for face in detected_faces
+        if cast(float, face["confidence"]) >= min_confidence
+    ]
+    if batch:
+        db.add_findings_batch(batch, scan_id=scan_id)
+    return (True, len(batch))
+
+
 def scan_photos(
     db: FaceDB,
     photos_dir: Path,
@@ -149,42 +194,12 @@ def scan_photos(
                 )
             continue
 
-        try:
-            detected_faces, width, height = detector.detect(image_path)
-            if width == 0 and height == 0:
-                errors += 1
-                continue
-
-            taken_at = get_exif_date(image_path)
-            gps = get_exif_gps(image_path)
-            lat, lon = gps if gps else (None, None)
-            source_id = db.get_or_create_source(
-                stored_path,
-                source_type="photo",
-                width=width,
-                height=height,
-                taken_at=taken_at,
-                latitude=lat,
-                longitude=lon,
-            )
-
-            batch = [
-                (source_id, face["bbox"], face["embedding"], face["confidence"])
-                for face in detected_faces
-                if cast(float, face["confidence"]) >= min_confidence
-            ]
-
-            if batch:
-                db.add_findings_batch(batch)
-                faces_found += len(batch)
-
-            db.record_scan(source_id, "human", detection_strategy="arcface_v1")
-            processed += 1
-
-        except OSError:
-            logger.warning("Error reading %s", image_path)
+        success, n_faces = scan_one_photo_for_human(db, image_path, detector, min_confidence)
+        if not success:
             errors += 1
-            continue
+        else:
+            faces_found += n_faces
+            processed += 1
 
         if i % 100 == 0 or i == total:
             print(
@@ -291,6 +306,51 @@ def _extract_video_faces(
     return unique_faces
 
 
+def scan_one_video_for_human(
+    db: FaceDB,
+    video_path: Path,
+    detector: FaceDetector,
+    frames_dir: Path,
+    min_confidence: float = 0.65,
+    interval_sec: float = 2.0,
+    dedup_threshold: float = 0.6,
+) -> tuple[bool, int]:
+    """Run a human-face scan on a single video. Returns (success, n_faces)."""
+    abs_video = str(video_path.resolve())
+    stored_video = db.to_relative(abs_video)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        unique_faces = _extract_video_faces(
+            abs_video, detector, min_confidence, interval_sec, dedup_threshold
+        )
+    except OSError:
+        logger.warning("Error processing video %s", video_path)
+        return (False, 0)
+    if unique_faces is None:
+        return (False, 0)
+
+    h_frame, w_frame = (
+        (unique_faces[0]["height"], unique_faces[0]["width"]) if unique_faces else (0, 0)
+    )
+    source_id = db.get_or_create_source(
+        stored_video, source_type="video", width=w_frame, height=h_frame
+    )
+    scan_id = db.record_scan(source_id, "human", detection_strategy="arcface_v1")
+
+    vid_hash = hashlib.md5(abs_video.encode()).hexdigest()[:10]
+    for j, uf in enumerate(unique_faces):
+        frame_file = frames_dir / f"vid_{vid_hash}_{j}.jpg"
+        rgb = cv2.cvtColor(uf["frame"], cv2.COLOR_BGR2RGB)
+        Image.fromarray(rgb).save(str(frame_file), "JPEG", quality=85)
+        rel_frame = str(frame_file.relative_to(db.db_path.parent))
+        db.add_findings_batch(
+            [(source_id, uf["bbox"], uf["embedding"], uf["confidence"])],
+            scan_id=scan_id,
+            frame_path=rel_frame,
+        )
+    return (True, len(unique_faces))
+
+
 def scan_videos(
     db: FaceDB,
     photos_dir: Path,
@@ -304,8 +364,6 @@ def scan_videos(
     videos = find_videos(photos_dir)
     total = len(videos)
     logger.info("Found %d videos to process", total)
-
-    frames_dir.mkdir(parents=True, exist_ok=True)
 
     skipped = 0
     processed = 0
@@ -327,47 +385,14 @@ def scan_videos(
                 )
             continue
 
-        try:
-            unique_faces = _extract_video_faces(
-                abs_video,
-                detector,
-                min_confidence,
-                interval_sec,
-                dedup_threshold,
-            )
-            if unique_faces is None:
-                errors += 1
-                continue
-
-            # Get or create video source (one row per video file)
-            h_frame, w_frame = (
-                (unique_faces[0]["height"], unique_faces[0]["width"]) if unique_faces else (0, 0)
-            )
-            source_id = db.get_or_create_source(
-                stored_video, source_type="video", width=w_frame, height=h_frame
-            )
-
-            vid_hash = hashlib.md5(abs_video.encode()).hexdigest()[:10]
-            for j, uf in enumerate(unique_faces):
-                frame_file = frames_dir / f"vid_{vid_hash}_{j}.jpg"
-                rgb = cv2.cvtColor(uf["frame"], cv2.COLOR_BGR2RGB)
-                Image.fromarray(rgb).save(str(frame_file), "JPEG", quality=85)
-
-                # Store frame path relative to DB directory
-                rel_frame = str(frame_file.relative_to(db.db_path.parent))
-                db.add_findings_batch(
-                    [(source_id, uf["bbox"], uf["embedding"], uf["confidence"])],
-                    frame_path=rel_frame,
-                )
-                faces_found += 1
-
-            db.record_scan(source_id, "human", detection_strategy="arcface_v1")
-            processed += 1
-
-        except OSError:
-            logger.warning("Error processing video %s", video_path)
+        success, n_faces = scan_one_video_for_human(
+            db, video_path, detector, frames_dir, min_confidence, interval_sec, dedup_threshold
+        )
+        if not success:
             errors += 1
-            continue
+        else:
+            faces_found += n_faces
+            processed += 1
 
         if i % 10 == 0 or i == total:
             print(
@@ -386,6 +411,38 @@ def scan_videos(
     }
 
 
+def scan_one_photo_for_pets(
+    db: FaceDB,
+    image_path: Path,
+    pet_detector: Any,
+    min_confidence: float = 0.5,
+) -> tuple[bool, int]:
+    """Run a pet scan on a single photo. Returns (success, n_pets)."""
+    from PIL import Image as _Image
+    from PIL import ImageOps as _ImageOps
+
+    stored_path = db.to_relative(str(image_path.resolve()))
+    try:
+        detected = pet_detector.detect(image_path)
+        good = [p for p in detected if p["confidence"] >= min_confidence]
+        with _Image.open(image_path) as img:
+            oriented = _ImageOps.exif_transpose(img)
+            w, h = oriented.size
+    except OSError, ValueError:
+        logger.warning("Error processing %s", image_path)
+        return (False, 0)
+
+    source_id = db.get_or_create_source(stored_path, source_type="photo", width=w, height=h)
+    scan_id = db.record_scan(source_id, "pet", detection_strategy="siglip_v1")
+    for pet in good:
+        db.add_findings_batch(
+            [(source_id, pet["bbox"], pet["embedding"], pet["confidence"])],
+            scan_id=scan_id,
+            species=pet["species"],
+        )
+    return (True, len(good))
+
+
 def scan_pets(
     db: FaceDB,
     photos_dir: Path,
@@ -393,9 +450,6 @@ def scan_pets(
     min_confidence: float = 0.5,
 ) -> dict[str, int]:
     """Scan all photos for dogs and cats using YOLO + SigLIP."""
-    from PIL import Image as _Image
-    from PIL import ImageOps as _ImageOps
-
     images = find_images(photos_dir)
     total = len(images)
     logger.info("Found %d images to scan for pets", total)
@@ -419,31 +473,12 @@ def scan_pets(
                 )
             continue
 
-        try:
-            detected = pet_detector.detect(image_path)
-            good = [p for p in detected if p["confidence"] >= min_confidence]
-
-            with _Image.open(image_path) as img:
-                oriented = _ImageOps.exif_transpose(img)
-                w, h = oriented.size
-
-            # Find or create the source (may already exist from human scan)
-            source_id = db.get_or_create_source(stored_path, source_type="photo", width=w, height=h)
-
-            for pet in good:
-                db.add_findings_batch(
-                    [(source_id, pet["bbox"], pet["embedding"], pet["confidence"])],
-                    species=pet["species"],
-                )
-                pets_found += 1
-
-            db.record_scan(source_id, "pet", detection_strategy="siglip_v1")
-            processed += 1
-
-        except Exception:
-            logger.warning("Error processing %s", image_path)
+        success, n_pets = scan_one_photo_for_pets(db, image_path, pet_detector, min_confidence)
+        if not success:
             errors += 1
-            continue
+        else:
+            pets_found += n_pets
+            processed += 1
 
         if i % 50 == 0 or i == total:
             print(

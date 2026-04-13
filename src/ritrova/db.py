@@ -55,6 +55,9 @@ class Finding:
     species: str = "human"
     frame_path: str | None = None
     embedding_dim: int = 0
+    # 0 only as an in-memory default for tests/fixtures that don't round-trip via SQLite.
+    # Real DB rows always have scan_id NOT NULL after the migration.
+    scan_id: int = 0
 
 
 @dataclass
@@ -139,10 +142,142 @@ class FaceDB:
         for migration in [
             "ALTER TABLE scans ADD COLUMN detection_strategy TEXT NOT NULL DEFAULT 'unknown'",
             "ALTER TABLE findings ADD COLUMN embedding_dim INTEGER NOT NULL DEFAULT 0",
+            # Step A: add the column nullable so existing rows stay valid;
+            # backfill below will populate, then a table-rebuild enforces NOT NULL.
+            "ALTER TABLE findings ADD COLUMN scan_id INTEGER REFERENCES scans(id) ON DELETE CASCADE",
         ]:
             with contextlib.suppress(sqlite3.OperationalError):
                 self.conn.execute(migration)
+        # Index on scan_id supports DELETE-cascade and `find_scans` lookups.
+        with contextlib.suppress(sqlite3.OperationalError):
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_findings_scan ON findings(scan_id)")
         self.conn.commit()
+
+        self._backfill_finding_scan_ids()
+        self._enforce_finding_scan_id_not_null()
+
+    def _backfill_finding_scan_ids(self) -> None:
+        """One-time backfill: link every legacy finding to a scan.
+
+        Strategy:
+          1. 512-dim embedding → human scan on the same source.
+          2. 768-dim embedding → pet   scan on the same source.
+          3. Orphans (no matching scan): synthesize a `legacy_backfill` scan row
+             of the right type on that source and link the finding to it.
+
+        Idempotent: only touches rows where `scan_id IS NULL`.
+        """
+        # Quick exit if nothing to do (avoids the orphan SELECT on every startup).
+        null_count = self.conn.execute(
+            "SELECT COUNT(*) FROM findings WHERE scan_id IS NULL"
+        ).fetchone()[0]
+        if not null_count:
+            return
+
+        # Step 1: 512-dim → human scan.
+        self.conn.execute(
+            """
+            UPDATE findings
+            SET scan_id = (
+                SELECT sc.id FROM scans sc
+                WHERE sc.source_id = findings.source_id AND sc.scan_type = 'human'
+                LIMIT 1
+            )
+            WHERE scan_id IS NULL AND length(embedding) / 4 = 512
+            """
+        )
+        # Step 2: 768-dim → pet scan.
+        self.conn.execute(
+            """
+            UPDATE findings
+            SET scan_id = (
+                SELECT sc.id FROM scans sc
+                WHERE sc.source_id = findings.source_id AND sc.scan_type = 'pet'
+                LIMIT 1
+            )
+            WHERE scan_id IS NULL AND length(embedding) / 4 = 768
+            """
+        )
+        self.conn.commit()
+
+        # Step 3: synthesize scans for any remaining orphans.
+        orphans = self.conn.execute(
+            """
+            SELECT DISTINCT source_id, length(embedding) / 4 AS dim
+            FROM findings WHERE scan_id IS NULL
+            """
+        ).fetchall()
+        now = self._now()
+        for source_id, dim in orphans:
+            scan_type = "human" if dim == 512 else "pet"
+            cur = self.conn.execute(
+                "INSERT INTO scans (source_id, scan_type, scanned_at, detection_strategy) "
+                "VALUES (?, ?, ?, 'legacy_backfill')",
+                (source_id, scan_type, now),
+            )
+            self.conn.execute(
+                "UPDATE findings SET scan_id = ? "
+                "WHERE source_id = ? AND scan_id IS NULL AND length(embedding) / 4 = ?",
+                (cur.lastrowid, source_id, dim),
+            )
+        self.conn.commit()
+
+    def _enforce_finding_scan_id_not_null(self) -> None:
+        """Enforce `findings.scan_id NOT NULL` via table rebuild.
+
+        SQLite can't `ALTER COLUMN ... SET NOT NULL`. Idempotent via PRAGMA introspection:
+        if `scan_id` is already non-nullable, this is a no-op. Aborts if any row still has
+        NULL `scan_id` (signals a broken backfill rather than silently dropping rows).
+        """
+        info = self.conn.execute("PRAGMA table_info(findings)").fetchall()
+        scan_col = next((c for c in info if c["name"] == "scan_id"), None)
+        if scan_col is None or scan_col["notnull"] == 1:
+            return  # column missing entirely (shouldn't happen) or already enforced
+
+        null_count = self.conn.execute(
+            "SELECT COUNT(*) FROM findings WHERE scan_id IS NULL"
+        ).fetchone()[0]
+        if null_count:
+            msg = (
+                f"Cannot enforce findings.scan_id NOT NULL: {null_count} rows still NULL "
+                "after backfill — investigate before proceeding."
+            )
+            raise RuntimeError(msg)
+
+        self.conn.executescript(
+            """
+            BEGIN;
+            CREATE TABLE findings_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+                scan_id INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+                bbox_x INTEGER NOT NULL,
+                bbox_y INTEGER NOT NULL,
+                bbox_w INTEGER NOT NULL,
+                bbox_h INTEGER NOT NULL,
+                embedding BLOB NOT NULL,
+                person_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
+                cluster_id INTEGER,
+                confidence REAL NOT NULL DEFAULT 0.0,
+                species TEXT NOT NULL DEFAULT 'human',
+                detected_at TEXT NOT NULL,
+                frame_path TEXT,
+                embedding_dim INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO findings_new
+                SELECT id, source_id, scan_id, bbox_x, bbox_y, bbox_w, bbox_h,
+                       embedding, person_id, cluster_id, confidence, species,
+                       detected_at, frame_path, embedding_dim
+                FROM findings;
+            DROP TABLE findings;
+            ALTER TABLE findings_new RENAME TO findings;
+            CREATE INDEX idx_findings_source  ON findings(source_id);
+            CREATE INDEX idx_findings_person  ON findings(person_id);
+            CREATE INDEX idx_findings_cluster ON findings(cluster_id);
+            CREATE INDEX idx_findings_scan    ON findings(scan_id);
+            COMMIT;
+            """
+        )
 
     @_locked
     def run(self, sql: str, params: tuple[Any, ...] = ()) -> None:
@@ -256,14 +391,83 @@ class FaceDB:
     @_locked
     def record_scan(
         self, source_id: int, scan_type: str, detection_strategy: str = "unknown"
-    ) -> None:
-        """Record that a scan has been performed on a source."""
-        self.conn.execute(
-            "INSERT OR IGNORE INTO scans (source_id, scan_type, scanned_at, detection_strategy) "
+    ) -> int:
+        """Insert a scan row and return its id.
+
+        Callers MUST gate on `is_scanned()` first (UNIQUE on (source_id, scan_type)
+        will raise otherwise). Rescans must `delete_scan()` the old one first.
+        """
+        cur = self.conn.execute(
+            "INSERT INTO scans (source_id, scan_type, scanned_at, detection_strategy) "
             "VALUES (?, ?, ?, ?)",
             (source_id, scan_type, self._now(), detection_strategy),
         )
         self.conn.commit()
+        scan_id = cur.lastrowid
+        if scan_id is None:
+            msg = "INSERT returned no lastrowid for scan"
+            raise RuntimeError(msg)
+        return scan_id
+
+    @_locked
+    def delete_scan(self, scan_id: int) -> dict[str, int]:
+        """Delete a scan and (via ON DELETE CASCADE) all its findings.
+
+        Returns counts {`deleted_findings`, `deleted_with_assignments`} for caller
+        confirmation prompts. Raises ValueError if the scan doesn't exist.
+        """
+        scan = self.conn.execute("SELECT id FROM scans WHERE id = ?", (scan_id,)).fetchone()
+        if not scan:
+            msg = f"No such scan: {scan_id}"
+            raise ValueError(msg)
+        deleted_findings = self.conn.execute(
+            "SELECT COUNT(*) FROM findings WHERE scan_id = ?", (scan_id,)
+        ).fetchone()[0]
+        deleted_with_assignments = self.conn.execute(
+            "SELECT COUNT(*) FROM findings WHERE scan_id = ? AND person_id IS NOT NULL",
+            (scan_id,),
+        ).fetchone()[0]
+        # ON DELETE CASCADE on findings.scan_id handles the children.
+        self.conn.execute("DELETE FROM scans WHERE id = ?", (scan_id,))
+        self.conn.commit()
+        return {
+            "deleted_findings": int(deleted_findings),
+            "deleted_with_assignments": int(deleted_with_assignments),
+        }
+
+    @_locked
+    def find_scans(
+        self, scan_id: int | None = None, source_pattern: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List scans matching the given filters (AND semantics; both optional).
+
+        Returns dicts with keys: id, source_id, source_path, scan_type, scanned_at,
+        detection_strategy, finding_count.
+
+        `source_pattern` uses SQLite GLOB syntax (`*`, `?`) on `sources.file_path`.
+        """
+        clauses = []
+        params: list[Any] = []
+        if scan_id is not None:
+            clauses.append("sc.id = ?")
+            params.append(scan_id)
+        if source_pattern is not None:
+            clauses.append("s.file_path GLOB ?")
+            params.append(source_pattern)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(
+            f"""
+            SELECT sc.id, sc.source_id, s.file_path AS source_path, sc.scan_type,
+                   sc.scanned_at, sc.detection_strategy,
+                   (SELECT COUNT(*) FROM findings f WHERE f.scan_id = sc.id) AS finding_count
+            FROM scans sc
+            JOIN sources s ON s.id = sc.source_id
+            {where}
+            ORDER BY sc.scanned_at DESC, sc.id
+            """,
+            tuple(params),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     @_locked
     def get_source(self, source_id: int) -> Source | None:
@@ -303,17 +507,24 @@ class FaceDB:
     def add_findings_batch(
         self,
         findings_data: list[tuple[int, tuple[int, int, int, int], np.ndarray, float]],
+        *,
+        scan_id: int,
         species: str = "human",
         frame_path: str | None = None,
     ) -> None:
-        """Add multiple findings in a single transaction."""
+        """Add multiple findings in a single transaction.
+
+        `scan_id` is keyword-only and required: every finding must trace to the scan
+        that produced it, so a faulty scan can be pruned without losing curation
+        elsewhere on the same source.
+        """
         now = self._now()
         self.conn.executemany(
             "INSERT INTO findings (source_id, bbox_x, bbox_y, bbox_w, bbox_h, "
-            "embedding, confidence, detected_at, species, frame_path, embedding_dim) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "embedding, confidence, detected_at, species, frame_path, embedding_dim, scan_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                (sid, *bbox, emb.tobytes(), conf, now, species, frame_path, len(emb))
+                (sid, *bbox, emb.tobytes(), conf, now, species, frame_path, len(emb), scan_id)
                 for sid, bbox, emb, conf in findings_data
             ],
         )
@@ -826,6 +1037,89 @@ class FaceDB:
             (subject_id,),
         ).fetchall()
         return [Source(**dict(r)) for r in rows]
+
+    @_locked
+    def get_subject_sources_with_findings(
+        self, subject_id: int, source_type: str
+    ) -> list[tuple[Source, list[Finding]]]:
+        """Sources of a given type containing the subject, each paired with the subject's findings on it.
+
+        Used by the Videos tab on the subject detail page — groups findings by source so each video
+        card can show a thumbnail (from one of the findings) and a count of appearances.
+        """
+        # Explicit aliases: `SELECT s.*, f.*` collides on `id` and `dict(sqlite3.Row)` silently keeps
+        # only the first one (source's), which made every Finding inherit the source's id.
+        rows = self.conn.execute(
+            """
+            SELECT
+                s.id        AS s_id,
+                s.file_path AS s_file_path,
+                s.type      AS s_type,
+                s.width     AS s_width,
+                s.height    AS s_height,
+                s.taken_at  AS s_taken_at,
+                s.latitude  AS s_latitude,
+                s.longitude AS s_longitude,
+                f.id            AS f_id,
+                f.bbox_x        AS f_bbox_x,
+                f.bbox_y        AS f_bbox_y,
+                f.bbox_w        AS f_bbox_w,
+                f.bbox_h        AS f_bbox_h,
+                f.embedding     AS f_embedding,
+                f.person_id     AS f_person_id,
+                f.cluster_id    AS f_cluster_id,
+                f.confidence    AS f_confidence,
+                f.detected_at   AS f_detected_at,
+                f.species       AS f_species,
+                f.frame_path    AS f_frame_path,
+                f.embedding_dim AS f_embedding_dim,
+                f.scan_id       AS f_scan_id
+            FROM sources s
+            JOIN findings f ON f.source_id = s.id
+            WHERE f.person_id = ? AND s.type = ?
+            ORDER BY s.file_path DESC, f.id
+            """,
+            (subject_id, source_type),
+        ).fetchall()
+
+        grouped: dict[int, tuple[Source, list[Finding]]] = {}
+        for row in rows:
+            if row["f_embedding"] is None:
+                continue
+            source_id = row["s_id"]
+            if source_id not in grouped:
+                source = Source(
+                    id=source_id,
+                    file_path=row["s_file_path"],
+                    type=row["s_type"],
+                    width=row["s_width"],
+                    height=row["s_height"],
+                    taken_at=row["s_taken_at"],
+                    latitude=row["s_latitude"],
+                    longitude=row["s_longitude"],
+                )
+                grouped[source_id] = (source, [])
+
+            finding = Finding(
+                id=row["f_id"],
+                source_id=source_id,
+                bbox_x=row["f_bbox_x"],
+                bbox_y=row["f_bbox_y"],
+                bbox_w=row["f_bbox_w"],
+                bbox_h=row["f_bbox_h"],
+                embedding=np.frombuffer(row["f_embedding"], dtype=np.float32),
+                person_id=row["f_person_id"],
+                cluster_id=row["f_cluster_id"],
+                confidence=row["f_confidence"],
+                detected_at=row["f_detected_at"],
+                species=row["f_species"] or "human",
+                frame_path=row["f_frame_path"],
+                embedding_dim=row["f_embedding_dim"] or 0,
+                scan_id=row["f_scan_id"],
+            )
+            grouped[source_id][1].append(finding)
+
+        return list(grouped.values())
 
     @_locked
     def dismiss_findings(self, finding_ids: list[int]) -> None:

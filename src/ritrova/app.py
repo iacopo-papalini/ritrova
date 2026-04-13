@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Body, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -422,6 +428,22 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         buf = resize_photo(resolved, min(max_size, 2000))
         return StreamingResponse(buf, media_type="image/jpeg")
 
+    @app.get("/api/sources/{source_id}/original")
+    def source_original(source_id: int) -> FileResponse:
+        """Serve the unmodified original file from disk with a download disposition."""
+        source = db.get_source(source_id)
+        if not source:
+            raise HTTPException(404)
+        resolved = db.resolve_path(source.file_path)
+        if not resolved.exists() or not resolved.is_file():
+            raise HTTPException(404)
+        return FileResponse(
+            resolved,
+            filename=resolved.name,
+            # FastAPI/Starlette infers Content-Type from the path; explicit None
+            # would force application/octet-stream. Let it auto-detect.
+        )
+
     @app.get("/api/sources/{source_id}/info")
     def source_info(source_id: int) -> JSONResponse:
         source = db.get_source(source_id)
@@ -432,6 +454,42 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "file_path": str(db.resolve_path(source.file_path)),
                 "latitude": source.latitude,
                 "longitude": source.longitude,
+                "type": source.type,
+            }
+        )
+
+    @app.get("/api/findings/{finding_id}/frame")
+    def finding_frame(finding_id: int, max_size: int = 1600) -> StreamingResponse:
+        """Serve the image for a finding — the extracted frame for video findings,
+        or the source image for photo findings. `resolve_finding_image` dispatches.
+        """
+        finding = db.get_finding(finding_id)
+        if not finding:
+            raise HTTPException(404)
+        resolved = db.resolve_finding_image(finding)
+        if not resolved.exists():
+            raise HTTPException(404)
+        buf = resize_photo(resolved, min(max_size, 2000))
+        return StreamingResponse(buf, media_type="image/jpeg")
+
+    @app.get("/api/findings/{finding_id}/info")
+    def finding_info(finding_id: int) -> JSONResponse:
+        """Metadata for the finding's underlying source. `file_path` is always the
+        source's path (not the frame path) so the lightbox shows the real filename.
+        """
+        finding = db.get_finding(finding_id)
+        if not finding:
+            raise HTTPException(404)
+        source = db.get_source(finding.source_id)
+        if not source:
+            raise HTTPException(404)
+        return JSONResponse(
+            {
+                "source_id": source.id,
+                "file_path": str(db.resolve_path(source.file_path)),
+                "latitude": source.latitude,
+                "longitude": source.longitude,
+                "type": source.type,
             }
         )
 
@@ -763,6 +821,11 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         all_sources = db.get_subject_sources(subject_id)
         sources = [s for s in all_sources if s.type == "photo"]
         source_groups = _group_by_month([(s, s.file_path) for s in sources], key="sources")
+        # Videos tab: pair each video source with the subject's findings on it (for thumbnail + count).
+        videos = db.get_subject_sources_with_findings(subject_id, source_type="video")
+        video_groups = _group_by_month(
+            [(entry, entry[0].file_path) for entry in videos], key="videos"
+        )
         all_subjects = db.get_subjects()
         return templates.TemplateResponse(
             name="subject_detail.html",
@@ -772,6 +835,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "finding_groups": finding_groups,
                 "sources": sources,
                 "source_groups": source_groups,
+                "videos": videos,
+                "video_groups": video_groups,
                 "all_subjects": all_subjects,
                 "kind": kind,
             },

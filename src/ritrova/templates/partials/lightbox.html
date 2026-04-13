@@ -2,6 +2,35 @@
 
 <!-- Lightbox toolbar — fixed top-right -->
 <div class="fixed top-4 right-4 z-[110] flex items-center gap-2">
+  <!-- Download original (resolved from current item's source) -->
+  <a x-show="$store.lightbox.downloadUrl"
+     :href="$store.lightbox.downloadUrl"
+     download
+     class="flex h-10 w-10 items-center justify-center rounded-full bg-black/70
+            text-gallery-text transition-colors hover:bg-gallery-accent hover:text-gallery-bg"
+     aria-label="Download original file"
+     title="Download original">
+    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+      <path fill-rule="evenodd"
+            d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0
+               011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414
+               1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z"
+            clip-rule="evenodd" />
+    </svg>
+  </a>
+  <!-- Open details page (new tab) -->
+  <a x-show="$store.lightbox.detailUrl"
+     :href="$store.lightbox.detailUrl"
+     target="_blank" rel="noopener"
+     class="flex h-10 w-10 items-center justify-center rounded-full bg-black/70
+            text-gallery-text transition-colors hover:bg-gallery-accent hover:text-gallery-bg"
+     aria-label="Open details page in new tab"
+     title="Open details page">
+    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+      <path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z" />
+      <path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z" />
+    </svg>
+  </a>
   <!-- Rotate button -->
   <button @click="$store.lightbox.rotate()"
           class="flex h-10 w-10 items-center justify-center rounded-full bg-black/70
@@ -33,9 +62,35 @@
   </button>
 </div>
 
+<!-- Prev / Next navigation chevrons (visible only when items.length > 1) -->
+<button x-show="$store.lightbox.hasNav" x-cloak
+        @click.stop="$store.lightbox.prev()"
+        :disabled="!$store.lightbox.canPrev"
+        class="absolute left-4 top-1/2 -translate-y-1/2 z-[110] flex h-12 w-12 items-center
+               justify-center rounded-full bg-black/70 text-gallery-text transition-colors
+               hover:bg-gallery-accent hover:text-gallery-bg
+               disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-black/70 disabled:hover:text-gallery-text"
+        aria-label="Previous">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+    <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd" />
+  </svg>
+</button>
+<button x-show="$store.lightbox.hasNav" x-cloak
+        @click.stop="$store.lightbox.next()"
+        :disabled="!$store.lightbox.canNext"
+        class="absolute right-4 top-1/2 -translate-y-1/2 z-[110] flex h-12 w-12 items-center
+               justify-center rounded-full bg-black/70 text-gallery-text transition-colors
+               hover:bg-gallery-accent hover:text-gallery-bg
+               disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-black/70 disabled:hover:text-gallery-text"
+        aria-label="Next">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
+  </svg>
+</button>
+
 <!-- Photo + path -->
 <div class="flex flex-col items-center gap-3">
-  <img :src="$store.lightbox.photoId ? `/api/sources/${$store.lightbox.photoId}/image?max_size=1600` : ''"
+  <img :src="$store.lightbox.imageUrl"
        :style="`transform: rotate(${$store.lightbox.rotation}deg); transition: transform 0.3s ease`"
        alt="Full resolution photo"
        class="max-h-[85vh] max-w-[95vw] object-contain rounded-lg shadow-2xl">

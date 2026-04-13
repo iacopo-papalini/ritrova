@@ -47,9 +47,14 @@
 
     {# Merge into another person #}
     <div class="w-56" x-data="subjectPicker({
-           onSelect(target) {
+           async onSelect(target) {
              const srcName = $el.closest('[data-subject-name]').dataset.subjectName;
-             if (!confirm('Merge all faces from ' + srcName + ' into ' + target.name + '?')) return;
+             const ok = await confirmDialog({
+               title: `Merge ${srcName} into ${target.name}?`,
+               message: `All faces currently assigned to ${srcName} will move to ${target.name}. ${srcName} will be deleted.`,
+               confirmLabel: 'Merge'
+             });
+             if (!ok) return;
              const fd = new FormData();
              fd.append('source_id', '{{ subject.id }}');
              fd.append('target_id', target.id);
@@ -64,7 +69,13 @@
     <div class="flex-1"></div>
 
     {# Delete #}
-    <button @click="if (confirm('Delete this person? All faces will become unassigned.'))
+    <button data-subject-name="{{ subject.name }}"
+            @click="if (await confirmDialog({
+                      title: `Delete ${$el.dataset.subjectName}?`,
+                      message: 'All faces assigned to this subject will become unassigned.',
+                      confirmLabel: 'Delete',
+                      danger: true
+                    }))
                       fetch('/api/subjects/{{ subject.id }}/delete', { method: 'POST' })
                         .then(r => { if (r.redirected) location.href = r.url; else location.href = '/{{ kind }}'; })"
             class="rounded-lg border border-gallery-danger/30 px-4 py-2 text-sm font-medium text-gallery-danger
@@ -86,21 +97,29 @@
               :class="tab === 'photos' ? 'bg-gallery-accent text-gallery-bg' : 'text-gallery-muted hover:text-gallery-text'">
         Photos ({{ sources|length }})
       </button>
+      {% if videos %}
+      <button @click="tab = 'videos'"
+              class="rounded-full px-5 py-1.5 font-medium transition-colors cursor-pointer"
+              :class="tab === 'videos' ? 'bg-gallery-accent text-gallery-bg' : 'text-gallery-muted hover:text-gallery-text'">
+        Videos ({{ videos|length }})
+      </button>
+      {% endif %}
     </div>
 
     {# ── Face samples tab (grouped by month) ────────────────── #}
-    <div x-show="tab === 'faces'">
+    <div x-show="tab === 'faces'" data-lightbox-group>
       {% for group in finding_groups %}
       <h3 class="mt-4 mb-2 text-sm font-medium text-gallery-muted first:mt-0">{{ group.month }}</h3>
       <div class="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-14 gap-1.5">
         {% for face in group.findings %}
-        <div class="group relative overflow-hidden rounded-lg transition-all duration-150 hover:scale-[1.03]">
+        <div class="group relative overflow-hidden rounded-lg transition-all duration-150 hover:scale-[1.03]"
+             data-finding-id="{{ face.id }}">
           <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
                loading="lazy"
                alt="face"
-               @click="$store.lightbox.show({{ face.source_id }})"
+               @click="$store.lightbox.openFromGrid($el, 'finding')"
                class="aspect-square w-full cursor-pointer object-cover">
-          <button @click.stop="if(confirm('Remove this face from ' + $el.closest('[data-subject-name]').dataset.subjectName + '?'))
+          <button @click.stop="if (await confirmDialog({title: `Remove this face from ${$el.closest('[data-subject-name]').dataset.subjectName}?`, confirmLabel: 'Remove', danger: true}))
                     fetch('/api/findings/{{ face.id }}/unassign', { method: 'POST' })
                       .then(r => { if(r.ok) $el.closest('.group').remove() })"
                   class="absolute top-1 right-1 z-10 hidden group-hover:flex h-6 w-6 items-center justify-center
@@ -158,6 +177,47 @@
       {% endfor %}
       {% endif %}
     </div>
+
+    {# ── Videos tab (grouped by month) ───────────────────────── #}
+    {% if videos %}
+    <div x-show="tab === 'videos'" x-cloak>
+      {% for group in video_groups %}
+      <h3 class="mt-4 mb-2 text-sm font-medium text-gallery-muted first:mt-0">{{ group.month }}</h3>
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+        {% for source, source_findings in group.videos %}
+        {% set filename = source.file_path.split('/')[-1] %}
+        <button type="button"
+                data-video-name="{{ filename }}"
+                @click="$store.videoPlayer.show({{ source.id }}, $el.dataset.videoName)"
+                class="group relative cursor-pointer overflow-hidden rounded-xl bg-gallery-card transition-all duration-200
+                       hover:ring-2 hover:ring-gallery-accent/40 hover:ring-offset-2 hover:ring-offset-gallery-bg
+                       text-left w-full">
+          {# /frame returns the full extracted frame (not the cropped face). #}
+          <img src="/api/findings/{{ source_findings[0].id }}/frame?max_size=400"
+               loading="lazy"
+               alt="video frame"
+               class="aspect-[4/3] w-full object-cover">
+          {# Centered play icon overlay #}
+          <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div class="rounded-full bg-black/60 p-3 transition-transform duration-200 group-hover:scale-110">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gallery-text" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7.5 6.75a.75.75 0 01.75-.75h.5l4.5 3a.75.75 0 010 1.5l-4.5 3h-.5a.75.75 0 01-.75-.75v-6z" clip-rule="evenodd" />
+              </svg>
+            </div>
+          </div>
+          <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent
+                      px-2 py-1.5">
+            <p class="truncate text-xs text-gallery-text/90" title="{{ filename }}">{{ filename }}</p>
+            <p class="text-[11px] text-gallery-muted">
+              {{ source_findings|length }} moment{{ 's' if source_findings|length != 1 else '' }}
+            </p>
+          </div>
+        </button>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
 
 </div>

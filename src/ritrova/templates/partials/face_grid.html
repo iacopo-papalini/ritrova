@@ -1,15 +1,16 @@
 {# Face grid fragment -- returned by /api/clusters/{id}/faces-html for htmx infinite scroll #}
 {% for face in findings %}
 <div class="group relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150"
+     data-finding-id="{{ face.id }}"
      @click="toggle({{ face.id }})"
      :class="selected.has({{ face.id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'">
   <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
        loading="lazy"
        alt="face"
-       @click.stop="$store.lightbox.show({{ face.source_id }})"
+       @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
        class="aspect-square w-full object-cover">
   <!-- Remove single face button -->
-  <button @click.stop="if(confirm('Remove this face from cluster?'))
+  <button @click.stop="if (await confirmDialog({title: 'Remove this face from cluster?', confirmLabel: 'Remove', danger: true}))
             fetch('/api/findings/exclude', {
               method: 'POST', headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({face_ids: [{{ face.id }}], cluster_id: {{ cluster_id }}})

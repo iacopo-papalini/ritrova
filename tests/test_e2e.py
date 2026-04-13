@@ -2,6 +2,7 @@
 
 import threading
 import time
+from collections.abc import Generator
 
 import numpy as np
 import pytest
@@ -11,6 +12,8 @@ from playwright.sync_api import Page, expect
 from ritrova.app import create_app
 from ritrova.db import FaceDB
 
+from ._helpers import add_findings
+
 
 def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
     rng = np.random.default_rng(seed)
@@ -19,7 +22,7 @@ def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
 
 
 @pytest.fixture(scope="module")
-def app_url(tmp_path_factory: pytest.TempPathFactory) -> str:
+def app_url(tmp_path_factory: pytest.TempPathFactory) -> Generator[str]:
     """Start a real Ritrova server with test data, return its URL."""
     tmp = tmp_path_factory.mktemp("e2e")
     db_path = tmp / "test.db"
@@ -35,28 +38,28 @@ def app_url(tmp_path_factory: pytest.TempPathFactory) -> str:
     # Seed data: 2 subjects with findings
     sid_alice = db.create_subject("Alice")
     source_id = db.add_source(str(img_path), width=200, height=200)
-    db.add_findings_batch([(source_id, (10, 10, 50, 50), _emb(1), 0.95)], species="human")
+    add_findings(db, [(source_id, (10, 10, 50, 50), _emb(1), 0.95)], species="human")
     findings = db.get_source_findings(source_id)
     db.assign_finding_to_subject(findings[0].id, sid_alice)
 
     sid_bob = db.create_subject("Bob")
     source_id2 = db.add_source(str(img_path) + "2", width=200, height=200)
-    db.add_findings_batch([(source_id2, (10, 10, 50, 50), _emb(2), 0.95)], species="human")
+    add_findings(db, [(source_id2, (10, 10, 50, 50), _emb(2), 0.95)], species="human")
     findings2 = db.get_source_findings(source_id2)
     db.assign_finding_to_subject(findings2[0].id, sid_bob)
 
     # Subject with gnarly characters: apostrophe, emoji, brackets
     sid_weird = db.create_subject("Al'ice \U0001f9d1<test>")
     source_id5 = db.add_source(str(img_path) + "5", width=200, height=200)
-    db.add_findings_batch([(source_id5, (10, 10, 50, 50), _emb(5), 0.95)], species="human")
+    add_findings(db, [(source_id5, (10, 10, 50, 50), _emb(5), 0.95)], species="human")
     findings5 = db.get_source_findings(source_id5)
     db.assign_finding_to_subject(findings5[0].id, sid_weird)
 
     # An unassigned cluster
     source_id3 = db.add_source(str(img_path) + "3", width=200, height=200)
-    db.add_findings_batch([(source_id3, (10, 10, 50, 50), _emb(3), 0.95)], species="human")
+    add_findings(db, [(source_id3, (10, 10, 50, 50), _emb(3), 0.95)], species="human")
     source_id4 = db.add_source(str(img_path) + "4", width=200, height=200)
-    db.add_findings_batch([(source_id4, (10, 10, 50, 50), _emb(3), 0.95)], species="human")
+    add_findings(db, [(source_id4, (10, 10, 50, 50), _emb(3), 0.95)], species="human")
     f3 = db.get_source_findings(source_id3)
     f4 = db.get_source_findings(source_id4)
     db.update_cluster_ids({f3[0].id: 100, f4[0].id: 100})
@@ -166,6 +169,49 @@ class TestLightbox:
         page.locator("img[alt='face']").first.click()
         expect(page.locator("[aria-label='Rotate image']")).to_be_visible(timeout=3000)
         page.locator("[aria-label='Rotate image']").click()
+
+    def test_lightbox_arrow_navigation(self, page: Page, app_url: str) -> None:
+        """FEAT-18: arrow keys navigate between findings in a multi-item lightbox.
+
+        The fixture seeds cluster 100 with two findings on distinct sources, so the
+        lightbox opens with a 2-item list and ArrowRight should swap the image src.
+        """
+        page.goto(f"{app_url}/clusters/100")
+        page.wait_for_load_state("networkidle")
+
+        # Open the lightbox on the first thumbnail. The full-resolution <img> has
+        # alt="Full resolution photo" — distinct from the small "face" thumbnail.
+        page.locator("img[alt='face']").first.click()
+        full_img = page.locator("img[alt='Full resolution photo']")
+        expect(full_img).to_be_visible(timeout=3000)
+
+        # Wait for src to be populated (Alpine resolves it on open).
+        page.wait_for_function(
+            "() => document.querySelector('img[alt=\"Full resolution photo\"]')?.getAttribute('src')",
+            timeout=3000,
+        )
+        first_src = full_img.get_attribute("src")
+        assert first_src and "/api/findings/" in first_src, (
+            f"Expected finding-keyed src, got {first_src!r}"
+        )
+
+        # Right arrow → second item; src should change.
+        page.keyboard.press("ArrowRight")
+        page.wait_for_function(
+            f"() => document.querySelector('img[alt=\"Full resolution photo\"]')"
+            f"?.getAttribute('src') !== {first_src!r}",
+            timeout=3000,
+        )
+        second_src = full_img.get_attribute("src")
+        assert second_src != first_src
+
+        # Left arrow → back to first.
+        page.keyboard.press("ArrowLeft")
+        page.wait_for_function(
+            f"() => document.querySelector('img[alt=\"Full resolution photo\"]')"
+            f"?.getAttribute('src') === {first_src!r}",
+            timeout=3000,
+        )
 
 
 class TestNavigation:

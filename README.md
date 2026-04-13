@@ -173,6 +173,33 @@ Options:
 - `--host 0.0.0.0` -- bind address
 - `--port 8787` -- port number
 
+### scans
+
+Inspect and prune scan records.
+
+```bash
+uv run ritrova scans list                                # all scans
+uv run ritrova scans list --source-pattern "2024/*"      # filter by GLOB on source path
+
+uv run ritrova scans prune --scan-id 42                  # prune one scan + its findings
+uv run ritrova scans prune --source-pattern "2024/*"     # prune every scan on matching sources
+uv run ritrova scans prune --scan-id 42 --source-pattern "2024/*"  # intersection of both
+```
+
+Both filters are optional but at least one is required. The prune operation prints how many findings will be deleted (and how many of those have manual subject assignments) and asks for confirmation. Pass `-y` to skip the prompt.
+
+### rescan
+
+Re-run scans on a single source. Use this when the original scan was faulty or detection has improved — by default `scan` skips already-scanned sources to protect curation.
+
+```bash
+uv run ritrova rescan path/to/photo.jpg                  # re-run every existing scan on this source
+uv run ritrova rescan path/to/photo.jpg --scan-type pet  # only re-run the pet scan
+uv run ritrova rescan path/to/video.mp4 -y               # skip the confirm
+```
+
+The source can be specified as an absolute path or a path relative to `PHOTOS_DIR`. Existing scans (and their findings, including manual subject assignments) on the source are deleted before the new scan runs — confirms before acting.
+
 ### migrate-paths
 
 Rewrite absolute paths in the DB to relative (using `PHOTOS_DIR` as base).

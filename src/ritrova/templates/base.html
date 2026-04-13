@@ -17,7 +17,7 @@
   <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
 
   <!-- App JS (must load before Alpine so alpine:init listener is registered) -->
-  <script defer src="/static/app.js?v=5"></script>
+  <script defer src="/static/app.js?v=8"></script>
 
   <!-- Alpine.js 3.x -->
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
@@ -104,11 +104,22 @@
 
   <!-- Lightbox container (populated by Alpine store) -->
   <div x-data x-show="$store.lightbox.open" x-cloak
-       @keydown.escape.window="$store.lightbox.close()"
+       @keydown.escape.window="$store.lightbox.open && $store.lightbox.close()"
+       @keydown.arrow-left.window="$store.lightbox.open && $store.lightbox.prev()"
+       @keydown.arrow-right.window="$store.lightbox.open && $store.lightbox.next()"
        class="fixed inset-0 z-[100] flex items-center justify-center bg-black/90"
        @click.self="$store.lightbox.close()">
     {% include "partials/lightbox.html" %}
   </div>
+
+  <!-- Video player overlay (populated by Alpine $store.videoPlayer) -->
+  {% include "partials/video_player.html" %}
+
+  <!-- Confirmation dialog (populated by Alpine $store.dialog) -->
+  {% include "partials/dialog.html" %}
+
+  <!-- Toast stack (populated by Alpine $store.toast) -->
+  {% include "partials/toast.html" %}
 
   {% block scripts %}{% endblock %}
 </body>

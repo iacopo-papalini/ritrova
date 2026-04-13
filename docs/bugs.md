@@ -17,9 +17,12 @@
 **Fix:** API returns 409 with `{error, needs_confirm}` on species/kind mismatch. UI shows `confirm()` dialog. On confirm, re-sends with `force=true`. DB methods accept `correct_species=True` to update the finding's species to match the subject's kind. Applies to cluster assign, single finding assign, and claim-faces endpoints.
 
 ### BUG-20: UI silently swallows server errors
-**Reported:** 2026-04-11 | **Status:** Open
-**Symptom:** When a server endpoint returns a 500 (or other error), fetch-based actions (face assignment, cluster actions) fail silently — no toast, no message, no visual feedback. The user has no idea the action failed.
-**Expected:** All mutation endpoints should surface errors to the user. At minimum: catch non-2xx responses from `fetch()` and show an error toast/banner. HTMX responses should use `htmx:responseError` to display a message.
+**Reported:** 2026-04-11 | **Closed:** 2026-04-13
+**Fix:** Introduced a global Alpine `$store.toast` (`app.js`) + reusable `partials/toast.html` (fixed bottom-right, level-coloured, dismissable, supports optional action button for future FEAT-5 undo).
+- `window.fetch` is wrapped to auto-toast any non-2xx response and network errors. 409 is excluded — it's reserved for `needs_confirm` flows (BUG-19).
+- `htmx:responseError` and `htmx:sendError` handlers replace the prior silent `console.error` and surface via the same store.
+- Opt-out via `{ skipErrorToast: true }` on the fetch init for call sites that intentionally handle their own errors.
+- Exposed `window.showToast(opts)` for inline handlers and legacy helpers.
 
 ### BUG-21: Jinja template variables in JS contexts need |tojson, not autoescape
 **Reported:** 2026-04-11 | **Closed:** 2026-04-11
