@@ -2,6 +2,22 @@
 
 ## Open
 
+### FEAT-16: Lightbox → open source detail page in new tab
+**Reported:** 2026-04-11 | **Priority:** Low
+From the lightbox (quick image view), add a button/link to open `/photos/{source_id}` in a new tab — the full detail page with all recognised faces and assignment controls.
+
+### FEAT-17: Download original file from lightbox and source detail page
+**Reported:** 2026-04-11 | **Priority:** Low
+Add a "Download original" button to both the lightbox and the `/photos/{id}` source detail page. Serves the original file from disk (not the resized version). New endpoint `/api/sources/{id}/original` with `Content-Disposition: attachment`.
+
+### FEAT-18: Arrow key navigation in lightbox
+**Reported:** 2026-04-11 | **Priority:** Medium
+Left/right arrow keys navigate between images when the lightbox was opened from a thumbnail grid (cluster detail, face samples, together results). The lightbox store needs a list of source IDs for the current context, and prev/next methods. Escape still closes.
+
+### FEAT-19: Replace browser confirm() with app dialog
+**Reported:** 2026-04-11 | **Priority:** Medium
+Browser `confirm()` blocks the main thread, can't be styled, and looks out of place. Replace with an Alpine-driven modal dialog component — reusable across delete, merge, cross-species assign, dismiss. Needs a promise-based API so callers can `await` the result. Ties into BUG-20 (toast component for error feedback).
+
 ### FEAT-14: Video findings browsing — frame viewer and subject video section
 **Reported:** 2026-04-11 | **Priority:** Medium
 Video findings have a `frame_path` (extracted JPEG in `tmp/frames/`) but no way to view them in the UI. The lightbox calls `/api/sources/{id}/image` which returns 404 for video sources. Needs:
