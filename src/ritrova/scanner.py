@@ -87,6 +87,15 @@ def _is_excluded(path: Path, excluded: set[Path]) -> bool:
     return any(resolved == ex or ex in resolved.parents for ex in excluded)
 
 
+def _is_skippable(path: Path) -> bool:
+    """True if a discovered file should be skipped (zero bytes, broken symlink, …)."""
+    try:
+        return path.stat().st_size == 0
+    except OSError:
+        # stat failed: broken symlink, permissions, vanished mid-scan — skip silently.
+        return True
+
+
 def find_images(photos_dir: Path) -> list[Path]:
     """Find all image files in directory tree, skipping dirs with .fr_exclude."""
     excluded = _excluded_dirs(photos_dir)
@@ -100,6 +109,8 @@ def find_images(photos_dir: Path) -> list[Path]:
         key = str(p).lower()
         if key not in seen:
             if excluded and _is_excluded(p, excluded):
+                continue
+            if _is_skippable(p):
                 continue
             seen.add(key)
             unique.append(p)
@@ -119,6 +130,8 @@ def find_videos(photos_dir: Path) -> list[Path]:
         key = str(p).lower()
         if key not in seen:
             if excluded and _is_excluded(p, excluded):
+                continue
+            if _is_skippable(p):
                 continue
             seen.add(key)
             unique.append(p)

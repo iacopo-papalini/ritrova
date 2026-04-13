@@ -25,28 +25,42 @@ def _make_jpeg(path: Path) -> None:
     img.save(str(path), "JPEG")
 
 
+def _stub_file(path: Path) -> None:
+    """Create a 1-byte file (find_* skip 0-byte files defensively)."""
+    path.write_bytes(b"x")
+
+
 class TestFindImages(TestCase):
     @pytest.fixture(autouse=True)
     def _setup_tmp(self, tmp_path: Path) -> None:
         self.tmp = tmp_path
 
     def test_discovers_jpg(self) -> None:
-        (self.tmp / "photo.jpg").touch()
-        (self.tmp / "photo.png").touch()
+        _stub_file(self.tmp / "photo.jpg")
+        _stub_file(self.tmp / "photo.png")
         result = find_images(self.tmp)
         assert len(result) == 1
         assert result[0].name == "photo.jpg"
 
     def test_case_insensitive(self) -> None:
-        (self.tmp / "photo.JPG").touch()
-        (self.tmp / "photo2.jpeg").touch()
+        _stub_file(self.tmp / "photo.JPG")
+        _stub_file(self.tmp / "photo2.jpeg")
         result = find_images(self.tmp)
         assert len(result) == 2
 
     def test_deduplicates_by_case(self) -> None:
-        (self.tmp / "photo.jpg").touch()
+        _stub_file(self.tmp / "photo.jpg")
         result = find_images(self.tmp)
         assert len(result) == 1
+
+    def test_skips_zero_byte_files(self) -> None:
+        """Defensive: 0-byte uploads from corrupted backups (real case from
+        2026-04-13 benchmark on `Foto Eva/2015/20151212_183725.jpg`) should
+        never reach the detector — they crash YOLO and waste an error slot."""
+        _stub_file(self.tmp / "good.jpg")
+        (self.tmp / "empty.jpg").touch()  # 0 bytes
+        result = find_images(self.tmp)
+        assert [p.name for p in result] == ["good.jpg"]
 
 
 class TestFindVideos(TestCase):
@@ -55,18 +69,24 @@ class TestFindVideos(TestCase):
         self.tmp = tmp_path
 
     def test_discovers_mp4(self) -> None:
-        (self.tmp / "clip.mp4").touch()
-        (self.tmp / "photo.jpg").touch()
+        _stub_file(self.tmp / "clip.mp4")
+        _stub_file(self.tmp / "photo.jpg")
         result = find_videos(self.tmp)
         assert len(result) == 1
         assert result[0].name == "clip.mp4"
 
     def test_discovers_multiple_extensions(self) -> None:
-        (self.tmp / "a.mp4").touch()
-        (self.tmp / "b.mov").touch()
-        (self.tmp / "c.avi").touch()
+        _stub_file(self.tmp / "a.mp4")
+        _stub_file(self.tmp / "b.mov")
+        _stub_file(self.tmp / "c.avi")
         result = find_videos(self.tmp)
         assert len(result) == 3
+
+    def test_skips_zero_byte_videos(self) -> None:
+        _stub_file(self.tmp / "good.mp4")
+        (self.tmp / "empty.mp4").touch()
+        result = find_videos(self.tmp)
+        assert [p.name for p in result] == ["good.mp4"]
 
 
 class TestIsDuplicate(TestCase):
