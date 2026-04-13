@@ -85,6 +85,40 @@ class TestIsDuplicate(TestCase):
         assert not _is_duplicate(emb, [], threshold=0.5)
 
 
+class TestGetExifGps(TestCase):
+    """get_exif_gps must never raise on malformed EXIF — one bad photo would
+    otherwise abort the whole scan-photos pass (regression: 2026-04-13 benchmark)."""
+
+    def test_returns_none_on_zero_denominator(self) -> None:
+        """Some cameras write IFDRational(0, 0) in GPS tags; PIL only blows
+        up when we cast to float deep inside the per-image scan loop."""
+        from unittest.mock import MagicMock, patch
+
+        from ritrova.scanner import get_exif_gps
+
+        class _BadRational:
+            def __float__(self) -> float:
+                msg = "division by zero"
+                raise ZeroDivisionError(msg)
+
+            def __bool__(self) -> bool:
+                return True
+
+        fake_exif = MagicMock()
+        # GPS IFD with malformed lat/lon (3-tuple of bad rationals each).
+        fake_exif.get_ifd.return_value = {
+            1: "N",
+            2: (_BadRational(), _BadRational(), _BadRational()),
+            3: "E",
+            4: (_BadRational(), _BadRational(), _BadRational()),
+        }
+        fake_img_cm = MagicMock()
+        fake_img_cm.__enter__.return_value.getexif.return_value = fake_exif
+
+        with patch("ritrova.scanner.Image.open", return_value=fake_img_cm):
+            assert get_exif_gps(Path("/fake.jpg")) is None  # must not raise
+
+
 class TestScanPhotos(TestCase):
     @pytest.fixture(autouse=True)
     def _setup(self, tmp_path: Path) -> None:

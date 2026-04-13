@@ -46,7 +46,13 @@ _GPS_IFD = 0x8825
 
 
 def get_exif_gps(image_path: Path) -> tuple[float, float] | None:
-    """Extract GPS lat/lon from EXIF. Returns (lat, lon) or None."""
+    """Extract GPS lat/lon from EXIF. Returns (lat, lon) or None.
+
+    Some cameras and editing tools write malformed GPS tags (e.g. an
+    IFDRational with a zero denominator). PIL only raises when we cast to
+    float, deep inside the per-image scan loop — without this guard one bad
+    photo crashes the whole scan-photos pass.
+    """
     try:
         with Image.open(image_path) as img:
             exif = img.getexif()
@@ -63,7 +69,7 @@ def get_exif_gps(image_path: Path) -> tuple[float, float] | None:
             lat = _dms_to_decimal(lat_dms, lat_ref)
             lon = _dms_to_decimal(lon_dms, lon_ref)
             return (lat, lon)
-    except OSError:
+    except OSError, ZeroDivisionError, ValueError, TypeError:
         return None
 
 
