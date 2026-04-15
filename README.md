@@ -1,4 +1,4 @@
-# FaceRecog
+# Ritrova
 
 Face recognition and tagging for photo collections. Detects faces in photos and videos, clusters them by identity using ArcFace embeddings, detects pets (dogs and cats) using YOLO + SigLIP, and provides a web UI for naming and searching people and animals across years of photos.
 
@@ -12,7 +12,7 @@ Built for Apple Silicon (CoreML acceleration) but works on any platform via CPU 
 ## Setup
 
 ```bash
-cd face_recog
+cd ritrova
 uv sync
 cp .env.example .env
 # Edit .env: set PHOTOS_DIR to your photos root directory
@@ -33,26 +33,26 @@ All configuration is via environment variables (loaded from `.env`):
 
 ```bash
 # 1. Scan photos for human faces
-uv run face-recog scan
+uv run ritrova scan
 
 # 2. Scan videos for human faces
-uv run face-recog scan-videos
+uv run ritrova scan-videos
 
 # 3. Scan photos for pets (dogs and cats)
-uv run face-recog scan-pets
+uv run ritrova scan-pets
 
 # 4. Cluster all faces (humans + dogs + cats)
-uv run face-recog cluster
+uv run ritrova cluster
 
 # 5. Launch the web UI to name clusters and review faces
-uv run face-recog serve
+uv run ritrova serve
 
 # 6. After naming some persons in the UI, bulk-assign remaining clusters
-uv run face-recog auto-assign
+uv run ritrova auto-assign
 
 # 7. Re-cluster if needed (adjusting threshold), then auto-assign again
-uv run face-recog cluster
-uv run face-recog auto-assign
+uv run ritrova cluster
+uv run ritrova auto-assign
 ```
 
 ## CLI commands
@@ -64,7 +64,7 @@ All commands use `PHOTOS_DIR` and `FACE_DB` from `.env` (or `--photos-dir` / `--
 Scan the photos directory for human faces.
 
 ```bash
-uv run face-recog scan
+uv run ritrova scan
 ```
 
 Walks the directory tree, finds JPG/JPEG files, detects faces using InsightFace/ArcFace, extracts 512-dimensional embeddings, and stores everything in the SQLite database. Paths are stored relative to `PHOTOS_DIR`.
@@ -79,7 +79,7 @@ Scanning is incremental: already-processed photos are skipped on re-run.
 Scan the photos directory for videos containing human faces.
 
 ```bash
-uv run face-recog scan-videos
+uv run ritrova scan-videos
 ```
 
 Finds MP4, MOV, AVI, and MKV files. Samples one frame every N seconds, detects faces, and deduplicates per video (keeping the highest-confidence detection for each unique identity). Extracted frames are saved as JPEG in `data/tmp/frames/`.
@@ -95,7 +95,7 @@ Scanning is incremental: already-processed videos are skipped on re-run.
 Scan the photos directory for dogs and cats.
 
 ```bash
-uv run face-recog scan-pets
+uv run ritrova scan-pets
 ```
 
 Uses YOLO for object detection (COCO classes: dog, cat) and SigLIP for visual embeddings. Pet detections are stored separately from human faces using a species column.
@@ -110,7 +110,7 @@ Scanning is incremental: already-processed photos are skipped on re-run.
 Cluster all detected faces by embedding similarity.
 
 ```bash
-uv run face-recog cluster
+uv run ritrova cluster
 ```
 
 Clusters humans, dogs, and cats separately in one pass. Uses FAISS-accelerated two-phase clustering: brute-force range search to find candidate neighbor pairs, then exact complete-linkage verification within each connected component. Complete linkage guarantees that ALL members of a cluster are within the distance threshold of each other, avoiding chaining.
@@ -126,7 +126,7 @@ Re-running cluster clears previous cluster assignments for each species independ
 Bulk-assign unnamed clusters to existing named persons by centroid similarity.
 
 ```bash
-uv run face-recog auto-assign
+uv run ritrova auto-assign
 ```
 
 Options:
@@ -138,7 +138,7 @@ Options:
 Auto-merge unnamed clusters whose centroids are highly similar.
 
 ```bash
-uv run face-recog auto-merge
+uv run ritrova auto-merge
 ```
 
 Options:
@@ -150,7 +150,7 @@ Options:
 Dismiss tiny and blurry faces from the database.
 
 ```bash
-uv run face-recog cleanup
+uv run ritrova cleanup
 ```
 
 Options:
@@ -164,7 +164,7 @@ Options:
 Start the web UI for browsing and naming faces.
 
 ```bash
-uv run face-recog serve
+uv run ritrova serve
 ```
 
 Opens at [http://localhost:8787](http://localhost:8787).
@@ -205,7 +205,7 @@ The source can be specified as an absolute path or a path relative to `PHOTOS_DI
 Rewrite absolute paths in the DB to relative (using `PHOTOS_DIR` as base).
 
 ```bash
-uv run face-recog migrate-paths
+uv run ritrova migrate-paths
 ```
 
 Run this once after setting `PHOTOS_DIR` if your database was created with absolute paths.
@@ -215,8 +215,8 @@ Run this once after setting `PHOTOS_DIR` if your database was created with absol
 Export database as JSON.
 
 ```bash
-uv run face-recog export              # JSON to stdout
-uv run face-recog export -o data.json # JSON to file
+uv run ritrova export              # JSON to stdout
+uv run ritrova export -o data.json # JSON to file
 ```
 
 ### stats
@@ -224,7 +224,7 @@ uv run face-recog export -o data.json # JSON to file
 Show database statistics.
 
 ```bash
-uv run face-recog stats
+uv run ritrova stats
 ```
 
 ## Web UI
@@ -245,7 +245,7 @@ Species toggle (human/pet) is available in the navigation bar.
 ## Project structure
 
 ```
-face_recog/
+ritrova/
 ├── pyproject.toml
 ├── .env.example           # Configuration template
 ├── adr/                   # Architecture Decision Records
@@ -253,7 +253,7 @@ face_recog/
 │   ├── faces.db           # SQLite database
 │   ├── yolo11m.pt         # YOLO model weights
 │   └── tmp/               # Thumbnails and video frames
-├── src/face_recog/
+├── src/ritrova/
 │   ├── cli.py             # CLI entry points (click)
 │   ├── db.py              # SQLite schema and operations (WAL, RLock)
 │   ├── detector.py        # InsightFace/ArcFace face detection + embeddings
