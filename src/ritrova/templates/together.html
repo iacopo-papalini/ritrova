@@ -15,13 +15,14 @@
       {% include "partials/subject_picker.html" %}
     </div>
 
-    <div x-data="{ searching: false, alone: false }">
-      <div class="flex items-center gap-4">
+    <div x-data="{ searching: false, alone: false, sourceType: 'either' }">
+      <div class="flex flex-wrap items-center gap-4">
         <button @click="
                   if (selected.length < 2 || searching) return;
                   searching = true;
                   const ids = selected.map(s => s.id).join(',');
-                  fetch('/api/together-html?person_ids=' + ids + '&alone=' + alone)
+                  const url = `/api/together-html?person_ids=${ids}&alone=${alone}&source_type=${sourceType}`;
+                  fetch(url)
                     .then(r => r.text())
                     .then(html => { document.getElementById('results').innerHTML = html; })
                     .finally(() => { searching = false; });
@@ -34,8 +35,25 @@
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
           </svg>
-          <span x-text="searching ? 'Searching...' : 'Find photos together'"></span>
+          <span x-text="searching ? 'Searching...' : 'Find sources together'"></span>
         </button>
+
+        {# 3-way source type pill — Photos / Videos / Either (default) #}
+        <div class="flex items-center rounded-full bg-gallery-card border border-gallery-border p-1 text-xs">
+          <template x-for="opt in [
+            {val: 'either', label: 'Either'},
+            {val: 'photo',  label: 'Photos'},
+            {val: 'video',  label: 'Videos'},
+          ]" :key="opt.val">
+            <button type="button"
+                    @click="sourceType = opt.val"
+                    :class="sourceType === opt.val
+                              ? 'bg-gallery-accent text-gallery-bg'
+                              : 'text-gallery-muted hover:text-gallery-text'"
+                    class="rounded-full px-3 py-1 font-medium transition-colors cursor-pointer"
+                    x-text="opt.label"></button>
+          </template>
+        </div>
 
         <label class="flex items-center gap-2 text-sm text-gallery-muted cursor-pointer select-none">
           <input type="checkbox" x-model="alone"

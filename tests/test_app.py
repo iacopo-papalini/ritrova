@@ -101,6 +101,28 @@ class TestImageEndpoints(TestCase):
         resp = self.client.get("/api/sources/99999/image")
         assert resp.status_code == 404
 
+    def test_source_image_for_video_falls_back_to_frame(self) -> None:
+        """Video sources have no raw image; the endpoint should serve a representative
+        finding's extracted frame so Together-grid thumbnails still render."""
+        from PIL import Image
+
+        frame_rel = "tmp/frames/fallback_frame.jpg"
+        frame_abs = self.tmp / frame_rel
+        frame_abs.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (160, 90), color="purple").save(str(frame_abs), "JPEG")
+
+        source_id, _ = _add_video_finding(self.db, "/some/video.mp4", frame_path=frame_rel, seed=9)
+        resp = self.client.get(f"/api/sources/{source_id}/image?max_size=200")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+        assert len(resp.content) > 0
+
+    def test_source_image_for_video_with_no_frames_404s(self) -> None:
+        """Edge case: video source with zero frame findings → 404 (no fallback)."""
+        sid = self.db.add_source("/empty_vid.mp4", source_type="video", width=100, height=100)
+        resp = self.client.get(f"/api/sources/{sid}/image")
+        assert resp.status_code == 404
+
     def test_source_original_returns_file_with_attachment(self) -> None:
         source_id, _ = _add_finding(self.db, str(self.image_path), seed=1)
         resp = self.client.get(f"/api/sources/{source_id}/original")
@@ -414,6 +436,67 @@ class TestTogetherAPI(TestCase):
         # With alone: only the duo
         resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}&alone=true")
         assert resp.json()["total"] == 1
+
+    # ── FEAT-20: source_type filter ─────────────────────────────────
+
+    def _seed_mixed_media(self, sid_a: int, sid_b: int) -> dict[str, int]:
+        """Create one photo source and one video source, each containing both subjects."""
+        photo_id = self.db.add_source("/vacation.jpg", source_type="photo", width=100, height=100)
+        add_findings(self.db, [(photo_id, (10, 10, 30, 30), _emb(1), 0.9)], species="human")
+        add_findings(self.db, [(photo_id, (50, 50, 30, 30), _emb(2), 0.9)], species="human")
+        for f in self.db.get_source_findings(photo_id):
+            self.db.assign_finding_to_subject(f.id, sid_a if f.bbox_x < 30 else sid_b)
+
+        video_id = self.db.add_source("/vacation.mp4", source_type="video", width=100, height=100)
+        add_findings(
+            self.db,
+            [(video_id, (10, 10, 30, 30), _emb(3), 0.9)],
+            species="human",
+            frame_path="tmp/frames/v1.jpg",
+        )
+        add_findings(
+            self.db,
+            [(video_id, (50, 50, 30, 30), _emb(4), 0.9)],
+            species="human",
+            frame_path="tmp/frames/v2.jpg",
+        )
+        for f in self.db.get_source_findings(video_id):
+            self.db.assign_finding_to_subject(f.id, sid_a if f.bbox_x < 30 else sid_b)
+
+        return {"photo": photo_id, "video": video_id}
+
+    def test_source_type_either_returns_both(self) -> None:
+        sid_a = self.db.create_subject("Alice")
+        sid_b = self.db.create_subject("Bob")
+        ids = self._seed_mixed_media(sid_a, sid_b)
+        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}")
+        returned = {s["id"] for s in resp.json()["sources"]}
+        assert returned == {ids["photo"], ids["video"]}
+
+    def test_source_type_photo_excludes_videos(self) -> None:
+        sid_a = self.db.create_subject("Alice")
+        sid_b = self.db.create_subject("Bob")
+        ids = self._seed_mixed_media(sid_a, sid_b)
+        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}&source_type=photo")
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["sources"][0]["id"] == ids["photo"]
+
+    def test_source_type_video_excludes_photos(self) -> None:
+        sid_a = self.db.create_subject("Alice")
+        sid_b = self.db.create_subject("Bob")
+        ids = self._seed_mixed_media(sid_a, sid_b)
+        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}&source_type=video")
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["sources"][0]["id"] == ids["video"]
+
+    def test_source_type_invalid_falls_back_to_either(self) -> None:
+        sid_a = self.db.create_subject("Alice")
+        sid_b = self.db.create_subject("Bob")
+        ids = self._seed_mixed_media(sid_a, sid_b)
+        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}&source_type=bogus")
+        assert {s["id"] for s in resp.json()["sources"]} == {ids["photo"], ids["video"]}
 
 
 class TestNamespaceCollision(TestCase):

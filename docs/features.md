@@ -3,8 +3,13 @@
 ## Open
 
 ### FEAT-20: Together — filter by source type (photos / videos / either)
-**Reported:** 2026-04-13 | **Priority:** Low
-The Together page (`/together`) finds sources containing all selected subjects, but mixes photos and videos with no way to scope. Add a 3-way pill or radio next to the existing "Just them" checkbox: **Photos / Videos / Either** (default Either). Backend: extend the `get_sources_with_all_subjects` query (db.py) and the `/api/together-html` endpoint (app.py) with an optional `source_type` filter (`"photo"` / `"video"` / null). Frontend: add the control to `together.html`, pipe it through to the htmx fetch in `together_results.html` rendering.
+**Reported:** 2026-04-13 | **Closed:** 2026-04-15
+**Shipped:**
+- `db.get_sources_with_all_subjects` and `count_sources_with_all_subjects` accept an optional `source_type` arg (`"photo"` / `"video"`). Filter is applied on the outer join (`WHERE s.type = ?`) so the together inner subquery stays species-agnostic.
+- `/api/together` and `/api/together-html` accept `source_type=either|photo|video` (default `either`); anything else normalises to `either`. The htmx pagination URL in `together_results.html` now threads `source_type` through alongside `alone`.
+- 3-way pill selector on `/together` next to the "Just them" checkbox. Alpine state: `sourceType` ∈ `{'either', 'photo', 'video'}`.
+- Bonus: `/api/sources/{id}/image` now falls back to a representative finding's extracted frame for **video** sources (previously 404'd), so video thumbnails in Together results and subject_detail's Photos tab render cleanly. Play-icon overlay on video cards in Together results makes the type obvious.
+- Tests: 5 new cases (either/photo/video filter, invalid source_type, video thumbnail fallback, video with no frames → 404).
 
 ### FEAT-16: Lightbox → open source detail page in new tab
 **Reported:** 2026-04-11 | **Closed:** 2026-04-13

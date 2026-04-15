@@ -421,7 +421,18 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         if not source:
             raise HTTPException(404)
         if source.type == "video":
-            raise HTTPException(404, "No image for video sources")
+            # No raw image for videos; fall back to the first finding's extracted
+            # frame so callers (Together grid, subject detail photo tab) can still
+            # render a representative thumbnail. 404 only if truly no frames.
+            findings = db.get_source_findings(source_id)
+            frame_finding = next((f for f in findings if f.frame_path), None)
+            if frame_finding is None:
+                raise HTTPException(404, "No frames available for this video")
+            resolved = db.resolve_finding_image(frame_finding)
+            if not resolved.exists():
+                raise HTTPException(404)
+            buf = resize_photo(resolved, min(max_size, 2000))
+            return StreamingResponse(buf, media_type="image/jpeg")
         resolved = db.resolve_path(source.file_path)
         if not resolved.exists():
             raise HTTPException(404)
@@ -663,18 +674,25 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     def favicon() -> JSONResponse:
         raise HTTPException(404)
 
+    def _normalize_source_type(raw: str) -> str | None:
+        """Accept 'photo' / 'video' as filters; anything else (default 'either') → None."""
+        return raw if raw in ("photo", "video") else None
+
     @app.get("/api/together")
-    def together_api(person_ids: str = "", alone: bool = False) -> JSONResponse:
+    def together_api(
+        person_ids: str = "", alone: bool = False, source_type: str = "either"
+    ) -> JSONResponse:
         """Find sources containing ALL given subject IDs (comma-separated)."""
         if not person_ids.strip():
             return JSONResponse({"sources": [], "total": 0})
         ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
-        sources = db.get_sources_with_all_subjects(ids, alone=alone)
+        type_filter = _normalize_source_type(source_type)
+        sources = db.get_sources_with_all_subjects(ids, alone=alone, source_type=type_filter)
         return JSONResponse(
             {
                 "total": len(sources),
                 "sources": [
-                    {"id": s.id, "file_path": s.file_path, "taken_at": s.taken_at}
+                    {"id": s.id, "file_path": s.file_path, "taken_at": s.taken_at, "type": s.type}
                     for s in sources[:200]
                 ],
             }
@@ -687,12 +705,16 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         offset: int = 0,
         limit: int = 60,
         alone: bool = False,
+        source_type: str = "either",
     ) -> HTMLResponse:
         if not person_ids.strip():
             return HTMLResponse("")
         ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
-        total = db.count_sources_with_all_subjects(ids, alone=alone)
-        sources = db.get_sources_with_all_subjects(ids, limit=limit, offset=offset, alone=alone)
+        type_filter = _normalize_source_type(source_type)
+        total = db.count_sources_with_all_subjects(ids, alone=alone, source_type=type_filter)
+        sources = db.get_sources_with_all_subjects(
+            ids, limit=limit, offset=offset, alone=alone, source_type=type_filter
+        )
         groups = _group_by_month([(s, s.file_path) for s in sources], key="sources")
         return templates.TemplateResponse(
             name="partials/together_results.html",
@@ -701,6 +723,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "total": total,
                 "person_ids": person_ids,
                 "alone": alone,
+                "source_type": source_type,
                 "offset": offset,
                 "limit": limit,
                 "page_count": len(sources),

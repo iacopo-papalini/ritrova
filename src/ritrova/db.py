@@ -990,38 +990,54 @@ class FaceDB:
         limit: int = 0,
         offset: int = 0,
         alone: bool = False,
+        source_type: str | None = None,
     ) -> list[Source]:
         """Find sources that contain ALL given subjects.
 
         If alone=True, exclude sources that also contain other named subjects.
+        If source_type is given ("photo" / "video"), only return sources of that type.
         """
         if not subject_ids:
             return []
         inner, params = self._together_query(subject_ids, alone)
-        pagination = ""
+        type_filter = ""
         full_params: tuple[int | str, ...] = params
+        if source_type:
+            type_filter = " WHERE s.type = ?"
+            full_params = (*full_params, source_type)
+        pagination = ""
         if limit > 0:
             pagination = " LIMIT ? OFFSET ?"
-            full_params = (*params, limit, offset)
+            full_params = (*full_params, limit, offset)
         rows = self.conn.execute(
             f"""
             SELECT s.* FROM sources s
             JOIN ({inner}) matched ON matched.source_id = s.id
+            {type_filter}
             ORDER BY s.file_path DESC{pagination}
             """,
             full_params,
         ).fetchall()
         return [Source(**dict(r)) for r in rows]
 
-    def count_sources_with_all_subjects(self, subject_ids: list[int], alone: bool = False) -> int:
-        """Count sources containing ALL given subjects."""
+    def count_sources_with_all_subjects(
+        self,
+        subject_ids: list[int],
+        alone: bool = False,
+        source_type: str | None = None,
+    ) -> int:
+        """Count sources containing ALL given subjects, optionally filtered by type."""
         if not subject_ids:
             return 0
         inner, params = self._together_query(subject_ids, alone)
-        row = self.conn.execute(
-            f"SELECT COUNT(*) FROM ({inner})",
-            params,
-        ).fetchone()
+        if source_type:
+            row = self.conn.execute(
+                f"SELECT COUNT(*) FROM sources s JOIN ({inner}) m ON m.source_id = s.id "
+                f"WHERE s.type = ?",
+                (*params, source_type),
+            ).fetchone()
+        else:
+            row = self.conn.execute(f"SELECT COUNT(*) FROM ({inner})", params).fetchone()
         return int(row[0]) if row else 0
 
     @_locked
