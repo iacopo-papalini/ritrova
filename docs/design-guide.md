@@ -26,11 +26,15 @@ Applies to: cluster detail assign, singleton assign, photo face assign, any futu
 
 ### Feedback: toasts, not reloads
 
-After every write action, show a toast notification (fixed bottom-right, auto-dismiss ~8s) with:
+After every write action, show a toast notification (fixed bottom-right) with:
 - What happened: "Assigned 14 faces to Teresa"
-- Undo button (see FEAT-5)
+- Undo button when the action is undoable (see FEAT-5)
 
-Never use `location.reload()` as the only feedback. Prefer local DOM updates (remove element, update count, swap content) with a toast confirmation.
+**Duration:**
+- **15s** for undoable toasts — the user needs time to read, decide, reach for the mouse. Matches FEAT-5 spec.
+- **8s** for informational / error toasts without an action.
+
+Never use `location.reload()` as the only feedback. Prefer local DOM updates (remove element, update count, swap content) with a toast confirmation. Exception: after a successful Undo, `location.reload()` is acceptable because the original surgical DOM update can't be straightforwardly inverted for every case.
 
 Applies to: assign, unassign, dismiss, exclude, merge, rename, delete.
 

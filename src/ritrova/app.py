@@ -31,6 +31,13 @@ from .services import (
     compute_cluster_hint,
     compute_singleton_hints,
 )
+from .undo import (
+    ClusterAssignPayload,
+    ClusterDismissPayload,
+    ClusterMergePayload,
+    FindingFieldsSnapshot,
+    UndoStore,
+)
 
 KindType = Literal["people", "pets"]
 # URL kind -> finding species (for finding-level filtering)
@@ -96,6 +103,9 @@ def _group_by_month(
 def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     app = FastAPI(title="Ritrova")
     db = FaceDB(db_path, base_dir=photos_dir)
+    undo_store = UndoStore()
+    # Expose on app.state so tests can clear/peek between cases.
+    app.state.undo_store = undo_store
 
     thumbnails_dir = Path(db_path).parent / "tmp" / "thumbnails"
     thumbnails_dir.mkdir(parents=True, exist_ok=True)
@@ -394,26 +404,37 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         )
 
     # ── API: images ────────────────────────────────────────
+    # Images are content-addressed by immutable keys: finding_id → bbox →
+    # source file, or source_id → file path. Source files are read-only per
+    # design principle #5 ("Respect the archive"), so the rendered bytes for
+    # a given URL never change. Tell the browser it can cache forever — this
+    # makes re-navigating cluster/subject pages instant instead of refetching
+    # hundreds of thumbnails on every visit.
+    IMMUTABLE_IMAGE_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
 
     @app.get("/api/findings/{finding_id}/thumbnail")
     def finding_thumbnail(finding_id: int, size: int = 150) -> StreamingResponse:
         size = min(size, 500)
         cache_path = thumbnails_dir / f"{finding_id}_{size}.jpg"
         if cache_path.exists():
-            return StreamingResponse(io.BytesIO(cache_path.read_bytes()), media_type="image/jpeg")
+            return StreamingResponse(
+                io.BytesIO(cache_path.read_bytes()),
+                media_type="image/jpeg",
+                headers=IMMUTABLE_IMAGE_HEADERS,
+            )
 
         finding = db.get_finding(finding_id)
         if not finding:
             raise HTTPException(404)
         resolved = db.resolve_finding_image(finding)
-        if not resolved.exists():
+        if resolved is None or not resolved.exists():
             raise HTTPException(404)
 
         buf = crop_face_thumbnail(
             resolved, finding.bbox_x, finding.bbox_y, finding.bbox_w, finding.bbox_h, size
         )
         cache_path.write_bytes(buf.getvalue())
-        return StreamingResponse(buf, media_type="image/jpeg")
+        return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
 
     @app.get("/api/sources/{source_id}/image")
     def source_image(source_id: int, max_size: int = 1600) -> StreamingResponse:
@@ -429,15 +450,15 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             if frame_finding is None:
                 raise HTTPException(404, "No frames available for this video")
             resolved = db.resolve_finding_image(frame_finding)
-            if not resolved.exists():
+            if resolved is None or not resolved.exists():
                 raise HTTPException(404)
             buf = resize_photo(resolved, min(max_size, 2000))
-            return StreamingResponse(buf, media_type="image/jpeg")
+            return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
         resolved = db.resolve_path(source.file_path)
         if not resolved.exists():
             raise HTTPException(404)
         buf = resize_photo(resolved, min(max_size, 2000))
-        return StreamingResponse(buf, media_type="image/jpeg")
+        return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
 
     @app.get("/api/sources/{source_id}/original")
     def source_original(source_id: int) -> FileResponse:
@@ -453,6 +474,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             filename=resolved.name,
             # FastAPI/Starlette infers Content-Type from the path; explicit None
             # would force application/octet-stream. Let it auto-detect.
+            headers=IMMUTABLE_IMAGE_HEADERS,
         )
 
     @app.get("/api/sources/{source_id}/info")
@@ -478,10 +500,10 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         if not finding:
             raise HTTPException(404)
         resolved = db.resolve_finding_image(finding)
-        if not resolved.exists():
+        if resolved is None or not resolved.exists():
             raise HTTPException(404)
         buf = resize_photo(resolved, min(max_size, 2000))
-        return StreamingResponse(buf, media_type="image/jpeg")
+        return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
 
     @app.get("/api/findings/{finding_id}/info")
     def finding_info(finding_id: int) -> JSONResponse:
@@ -505,6 +527,23 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         )
 
     # ── API: actions ───────────────────────────────────────
+
+    def _undo_hx_trigger(message: str, token: str) -> dict[str, str]:
+        """Build the HX-Trigger header that fires the client-side undo toast."""
+        payload = {"undoToast": {"message": message, "token": token}}
+        return {"HX-Trigger": json.dumps(payload)}
+
+    def _describe_cluster_dismiss(cluster_id: int, n: int) -> str:
+        noun = "face" if n == 1 else "faces"
+        return f"Dismissed {n} {noun} in cluster #{cluster_id}"
+
+    def _describe_cluster_merge(source_id: int, target_id: int, n: int) -> str:
+        noun = "face" if n == 1 else "faces"
+        return f"Merged cluster #{source_id} into #{target_id} ({n} {noun})"
+
+    def _describe_cluster_assign(subject_name: str, n: int) -> str:
+        noun = "face" if n == 1 else "faces"
+        return f"Assigned {n} {noun} to {subject_name}"
 
     def _next_similar_cluster(subject_id: int, cluster_id: int) -> str:
         """Find the unnamed cluster most similar to this subject, return redirect URL."""
@@ -538,21 +577,53 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         subject = db.get_subject(person_id)
         if not subject:
             raise HTTPException(404, "Subject not found")
+        # Snapshot the findings that assign_cluster_to_subject will actually
+        # mutate (it UPDATEs only where person_id IS NULL) so undo can flip
+        # exactly those rows back to NULL.
+        pending_ids = db.get_unassigned_cluster_finding_ids(cluster_id)
         try:
             db.assign_cluster_to_subject(cluster_id, person_id, force=force)
         except ValueError as e:
             return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
+        token = undo_store.put(
+            kind="cluster_assign",
+            description=_describe_cluster_assign(subject.name, len(pending_ids)),
+            payload=ClusterAssignPayload(
+                cluster_id=cluster_id,
+                subject_id=person_id,
+                assigned_finding_ids=pending_ids,
+            ),
+        )
+        message = _describe_cluster_assign(subject.name, len(pending_ids))
         if request.headers.get("HX-Request"):
-            return HTMLResponse("")
+            return HTMLResponse("", headers=_undo_hx_trigger(message, token))
+        # Non-htmx form post: the user is being redirected to the next cluster.
+        # The toast will be picked up on the new page by a /api/undo/peek poll.
         return RedirectResponse(_next_similar_cluster(person_id, cluster_id), status_code=303)
 
     @app.post("/api/clusters/{cluster_id}/dismiss")
     def dismiss_cluster(cluster_id: int) -> JSONResponse:
         """Dismiss all findings in a cluster as non-faces."""
         finding_ids = db.get_cluster_finding_ids(cluster_id)
-        if finding_ids:
-            db.dismiss_findings(finding_ids)
-        return JSONResponse({"ok": True, "dismissed": len(finding_ids)})
+        if not finding_ids:
+            return JSONResponse({"ok": True, "dismissed": 0})
+        # Snapshot person_id/cluster_id per finding so undo can both delete
+        # the dismissed_findings rows and restore prior assignments.
+        rows = db.snapshot_findings_fields(finding_ids)
+        snapshots = [
+            FindingFieldsSnapshot(finding_id=fid, person_id=pid, cluster_id=cid)
+            for fid, pid, cid in rows
+        ]
+        db.dismiss_findings(finding_ids)
+        message = _describe_cluster_dismiss(cluster_id, len(finding_ids))
+        token = undo_store.put(
+            kind="cluster_dismiss",
+            description=message,
+            payload=ClusterDismissPayload(cluster_id=cluster_id, snapshots=snapshots),
+        )
+        return JSONResponse(
+            {"ok": True, "dismissed": len(finding_ids), "undo_token": token, "message": message}
+        )
 
     @app.post("/api/clusters/merge", response_model=None)
     def merge_clusters_api(
@@ -561,10 +632,66 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         target_cluster: int = Form(...),
     ) -> JSONResponse | HTMLResponse:
         """Move all findings from source cluster into target cluster."""
+        # Snapshot the finding ids currently in the source cluster before the
+        # merge rewrites their cluster_id — undo flips them back to source.
+        moved_ids = db.get_cluster_finding_ids(source_cluster)
         db.merge_clusters(source_cluster, target_cluster)
+        message = _describe_cluster_merge(source_cluster, target_cluster, len(moved_ids))
+        token = undo_store.put(
+            kind="cluster_merge",
+            description=message,
+            payload=ClusterMergePayload(
+                source_cluster_id=source_cluster,
+                target_cluster_id=target_cluster,
+                moved_finding_ids=moved_ids,
+            ),
+        )
         if request.headers.get("HX-Request"):
-            return HTMLResponse("")
-        return JSONResponse({"ok": True})
+            return HTMLResponse("", headers=_undo_hx_trigger(message, token))
+        return JSONResponse({"ok": True, "undo_token": token, "message": message})
+
+    # ── FEAT-5: undo ───────────────────────────────────────
+
+    @app.get("/api/undo/peek")
+    def peek_undo() -> JSONResponse:
+        """Return the currently pending undo, if any. Used by the client on
+        page load (e.g. after a redirect) to restore the toast."""
+        entry = undo_store.peek()
+        if entry is None:
+            return JSONResponse({"pending": False})
+        return JSONResponse({"pending": True, "token": entry.token, "message": entry.description})
+
+    @app.post("/api/undo/{token}")
+    def apply_undo(token: str) -> JSONResponse:
+        """Consume the pending undo matching ``token`` and invert its effect.
+
+        Returns 404 if the token is missing, already consumed, or past its TTL.
+        Single-shot: a successful undo clears the slot.
+        """
+        entry = undo_store.pop(token)
+        if entry is None:
+            raise HTTPException(404, "Undo token missing, already used, or expired")
+
+        if entry.kind == "cluster_dismiss":
+            payload = entry.payload
+            assert isinstance(payload, ClusterDismissPayload)
+            db.restore_dismissed_findings(
+                [(s.finding_id, s.person_id, s.cluster_id) for s in payload.snapshots]
+            )
+        elif entry.kind == "cluster_merge":
+            payload = entry.payload
+            assert isinstance(payload, ClusterMergePayload)
+            db.restore_cluster_id(payload.moved_finding_ids, payload.source_cluster_id)
+        elif entry.kind == "cluster_assign":
+            payload = entry.payload
+            assert isinstance(payload, ClusterAssignPayload)
+            db.clear_person_id(payload.assigned_finding_ids)
+        else:
+            # Defensive — unknown kind means undo.py and app.py are out of
+            # sync and we'd silently do nothing. Fail loud.
+            raise HTTPException(500, f"Unknown undo kind: {entry.kind}")
+
+        return JSONResponse({"ok": True, "undone": entry.description})
 
     @app.post("/api/findings/dismiss")
     def dismiss_findings(face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:

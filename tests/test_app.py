@@ -91,6 +91,51 @@ class TestImageEndpoints(TestCase):
         resp = self.client.get("/api/findings/99999/thumbnail")
         assert resp.status_code == 404
 
+    def test_finding_thumbnail_404_when_finding_is_orphaned(self) -> None:
+        """An orphaned finding (source row deleted out from under it) must 404,
+        not 500. Previously ``resolve_finding_image`` raised ValueError which
+        bubbled to a 500; the new contract returns None so endpoints 404 cleanly."""
+        source_id, finding_id = _add_finding(self.db, str(self.image_path), seed=1)
+        # Orphan the finding by deleting its source directly.
+        self.db.conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+        self.db.conn.commit()
+
+        resp = self.client.get(f"/api/findings/{finding_id}/thumbnail?size=120")
+        assert resp.status_code == 404
+        # /frame must also 404 cleanly for the same finding.
+        resp = self.client.get(f"/api/findings/{finding_id}/frame")
+        assert resp.status_code == 404
+
+    def test_image_endpoints_set_immutable_cache_control(self) -> None:
+        """Images are content-addressed by immutable keys (finding_id, source_id);
+        the browser must cache them aggressively or every page nav re-fetches
+        hundreds of thumbnails."""
+        source_id, finding_id = _add_finding(self.db, str(self.image_path), seed=1)
+        expected = "public, max-age=31536000, immutable"
+
+        # Thumbnail — hits the cache-generation path on first request...
+        r1 = self.client.get(f"/api/findings/{finding_id}/thumbnail?size=100")
+        assert r1.headers.get("cache-control") == expected
+        # ...and the on-disk-cache fast path on second.
+        r2 = self.client.get(f"/api/findings/{finding_id}/thumbnail?size=100")
+        assert r2.headers.get("cache-control") == expected
+
+        # Source image.
+        assert (
+            self.client.get(f"/api/sources/{source_id}/image").headers.get("cache-control")
+            == expected
+        )
+        # Source original download.
+        assert (
+            self.client.get(f"/api/sources/{source_id}/original").headers.get("cache-control")
+            == expected
+        )
+        # Finding frame.
+        assert (
+            self.client.get(f"/api/findings/{finding_id}/frame").headers.get("cache-control")
+            == expected
+        )
+
     def test_source_image_returns_jpeg(self) -> None:
         source_id, _ = _add_finding(self.db, str(self.image_path), seed=1)
         resp = self.client.get(f"/api/sources/{source_id}/image")

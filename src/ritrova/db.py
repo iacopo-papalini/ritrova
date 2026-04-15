@@ -68,6 +68,31 @@ class Subject:
     face_count: int = 0
 
 
+@dataclass
+class OrphanReport:
+    """Dangling-child rows found by ``FaceDB.find_orphans``.
+
+    These exist when someone (sqlite3 CLI, a GUI, a helper script) issued a
+    DELETE from a connection without ``PRAGMA foreign_keys=ON`` — cascade
+    didn't fire and children survived their parents. The app connection
+    enforces FKs, so the app itself can't produce these.
+    """
+
+    findings_missing_source: list[int]
+    findings_missing_scan: list[int]
+    scans_missing_source: list[int]
+    dismissed_missing_finding: list[int]
+
+    @property
+    def total(self) -> int:
+        return (
+            len(self.findings_missing_source)
+            + len(self.findings_missing_scan)
+            + len(self.scans_missing_source)
+            + len(self.dismissed_missing_finding)
+        )
+
+
 class FaceDB:
     def __init__(self, db_path: str | Path, base_dir: str | Path | None = None):
         self.db_path = Path(db_path)
@@ -310,19 +335,23 @@ class FaceDB:
             return self.base_dir / stored_path
         return Path(stored_path)
 
-    def resolve_finding_image(self, finding: Finding) -> Path:
+    def resolve_finding_image(self, finding: Finding) -> Path | None:
         """Resolve the image file to use for a finding's thumbnail.
 
         Photo findings: the source file.
         Video findings: the extracted frame JPEG.
+
+        Returns ``None`` when the finding is orphaned (its source row is gone) —
+        endpoints then 404 alongside their existing ``not resolved.exists()``
+        check. Orphans can occur after a partial delete or a half-finished
+        migration; previously we raised ``ValueError`` and bubbled a 500.
         """
         if finding.frame_path:
             return self.db_path.parent / finding.frame_path
         source = self.get_source(finding.source_id)
         if source:
             return self.resolve_path(source.file_path)
-        msg = f"No source found for finding {finding.id}"
-        raise ValueError(msg)
+        return None
 
     def to_relative(self, absolute_path: str) -> str:
         """Convert an absolute path to a relative path (stripping base_dir prefix)."""
@@ -1190,6 +1219,153 @@ class FaceDB:
         self.conn.execute("UPDATE findings SET person_id = NULL WHERE person_id = ?", (subject_id,))
         self.conn.execute("DELETE FROM subjects WHERE id = ?", (subject_id,))
         self.conn.commit()
+
+    # ── Health check / orphan cleanup ─────────────────────────────────
+
+    @_locked
+    def find_orphans(self) -> OrphanReport:
+        """Scan for dangling-child rows. Never mutates. See ``OrphanReport``."""
+        # LEFT JOIN + IS NULL is clearer than NOT IN subqueries and handles
+        # the NULL-in-source set edge case correctly (irrelevant here since
+        # the columns are NOT NULL, but consistent).
+        findings_no_source = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT f.id FROM findings f "
+                "LEFT JOIN sources s ON f.source_id = s.id "
+                "WHERE s.id IS NULL"
+            ).fetchall()
+        ]
+        findings_no_scan = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT f.id FROM findings f "
+                "LEFT JOIN scans sc ON f.scan_id = sc.id "
+                "WHERE sc.id IS NULL"
+            ).fetchall()
+        ]
+        scans_no_source = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT sc.id FROM scans sc "
+                "LEFT JOIN sources s ON sc.source_id = s.id "
+                "WHERE s.id IS NULL"
+            ).fetchall()
+        ]
+        dismissed_no_finding = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT df.finding_id FROM dismissed_findings df "
+                "LEFT JOIN findings f ON df.finding_id = f.id "
+                "WHERE f.id IS NULL"
+            ).fetchall()
+        ]
+        return OrphanReport(
+            findings_missing_source=findings_no_source,
+            findings_missing_scan=findings_no_scan,
+            scans_missing_source=scans_no_source,
+            dismissed_missing_finding=dismissed_no_finding,
+        )
+
+    @_locked
+    def delete_orphans(self, report: OrphanReport) -> None:
+        """Delete every id in ``report``. Single transaction so a partial
+        failure rolls back cleanly."""
+        if report.total == 0:
+            return
+
+        def _chunked_delete(table: str, column: str, ids: list[int]) -> None:
+            # SQLite's default parameter limit is 999 — chunk to stay well
+            # under it without making the caller think about it.
+            for i in range(0, len(ids), 500):
+                chunk = ids[i : i + 500]
+                placeholders = ",".join("?" * len(chunk))
+                self.conn.execute(
+                    f"DELETE FROM {table} WHERE {column} IN ({placeholders})",  # noqa: S608
+                    tuple(chunk),
+                )
+
+        _chunked_delete("findings", "id", report.findings_missing_source)
+        _chunked_delete("findings", "id", report.findings_missing_scan)
+        _chunked_delete("scans", "id", report.scans_missing_source)
+        _chunked_delete("dismissed_findings", "finding_id", report.dismissed_missing_finding)
+        self.conn.commit()
+
+    # ── Undo snapshot / restore helpers (FEAT-5) ──────────────────────
+
+    @_locked
+    def snapshot_findings_fields(
+        self, finding_ids: list[int]
+    ) -> list[tuple[int, int | None, int | None]]:
+        """Return ``[(finding_id, person_id, cluster_id), ...]`` for each id.
+
+        Used to capture pre-mutation state before destructive bulk ops so undo
+        can restore both assignment fields. Order is not guaranteed to match
+        ``finding_ids``; consumers should key by id.
+        """
+        if not finding_ids:
+            return []
+        placeholders = ",".join("?" * len(finding_ids))
+        rows = self.conn.execute(
+            f"SELECT id, person_id, cluster_id FROM findings WHERE id IN ({placeholders})",
+            tuple(finding_ids),
+        ).fetchall()
+        return [(r["id"], r["person_id"], r["cluster_id"]) for r in rows]
+
+    @_locked
+    def restore_dismissed_findings(
+        self, snapshots: list[tuple[int, int | None, int | None]]
+    ) -> None:
+        """Undo ``dismiss_findings``: remove dismissed_findings rows and restore
+        the prior ``(person_id, cluster_id)`` for each finding."""
+        if not snapshots:
+            return
+        finding_ids = [s[0] for s in snapshots]
+        placeholders = ",".join("?" * len(finding_ids))
+        self.conn.execute(
+            f"DELETE FROM dismissed_findings WHERE finding_id IN ({placeholders})",
+            tuple(finding_ids),
+        )
+        self.conn.executemany(
+            "UPDATE findings SET person_id = ?, cluster_id = ? WHERE id = ?",
+            [(person_id, cluster_id, fid) for fid, person_id, cluster_id in snapshots],
+        )
+        self.conn.commit()
+
+    @_locked
+    def restore_cluster_id(self, finding_ids: list[int], cluster_id: int) -> None:
+        """Set cluster_id on the given findings (used to unwind merge_clusters)."""
+        if not finding_ids:
+            return
+        self.conn.executemany(
+            "UPDATE findings SET cluster_id = ? WHERE id = ?",
+            [(cluster_id, fid) for fid in finding_ids],
+        )
+        self.conn.commit()
+
+    @_locked
+    def clear_person_id(self, finding_ids: list[int]) -> None:
+        """NULL person_id on the given findings (used to unwind assign_cluster_to_subject)."""
+        if not finding_ids:
+            return
+        placeholders = ",".join("?" * len(finding_ids))
+        self.conn.execute(
+            f"UPDATE findings SET person_id = NULL WHERE id IN ({placeholders})",
+            tuple(finding_ids),
+        )
+        self.conn.commit()
+
+    @_locked
+    def get_unassigned_cluster_finding_ids(self, cluster_id: int) -> list[int]:
+        """Return finding IDs in ``cluster_id`` with no person assigned yet.
+
+        Snapshot for ``assign_cluster_to_subject`` undo — only these rows will
+        actually be updated by the assignment (WHERE person_id IS NULL)."""
+        rows = self.conn.execute(
+            "SELECT id FROM findings WHERE cluster_id = ? AND person_id IS NULL",
+            (cluster_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
 
     @_locked
     def get_unclustered_embeddings(

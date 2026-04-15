@@ -176,3 +176,103 @@ def test_rescan_no_scans_message(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "no matching scans" in result.output
+
+
+# ── `ritrova doctor` ──────────────────────────────────────────────────
+
+
+def _orphan_a_source(db_path: Path, source_id: int) -> None:
+    """Delete a source row with FKs OFF so children become orphans.
+
+    This simulates exactly the scenario that produced the user's 15-orphan
+    incident: a ``sqlite3`` CLI session (or any connection that didn't set
+    ``PRAGMA foreign_keys=ON``) issuing a DELETE on ``sources``.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+    conn.commit()
+    conn.close()
+
+
+def test_doctor_clean_db_reports_healthy_and_exits_zero(tmp_path: Path) -> None:
+    db_path, db, _ = _seed(tmp_path)
+    db.close()
+    result = _run(["doctor"], db_path)
+    assert result.exit_code == 0, result.output
+    assert "No orphans found" in result.output
+
+
+def test_doctor_detects_orphans_and_exits_non_zero_without_fix(tmp_path: Path) -> None:
+    db_path, db, sources = _seed(tmp_path)
+    db.close()
+    _orphan_a_source(db_path, sources["photo1"])
+
+    result = _run(["doctor"], db_path)
+    # Report-only mode: non-zero exit when dirty so shell pipelines can gate.
+    assert result.exit_code == 1, result.output
+    assert "findings with missing source: 1" in result.output
+    assert "scans with missing source: 1" in result.output
+    assert "Total orphans: 2" in result.output
+    assert "Run with --fix to delete" in result.output
+
+    # DB is untouched — no --fix was passed.
+    db = FaceDB(db_path)
+    assert len(db.find_orphans().findings_missing_source) == 1
+    db.close()
+
+
+def test_doctor_fix_deletes_orphans(tmp_path: Path) -> None:
+    db_path, db, sources = _seed(tmp_path)
+    db.close()
+    _orphan_a_source(db_path, sources["photo1"])
+
+    result = _run(["doctor", "--fix", "-y"], db_path)
+    assert result.exit_code == 0, result.output
+    assert "Deleted 2 orphan row(s)" in result.output
+
+    db = FaceDB(db_path)
+    report = db.find_orphans()
+    assert report.total == 0
+    # Sanity: the healthy source + its scan + its finding are untouched.
+    remaining = db.get_source_findings(sources["photo2"])
+    assert len(remaining) == 1
+    db.close()
+
+
+def test_doctor_fix_without_yes_aborts_on_no_input(tmp_path: Path) -> None:
+    db_path, db, sources = _seed(tmp_path)
+    db.close()
+    _orphan_a_source(db_path, sources["photo1"])
+
+    result = _run(["doctor", "--fix"], db_path, input_text="n\n")
+    assert result.exit_code == 0, result.output
+    assert "Aborted" in result.output
+
+    # Nothing was deleted — orphans still there.
+    db = FaceDB(db_path)
+    assert db.find_orphans().total == 2
+    db.close()
+
+
+def test_doctor_detects_dismissed_orphan(tmp_path: Path) -> None:
+    """A dismissed_findings row pointing at a missing finding should be caught
+    and deletable — exercises the fourth orphan category, which cascade should
+    normally prevent but manual SQL might leave."""
+    db_path, db, _ = _seed(tmp_path)
+    # Insert a bogus dismissed_findings row with FKs off so it survives.
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("INSERT INTO dismissed_findings (finding_id) VALUES (999999)")
+    conn.commit()
+    conn.close()
+    db.close()
+
+    result = _run(["doctor", "--fix", "-y"], db_path)
+    assert result.exit_code == 0, result.output
+    assert "dismissed_findings with missing finding: 1" in result.output
+    assert "Deleted 1 orphan row(s)" in result.output

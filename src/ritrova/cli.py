@@ -583,4 +583,63 @@ def migrate_paths(ctx: click.Context) -> None:
             migrated += 1
 
     print(f"Migrated {migrated} of {len(rows)} source paths to relative.")
+
+
+@cli.command("doctor")
+@click.option(
+    "--fix",
+    is_flag=True,
+    help="Delete the orphans found (otherwise: report-only, exit 0 if clean, 1 if dirty).",
+)
+@click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt (requires --fix)")
+@click.pass_context
+def doctor(ctx: click.Context, fix: bool, yes: bool) -> None:
+    """Find (and optionally delete) orphaned DB rows.
+
+    Orphans are child rows whose parent was deleted from a connection with
+    ``PRAGMA foreign_keys=OFF`` (e.g. a plain ``sqlite3`` CLI session). The
+    app connection enforces FKs, so only external tools can create these.
+    """
+    from .db import FaceDB
+
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    report = db.find_orphans()
+
+    categories = [
+        ("findings with missing source", report.findings_missing_source),
+        ("findings with missing scan", report.findings_missing_scan),
+        ("scans with missing source", report.scans_missing_source),
+        ("dismissed_findings with missing finding", report.dismissed_missing_finding),
+    ]
+
+    click.echo(f"DB: {ctx.obj['db_path']}")
+    for label, ids in categories:
+        click.echo(f"  {label}: {len(ids)}")
+        # Show a small sample so the user can cross-reference with their logs
+        # / shell history. Full dump would be noisy on a broken DB.
+        if ids:
+            sample = ids[:8]
+            more = "" if len(ids) <= 8 else f" … (+{len(ids) - 8} more)"
+            click.echo(f"    sample ids: {sample}{more}")
+
+    if report.total == 0:
+        click.echo("\nNo orphans found. DB is healthy.")
+        db.close()
+        return
+
+    click.echo(f"\nTotal orphans: {report.total}")
+
+    if not fix:
+        click.echo("Run with --fix to delete them. Exiting with code 1 (dirty).")
+        db.close()
+        raise SystemExit(1)
+
+    if not yes and not click.confirm(f"Delete {report.total} orphaned row(s)?", default=False):
+        click.echo("Aborted.")
+        db.close()
+        return
+
+    db.delete_orphans(report)
+    click.echo(f"Deleted {report.total} orphan row(s).")
+    db.close()
     db.close()
