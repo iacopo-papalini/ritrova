@@ -3,14 +3,18 @@
 ## Open
 
 ### BUG-5: Thumbnails in data/ dir get indexed by pet scanner
-**Reported:** 2026-04-10 | **Status:** Fix applied, pending verification
-**Fix:** `.fr_exclude` marker file. Scanner skips dirs with this file. Created in `data/`. Cleaned 14K bogus entries.
-**To close:** Run a new pet scan and verify exclusion.
+**Reported:** 2026-04-10 | **Closed:** 2026-04-15
+**Fix:** `.fr_exclude` marker file. Scanner skips dirs with this file. Created in `data/`.
+**Verified:** 2026-04-13 benchmark (`scan-pets` ran cleanly on fresh content, zero bogus entries). Residual orphan rows from the original incident were purged on 2026-04-15 as part of BUG-18 cleanup.
 
 ### BUG-18: Orphaned video frame source rows with bad paths
-**Reported:** 2026-04-11 | **Status:** Open (residual)
-**Context:** The sources/findings migration fixed the __pets hack and video model, but left 14,751 orphaned source rows with `face_recog/data/tmp/frames/...` paths (from the old pet scanner bug). 78 of these have findings (95 total). These will be cleaned up on the next pet scan re-run, which will create findings on the correct video source rows.
-**Action:** Delete empty orphan sources, re-scan pets on videos.
+**Reported:** 2026-04-11 | **Closed:** 2026-04-15
+**Fix:** Nuke-and-pave cleanup on 2026-04-15. The "rescan pets on videos" path in the original plan was invalid (pet scanner walks photos only), so the residual was purged directly:
+- 14,769 orphan source rows deleted (14,687 empty + 78 video-frame rows with legacy findings + 4 library-asset rows from `.venv/`).
+- ON DELETE CASCADE removed 14,787 scan rows and 110 findings.
+- 95 manual subject assignments on the orphan findings were lost (all dog/cat-species, distributed across "Cani a caso", "Mordicchia", "Figaro", "Strega", "penny", "Gatti a caso", "Caterina - baby" — each affected subject retained the vast majority of its real findings).
+- VACUUM reclaimed ~280 MB (562 MB → 281 MB).
+- Pre-cleanup DB backup kept at `data/faces.db.pre-nuke-20260415-151033` (and the two pre-benchmark backups from 2026-04-13 as deeper fallbacks).
 
 ### BUG-19: Cross-species assignment should confirm and correct, not block
 **Reported:** 2026-04-11 | **Closed:** 2026-04-11
