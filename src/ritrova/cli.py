@@ -197,10 +197,13 @@ def analyse(
     n_videos = sum(1 for _, t in candidates if t == "video")
     print(f"Sources to analyse: {len(candidates)} ({n_photos} photos, {n_videos} videos)")
 
+    import time
+
     persister = AnalysisPersister(db, frames_dir=frames_dir) if not dry_run else None
     processed = 0
     errors = 0
     total_findings = 0
+    t_start = time.monotonic()
 
     for i, (source_path, source_type) in enumerate(candidates, 1):
         stored = db.to_relative(str(source_path.resolve()))
@@ -240,9 +243,16 @@ def analyse(
 
         processed += 1
         if i % 10 == 0 or i == len(candidates):
+            elapsed = time.monotonic() - t_start
+            rate = i / elapsed
+            remaining = (len(candidates) - i) / rate
+            eta_min, eta_sec = divmod(int(remaining), 60)
+            eta_h, eta_min = divmod(eta_min, 60)
+            eta = f"{eta_h}h{eta_min:02d}m" if eta_h else f"{eta_min}m{eta_sec:02d}s"
             print(
                 f"\r  [{i}/{len(candidates)}] processed={processed} "
-                f"findings={total_findings} errors={errors}",
+                f"findings={total_findings} errors={errors} "
+                f"{rate:.1f}/s ETA {eta}   ",
                 end="",
                 flush=True,
             )
