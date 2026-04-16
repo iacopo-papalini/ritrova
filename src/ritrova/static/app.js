@@ -175,6 +175,10 @@ document.addEventListener('alpine:init', () => {
     },
     dismiss(id) {
       this.items = this.items.filter((t) => t.id !== id);
+      if (id === _currentUndoToastId) {
+        _pendingUndoToken = null;
+        _currentUndoToastId = null;
+      }
     },
     error(message, opts = {}) { return this.show({ ...opts, message, level: 'error' }); },
     success(message, opts = {}) { return this.show({ ...opts, message, level: 'success' }); },

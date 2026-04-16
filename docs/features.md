@@ -49,8 +49,12 @@ const ok = await confirmDialog({ title, message, confirmLabel, cancelLabel, dang
 **Shipped:** "Just them" checkbox on Together page. When checked, only shows sources where exactly the selected subjects appear and no other named subjects. Uses `HAVING COUNT(DISTINCT person_id) = N` on all named findings per source.
 
 ### FEAT-5: Global single-step UNDO for all write operations
-**Reported:** 2026-04-10 | **Priority:** High
-Every write action undoable. Toast with Undo button, auto-dismiss ~15s. In-memory inverse action store on server. Affects every write endpoint.
+**Reported:** 2026-04-10 | **Closed:** 2026-04-16
+**Shipped:**
+- In-memory single-slot undo store with 60s TTL. `UndoPayload` ABC — each payload subclass carries prior state and implements `undo(db)`. Five concrete payloads cover all operations: `DismissPayload`, `RestoreClusterPayload`, `RestorePersonIdsPayload`, `DeleteSubjectPayload`, `ResurrectSubjectPayload`.
+- Undoable endpoints: cluster dismiss, cluster merge, cluster assign, cluster name, subject delete, subject merge, findings dismiss, findings exclude, claim-faces, swap, single-finding unassign.
+- Toast with Undo button (15s), `z` keyboard shortcut. Toast dismiss clears the shortcut so `z` can't fire after the toast is gone. `POST /api/undo/{token}` + `GET /api/undo/peek` (recovers toast after redirect).
+- Intentionally not undoable (result is visible and easily reversed by the user): rename subject, create subject, single-finding assign.
 
 ### FEAT-13: Inline search/filter on subjects list page
 **Reported:** 2026-04-11 | **Closed:** 2026-04-11
