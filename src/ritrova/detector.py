@@ -16,8 +16,14 @@ logger = logging.getLogger(__name__)
 
 
 MIN_FACE_SIZE = 50  # pixels — smaller faces are unrecognizable
-MIN_SHARPNESS = 30.0  # Laplacian variance — below this is out-of-focus
-MIN_EDGE_DENSITY = 0.02  # Canny edge ratio — below this is motion blur / featureless
+
+# Quality thresholds at the reference size (50x50 = 2500 px²).
+# For larger faces, thresholds scale down proportionally to area — a 200x200
+# face needs 1/16th the sharpness score of a 50x50 face to pass. This avoids
+# rejecting large clear faces where smooth skin = low edge density.
+_REF_AREA = 2500.0  # 50x50
+_BASE_SHARPNESS = 30.0  # Laplacian variance at reference size
+_BASE_EDGE_DENSITY = 0.02  # Canny edge ratio at reference size
 
 
 class FaceDetector:
@@ -64,11 +70,13 @@ class FaceDetector:
             if fw < MIN_FACE_SIZE or fh < MIN_FACE_SIZE:
                 continue
 
+            area = fw * fh
+            scale = _REF_AREA / max(area, _REF_AREA)  # 1.0 at 50x50, shrinks for larger
             crop_gray = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
-            if cv2.Laplacian(crop_gray, cv2.CV_64F).var() < MIN_SHARPNESS:
+            if cv2.Laplacian(crop_gray, cv2.CV_64F).var() < _BASE_SHARPNESS * scale:
                 continue
             edges = cv2.Canny(crop_gray, 50, 150)
-            if (edges > 0).mean() < MIN_EDGE_DENSITY:
+            if (edges > 0).mean() < _BASE_EDGE_DENSITY * scale:
                 continue
 
             faces.append(
