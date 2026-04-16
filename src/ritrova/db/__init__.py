@@ -6,6 +6,7 @@ Public API — import from ``ritrova.db`` as before::
 """
 
 from .connection import FaceDB
+from .curation import PruneReport
 from .models import Description, Finding, OrphanReport, Source, Subject
 
 __all__ = [
@@ -13,6 +14,7 @@ __all__ = [
     "FaceDB",
     "Finding",
     "OrphanReport",
+    "PruneReport",
     "Source",
     "Subject",
 ]

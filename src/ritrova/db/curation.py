@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from ._base import _DBAccessor, _locked
 from .models import Finding, Source
+
+
+@dataclass
+class PruneReport:
+    """Result of a prune operation."""
+
+    by_subject: int  # duplicate (source_id, person_id) findings removed
+    by_cluster: int  # duplicate (source_id, cluster_id) findings removed
+
+    @property
+    def total(self) -> int:
+        return self.by_subject + self.by_cluster
 
 
 class CurationMixin(_DBAccessor):
@@ -212,3 +226,60 @@ class CurationMixin(_DBAccessor):
             grouped[source_id][1].append(finding)
 
         return list(grouped.values())
+
+    @_locked
+    def prune_duplicate_findings(self, *, dry_run: bool = False) -> PruneReport:
+        """Remove duplicate findings per (source_id, person_id) and (source_id, cluster_id).
+
+        For each group of duplicates, keeps the finding from the newest scan
+        (highest scan_id). Dismissed findings are excluded from pruning.
+
+        Returns a ``PruneReport`` with counts of removed findings.
+        """
+        # Duplicates by assigned subject: same person on same source
+        subject_dupes = self.conn.execute(
+            """
+            SELECT id FROM findings
+            WHERE person_id IS NOT NULL
+            AND id NOT IN (
+                SELECT MAX(id) FROM findings
+                WHERE person_id IS NOT NULL
+                GROUP BY source_id, person_id
+            )
+            AND id NOT IN (SELECT finding_id FROM dismissed_findings)
+            """
+        ).fetchall()
+        subject_ids = [r[0] for r in subject_dupes]
+
+        # Duplicates by cluster: same cluster on same source (unassigned only)
+        cluster_dupes = self.conn.execute(
+            """
+            SELECT id FROM findings
+            WHERE cluster_id IS NOT NULL AND person_id IS NULL
+            AND id NOT IN (
+                SELECT MAX(id) FROM findings
+                WHERE cluster_id IS NOT NULL AND person_id IS NULL
+                GROUP BY source_id, cluster_id
+            )
+            AND id NOT IN (SELECT finding_id FROM dismissed_findings)
+            """
+        ).fetchall()
+        cluster_ids = [r[0] for r in cluster_dupes]
+
+        if not dry_run:
+            if subject_ids:
+                placeholders = ",".join("?" * len(subject_ids))
+                self.conn.execute(
+                    f"DELETE FROM findings WHERE id IN ({placeholders})",
+                    tuple(subject_ids),
+                )
+            if cluster_ids:
+                placeholders = ",".join("?" * len(cluster_ids))
+                self.conn.execute(
+                    f"DELETE FROM findings WHERE id IN ({placeholders})",
+                    tuple(cluster_ids),
+                )
+            if subject_ids or cluster_ids:
+                self.conn.commit()
+
+        return PruneReport(by_subject=len(subject_ids), by_cluster=len(cluster_ids))

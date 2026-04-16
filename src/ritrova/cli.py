@@ -889,6 +889,51 @@ def migrate_paths(ctx: click.Context) -> None:
     print(f"Migrated {migrated} of {len(rows)} source paths to relative.")
 
 
+@cli.command("prune")
+@click.option("--dry-run", is_flag=True, help="Report duplicates without deleting")
+@click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt")
+@click.pass_context
+def prune(ctx: click.Context, dry_run: bool, yes: bool) -> None:
+    """Remove duplicate findings on the same source.
+
+    When a source is re-analysed (e.g. by the composite pipeline after an
+    earlier per-species scan), duplicate findings accumulate. This command
+    collapses them:
+
+    \b
+    - (source_id, person_id): keep newest finding per assigned subject
+    - (source_id, cluster_id): keep newest finding per cluster (unassigned)
+    """
+    from .db import FaceDB
+
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    report = db.prune_duplicate_findings(dry_run=True)
+
+    print(f"Database: {ctx.obj['db_path']}")
+    print(f"  Duplicate by subject assignment: {report.by_subject}")
+    print(f"  Duplicate by cluster membership: {report.by_cluster}")
+    print(f"  Total to remove: {report.total}")
+
+    if report.total == 0:
+        print("\nNo duplicates found.")
+        db.close()
+        return
+
+    if dry_run:
+        print("\nDry run — no changes made.")
+        db.close()
+        return
+
+    if not yes and not click.confirm(f"Delete {report.total} duplicate finding(s)?", default=False):
+        print("Aborted.")
+        db.close()
+        return
+
+    report = db.prune_duplicate_findings(dry_run=False)
+    print(f"Deleted {report.total} duplicate finding(s).")
+    db.close()
+
+
 @cli.command("doctor")
 @click.option(
     "--fix",
