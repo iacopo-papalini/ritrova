@@ -49,52 +49,20 @@ def _require_photos_dir(ctx: click.Context) -> str:
 @click.option("--min-confidence", default=0.65, help="Minimum detection confidence")
 @click.pass_context
 def scan(ctx: click.Context, min_confidence: float) -> None:
-    """Scan photos directory and detect all faces."""
-    from .db import FaceDB
-    from .detector import FaceDetector
-    from .scanner import scan_photos
-
-    photos_dir = _require_photos_dir(ctx)
-    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
-    print(f"Database: {ctx.obj['db_path']}")
-    print(f"Scanning: {photos_dir}")
-    print("Loading face detection model (first run downloads ~300 MB)...")
-
-    detector = FaceDetector()
-    result = scan_photos(db, Path(photos_dir), detector, min_confidence)
-
-    print(
-        f"\nDone! processed={result['processed']}  "
-        f"faces={result['faces_found']}  "
-        f"skipped={result['skipped']}  errors={result['errors']}"
+    """Scan photos for human faces. Legacy — delegates to analyse."""
+    ctx.invoke(
+        analyse, no_pets=True, no_caption=True, no_videos=True, min_face_confidence=min_confidence
     )
-    db.close()
 
 
 @cli.command()
 @click.option("--min-confidence", default=0.7, help="Minimum YOLO detection confidence")
 @click.pass_context
 def scan_pets(ctx: click.Context, min_confidence: float) -> None:
-    """Scan photos for dogs and cats using YOLO + SigLIP."""
-    from .db import FaceDB
-    from .pet_detector import PetDetector
-    from .scanner import scan_pets as _scan_pets
-
-    photos_dir = _require_photos_dir(ctx)
-    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
-    print(f"Database: {ctx.obj['db_path']}")
-    print(f"Scanning for pets in: {photos_dir}")
-    print("Loading YOLO + SigLIP models (first run downloads them)...")
-
-    detector = PetDetector()
-    result = _scan_pets(db, Path(photos_dir), detector, min_confidence)
-
-    print(
-        f"\nDone! processed={result['processed']}  "
-        f"pets={result['pets_found']}  "
-        f"skipped={result['skipped']}  errors={result['errors']}"
+    """Scan photos for pets. Legacy — delegates to analyse."""
+    ctx.invoke(
+        analyse, no_faces=True, no_caption=True, no_videos=True, min_pet_confidence=min_confidence
     )
-    db.close()
 
 
 @cli.command()
@@ -450,34 +418,14 @@ def describe_eval(
 @click.option("--interval", default=2.0, help="Seconds between sampled frames")
 @click.pass_context
 def scan_videos(ctx: click.Context, min_confidence: float, interval: float) -> None:
-    """Scan videos: extract frames, detect faces, one per person per clip."""
-    from .db import FaceDB
-    from .detector import FaceDetector
-    from .scanner import scan_videos as _scan_videos
-
-    photos_dir = _require_photos_dir(ctx)
-    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
-    frames_dir = Path(ctx.obj["db_path"]).parent / "tmp" / "frames"
-    print(f"Database: {ctx.obj['db_path']}")
-    print(f"Scanning videos in: {photos_dir}")
-    print("Loading face detection model...")
-
-    detector = FaceDetector()
-    result = _scan_videos(
-        db,
-        Path(photos_dir),
-        detector,
-        frames_dir,
-        min_confidence=min_confidence,
-        interval_sec=interval,
+    """Scan videos for human faces. Legacy — delegates to analyse."""
+    ctx.invoke(
+        analyse,
+        no_pets=True,
+        no_caption=True,
+        min_face_confidence=min_confidence,
+        interval=interval,
     )
-
-    print(
-        f"\nDone! processed={result['processed']}  "
-        f"faces={result['faces_found']}  "
-        f"skipped={result['skipped']}  errors={result['errors']}"
-    )
-    db.close()
 
 
 SPECIES_THRESHOLDS = {

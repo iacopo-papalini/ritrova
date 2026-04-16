@@ -186,26 +186,6 @@ def scan_one_photo_for_human(
     return (True, len(batch))
 
 
-def scan_photos(
-    db: FaceDB,
-    photos_dir: Path,
-    detector: FaceDetector,
-    min_confidence: float = 0.65,
-) -> dict[str, int]:
-    """Scan all photos, detect faces, store in DB. Returns stats dict."""
-    from .scan_pipeline import HumanPhotoScan
-
-    images = find_images(photos_dir)
-    logger.info("Found %d images to process", len(images))
-    stats = HumanPhotoScan(db, photos_dir, detector, min_confidence).run()
-    return {
-        "processed": stats.processed,
-        "skipped": stats.skipped,
-        "faces_found": stats.found,
-        "errors": stats.errors,
-    }
-
-
 def _is_duplicate(embedding: np.ndarray, seen: list[np.ndarray], threshold: float = 0.6) -> bool:
     """Check if this face embedding is too similar to one already seen."""
     return any(float(embedding @ emb) > threshold for emb in seen)
@@ -339,31 +319,6 @@ def scan_one_video_for_human(
     return (True, len(unique_faces))
 
 
-def scan_videos(
-    db: FaceDB,
-    photos_dir: Path,
-    detector: FaceDetector,
-    frames_dir: Path,
-    min_confidence: float = 0.65,
-    interval_sec: float = 2.0,
-    dedup_threshold: float = 0.6,
-) -> dict[str, int]:
-    """Scan videos: extract frames, detect faces, deduplicate per video."""
-    from .scan_pipeline import HumanVideoScan
-
-    videos = find_videos(photos_dir)
-    logger.info("Found %d videos to process", len(videos))
-    stats = HumanVideoScan(
-        db, photos_dir, detector, frames_dir, min_confidence, interval_sec, dedup_threshold
-    ).run()
-    return {
-        "processed": stats.processed,
-        "skipped": stats.skipped,
-        "faces_found": stats.found,
-        "errors": stats.errors,
-    }
-
-
 def scan_one_photo_for_pets(
     db: FaceDB,
     image_path: Path,
@@ -392,23 +347,3 @@ def scan_one_photo_for_pets(
             species=pet.species,
         )
     return (True, len(good))
-
-
-def scan_pets(
-    db: FaceDB,
-    photos_dir: Path,
-    pet_detector: PetDetector,
-    min_confidence: float = 0.5,
-) -> dict[str, int]:
-    """Scan all photos for dogs and cats using YOLO + SigLIP."""
-    from .scan_pipeline import PetPhotoScan
-
-    images = find_images(photos_dir)
-    logger.info("Found %d images to scan for pets", len(images))
-    stats = PetPhotoScan(db, photos_dir, pet_detector, min_confidence).run()
-    return {
-        "processed": stats.processed,
-        "skipped": stats.skipped,
-        "pets_found": stats.found,
-        "errors": stats.errors,
-    }
