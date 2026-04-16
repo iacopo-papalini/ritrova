@@ -239,7 +239,7 @@ class Translator:
         assert self._translation_model is not None
         logger.debug("Translator input: %s", text)
         inputs = self._tokenizer(text, return_tensors="pt", truncation=True)
-        gen_kwargs: dict[str, object] = {"max_new_tokens": 256}
+        gen_kwargs: dict[str, object] = {"max_new_tokens": 256, "max_length": None}
         if self._target_lang_id is not None:
             gen_kwargs["forced_bos_token_id"] = self._target_lang_id
         outputs = self._translation_model.generate(**inputs, **gen_kwargs)

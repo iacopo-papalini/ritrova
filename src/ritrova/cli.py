@@ -125,7 +125,6 @@ def analyse(
         "mlx_vlm",
     ):
         logging.getLogger(noisy).setLevel(logging.ERROR)
-    warnings.filterwarnings("ignore", message=".*max_new_tokens.*max_length.*")
     warnings.filterwarnings("ignore", message=".*use_fast.*deprecated.*")
 
     from .analysis import (
