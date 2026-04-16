@@ -1,9 +1,12 @@
 """CLI entry point for ritrova."""
 
+import logging
 from pathlib import Path
 
 import click
 from dotenv import load_dotenv
+
+from .describer import DEFAULT_TRANSLATOR_MODEL, DEFAULT_VLM_MODEL
 
 load_dotenv()
 
@@ -22,9 +25,14 @@ load_dotenv()
     envvar="PHOTOS_DIR",
     type=click.Path(file_okay=False),
 )
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
 @click.pass_context
-def cli(ctx: click.Context, db: str, photos_dir: str | None) -> None:
+def cli(ctx: click.Context, db: str, photos_dir: str | None, verbose: bool) -> None:
     """Ritrova — find again: face and pet recognition for photo collections."""
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.WARNING,
+        format="%(name)s %(levelname)s: %(message)s",
+    )
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = db
     ctx.obj["photos_dir"] = photos_dir
@@ -86,6 +94,188 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
         f"pets={result['pets_found']}  "
         f"skipped={result['skipped']}  errors={result['errors']}"
     )
+    db.close()
+
+
+@cli.command()
+@click.option(
+    "--model",
+    default=None,
+    help=f"HuggingFace model ID for the VLM (default: {DEFAULT_VLM_MODEL})",
+)
+@click.option(
+    "--translator",
+    default=None,
+    help=f"HuggingFace model ID for en→it translation (default: {DEFAULT_TRANSLATOR_MODEL})",
+)
+@click.option("--no-translate", is_flag=True, help="Skip translation — store English output")
+@click.option("--sample", default=0, type=int, help="Process only N random sources (0 = all)")
+@click.option("--force", is_flag=True, help="Re-describe sources that already have descriptions")
+@click.option(
+    "--source-id",
+    "source_ids_arg",
+    multiple=True,
+    type=int,
+    help="Specific source IDs (repeatable)",
+)
+@click.pass_context
+def describe(
+    ctx: click.Context,
+    model: str | None,
+    translator: str | None,
+    no_translate: bool,
+    sample: int,
+    force: bool,
+    source_ids_arg: tuple[int, ...],
+) -> None:
+    """Generate scene descriptions and tags for photos via VLM + translation."""
+    import random
+
+    from .db import FaceDB
+    from .describer import (
+        DEFAULT_TRANSLATOR_MODEL,
+        DEFAULT_VLM_MODEL,
+        Describer,
+        Translator,
+        describe_sources,
+    )
+
+    model = model or DEFAULT_VLM_MODEL
+    translator = translator or DEFAULT_TRANSLATOR_MODEL
+
+    _require_photos_dir(ctx)
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+
+    if source_ids_arg:
+        source_ids = list(source_ids_arg)
+    elif force:
+        source_ids = db.get_all_source_ids()
+    else:
+        source_ids = db.get_undescribed_source_ids()
+
+    if not source_ids:
+        print("All sources already have descriptions. Use --force to re-describe.")
+        db.close()
+        return
+
+    if sample > 0 and not source_ids_arg:
+        source_ids = random.sample(source_ids, min(sample, len(source_ids)))
+
+    print(f"Database: {ctx.obj['db_path']}")
+    print(f"VLM: {model}")
+    if no_translate:
+        print("Translation: disabled (English output)")
+    else:
+        print(f"Translator: {translator}")
+    print(f"Sources to describe: {len(source_ids)}")
+    print("Loading models (first run downloads them)...")
+
+    describer = Describer(model_id=model)
+    translator_obj = None if no_translate else Translator(model_id=translator)
+    result = describe_sources(db, source_ids, describer, translator_obj, force=force)
+
+    print(f"Done! described={result.described}  errors={result.errors}  tags={result.total_tags}")
+    db.close()
+
+
+@cli.command("describe-eval")
+@click.option(
+    "--model",
+    default=None,
+    help=f"HuggingFace model ID for the VLM (default: {DEFAULT_VLM_MODEL})",
+)
+@click.option(
+    "--translator",
+    default=None,
+    help=f"HuggingFace model ID for en→it translation (default: {DEFAULT_TRANSLATOR_MODEL})",
+)
+@click.option("--count", default=100, type=int, help="Number of random photos to evaluate")
+@click.option("--output", "-o", default="describe_eval.csv", help="Output CSV path")
+@click.pass_context
+def describe_eval(
+    ctx: click.Context, model: str | None, translator: str | None, count: int, output: str
+) -> None:
+    """Generate a CSV of sample descriptions for human review.
+
+    Picks random photos, runs VLM + translation, writes both English and
+    Italian output to a CSV with a blank 'review' column for annotation.
+    Does NOT store results in the DB.
+    """
+    import csv
+    import random
+
+    from .db import FaceDB
+    from .describer import (
+        DEFAULT_TRANSLATOR_MODEL,
+        DEFAULT_VLM_MODEL,
+        Describer,
+        Translator,
+    )
+
+    model = model or DEFAULT_VLM_MODEL
+    translator = translator or DEFAULT_TRANSLATOR_MODEL
+
+    _require_photos_dir(ctx)
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+
+    all_ids = db.get_all_source_ids()
+    source_ids = random.sample(all_ids, min(count, len(all_ids)))
+
+    print(f"VLM: {model}")
+    print(f"Translator: {translator}")
+    print(f"Evaluating {len(source_ids)} random photos → {output}")
+    print("Loading models...")
+
+    describer = Describer(model_id=model)
+    translator_obj = Translator(model_id=translator)
+
+    with open(output, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "source_id",
+                "path",
+                "en_caption",
+                "en_tags",
+                "it_caption",
+                "it_tags",
+                "review",
+            ]
+        )
+
+        errors = 0
+        for i, source_id in enumerate(source_ids, 1):
+            source = db.get_source(source_id)
+            if not source or source.type != "photo":
+                continue
+            resolved = db.resolve_path(source.file_path)
+            if not resolved.exists():
+                errors += 1
+                continue
+
+            en_caption, en_tags = describer.describe(resolved)
+            if not en_caption:
+                errors += 1
+                continue
+
+            it_caption, it_tags = translator_obj.translate(en_caption, en_tags)
+
+            writer.writerow(
+                [
+                    source_id,
+                    str(resolved),
+                    en_caption,
+                    ", ".join(sorted(en_tags)),
+                    it_caption,
+                    ", ".join(sorted(it_tags)),
+                    "",
+                ]
+            )
+
+            if i % 10 == 0 or i == len(source_ids):
+                print(f"\r  [{i}/{len(source_ids)}] errors={errors}", end="", flush=True)
+
+    print(f"\nDone! Wrote {len(source_ids) - errors} rows to {output} ({errors} errors)")
     db.close()
 
 

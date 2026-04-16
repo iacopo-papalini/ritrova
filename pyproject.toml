@@ -23,6 +23,8 @@ dependencies = [
     "pi-heif>=1.3.0",
     "python-dotenv>=1.2.2",
     "faiss-cpu>=1.13.2",
+    "mlx-vlm>=0.4.0",
+    "sacremoses>=0.1.1",
 ]
 
 [project.scripts]

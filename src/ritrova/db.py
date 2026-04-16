@@ -93,6 +93,16 @@ class OrphanReport:
         )
 
 
+@dataclass
+class Description:
+    id: int
+    source_id: int
+    scan_id: int
+    caption: str
+    tags: set[str]
+    generated_at: str
+
+
 class FaceDB:
     def __init__(self, db_path: str | Path, base_dir: str | Path | None = None):
         self.db_path = Path(db_path)
@@ -176,6 +186,21 @@ class FaceDB:
         # Index on scan_id supports DELETE-cascade and `find_scans` lookups.
         with contextlib.suppress(sqlite3.OperationalError):
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_findings_scan ON findings(scan_id)")
+
+        # FEAT-8: VLM-generated scene descriptions and tags.
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS descriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+                scan_id INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+                caption TEXT NOT NULL,
+                tags TEXT NOT NULL,
+                generated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_descriptions_source ON descriptions(source_id);
+            CREATE INDEX IF NOT EXISTS idx_descriptions_scan ON descriptions(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_descriptions_tags ON descriptions(tags);
+        """)
         self.conn.commit()
 
         self._backfill_finding_scan_ids()
@@ -1463,6 +1488,112 @@ class FaceDB:
             Subject(id=r["id"], name=r["name"], kind=r["kind"], face_count=r["face_count"])
             for r in rows
         ]
+
+    # ── Descriptions (FEAT-8) ──────────────────────────────────────────
+
+    @staticmethod
+    def _encode_tags(tags: set[str]) -> str:
+        """Encode a set of tags into colon-delimited storage format."""
+        return ":" + ":".join(sorted(tags)) + ":" if tags else ""
+
+    @staticmethod
+    def _decode_tags(raw: str) -> set[str]:
+        """Decode colon-delimited storage format into a set of tags."""
+        return {t for t in raw.split(":") if t}
+
+    @_locked
+    def add_description(self, source_id: int, scan_id: int, caption: str, tags: set[str]) -> int:
+        """Insert a VLM-generated description for a source."""
+        cur = self.conn.execute(
+            "INSERT INTO descriptions (source_id, scan_id, caption, tags, generated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (source_id, scan_id, caption, self._encode_tags(tags), self._now()),
+        )
+        self.conn.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    @_locked
+    def get_description(self, source_id: int) -> Description | None:
+        """Return the most recent description for a source, or None."""
+        row = self.conn.execute(
+            "SELECT * FROM descriptions WHERE source_id = ? ORDER BY id DESC LIMIT 1",
+            (source_id,),
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["tags"] = self._decode_tags(d["tags"])
+        return Description(**d)
+
+    @_locked
+    def get_all_tags(self) -> set[str]:
+        """Return all distinct tags across all descriptions.
+
+        Used to build the vocabulary for VLM prompt guidance and for tag
+        autocomplete in the UI.
+        """
+        rows = self.conn.execute("SELECT DISTINCT tags FROM descriptions").fetchall()
+        result: set[str] = set()
+        for row in rows:
+            result |= self._decode_tags(row["tags"])
+        return result
+
+    @_locked
+    def search_sources_by_tags_and_caption(
+        self,
+        tag_filters: set[str] | None = None,
+        caption_query: str | None = None,
+    ) -> list[int]:
+        """Return source_ids matching all given tags and/or caption keyword.
+
+        Tags use exact match, caption uses LIKE.
+        Returns source_ids sorted descending (newest first by id).
+        """
+        clauses: list[str] = []
+        params: list[str] = []
+        if tag_filters:
+            for tag in sorted(tag_filters):
+                clauses.append("d.tags LIKE ?")
+                params.append(f"%:{tag}:%")
+        if caption_query:
+            clauses.append("d.caption LIKE ?")
+            params.append(f"%{caption_query}%")
+        if not clauses:
+            return []
+        where = " AND ".join(clauses)
+        rows = self.conn.execute(
+            f"SELECT DISTINCT d.source_id FROM descriptions d "
+            f"WHERE {where} ORDER BY d.source_id DESC",
+            tuple(params),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    @_locked
+    def get_undescribed_source_ids(self) -> list[int]:
+        """Return source_ids that have no description yet."""
+        rows = self.conn.execute(
+            "SELECT s.id FROM sources s "
+            "LEFT JOIN descriptions d ON d.source_id = s.id "
+            "WHERE d.id IS NULL "
+            "ORDER BY s.id"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    @_locked
+    def get_all_source_ids(self) -> list[int]:
+        """Return all source_ids, ordered by id."""
+        rows = self.conn.execute("SELECT id FROM sources ORDER BY id").fetchall()
+        return [r[0] for r in rows]
+
+    @_locked
+    def delete_describe_scans(self, source_id: int) -> None:
+        """Delete all 'describe' scans for a source (cascades to descriptions)."""
+        self.conn.execute(
+            "DELETE FROM scans WHERE source_id = ? AND scan_type = 'describe'",
+            (source_id,),
+        )
+        self.conn.commit()
 
     # --- Stats ---
 
