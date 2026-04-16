@@ -113,6 +113,20 @@ def analyse(
 ) -> None:
     """Unified source analysis: detect faces, pets, and generate captions in one pass."""
     import random
+    import warnings
+
+    # Suppress noisy third-party loggers during model loading
+    for noisy in (
+        "insightface",
+        "onnxruntime",
+        "ultralytics",
+        "transformers",
+        "huggingface_hub",
+        "mlx_vlm",
+    ):
+        logging.getLogger(noisy).setLevel(logging.ERROR)
+    warnings.filterwarnings("ignore", message=".*max_new_tokens.*max_length.*")
+    warnings.filterwarnings("ignore", message=".*use_fast.*deprecated.*")
 
     from .analysis import (
         AnalysisPersister,
