@@ -32,7 +32,7 @@ class PetDetector:
         # SigLIP for embeddings
         from transformers import AutoModel, AutoProcessor
 
-        self.processor = AutoProcessor.from_pretrained(siglip_model)  # type: ignore[no-untyped-call]
+        self.processor = AutoProcessor.from_pretrained(siglip_model, use_fast=False)  # type: ignore[no-untyped-call]
         self.siglip = AutoModel.from_pretrained(siglip_model)
         self.siglip.eval()
         if torch.backends.mps.is_available():

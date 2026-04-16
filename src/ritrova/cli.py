@@ -125,7 +125,6 @@ def analyse(
         "mlx_vlm",
     ):
         logging.getLogger(noisy).setLevel(logging.ERROR)
-    warnings.filterwarnings("ignore", message=".*use_fast.*deprecated.*")
     warnings.filterwarnings("ignore", message=".*estimate.*deprecated.*SimilarityTransform.*")
 
     from .analysis import (
