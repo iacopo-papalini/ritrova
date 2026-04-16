@@ -126,6 +126,7 @@ def analyse(
     ):
         logging.getLogger(noisy).setLevel(logging.ERROR)
     warnings.filterwarnings("ignore", message=".*use_fast.*deprecated.*")
+    warnings.filterwarnings("ignore", message=".*estimate.*deprecated.*SimilarityTransform.*")
 
     from .analysis import (
         AnalysisPersister,
