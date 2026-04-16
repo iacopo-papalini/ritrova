@@ -87,6 +87,7 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
 @click.option("--dry-run", is_flag=True, help="Run pipeline but don't persist to DB")
 @click.option("--sample", default=0, type=int, help="Process only N random sources (0 = all)")
 @click.option("--interval", default=2.0, help="Seconds between sampled video frames")
+@click.option("--workers", "-j", default=3, help="Number of parallel workers")
 @click.option(
     "--scan-dir",
     default=None,
@@ -109,6 +110,7 @@ def analyse(
     dry_run: bool,
     sample: int,
     interval: float,
+    workers: int,
     scan_dir: str | None,
 ) -> None:
     """Unified source analysis: detect faces, pets, and generate captions in one pass."""
@@ -195,22 +197,30 @@ def analyse(
     print(f"Pipeline: {pipeline.strategy_id}")
     n_photos = sum(1 for _, t in candidates if t == "photo")
     n_videos = sum(1 for _, t in candidates if t == "video")
-    print(f"Sources to analyse: {len(candidates)} ({n_photos} photos, {n_videos} videos)")
+    print(
+        f"Sources to analyse: {len(candidates)} ({n_photos} photos, {n_videos} videos)"
+        f" — {workers} workers"
+    )
 
+    import threading
     import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     persister = AnalysisPersister(db, frames_dir=frames_dir) if not dry_run else None
-    processed = 0
-    errors = 0
-    total_findings = 0
-    t_start = time.monotonic()
+    strategy_id = pipeline.strategy_id
 
-    for i, (source_path, source_type) in enumerate(candidates, 1):
+    # Shared counters protected by a lock
+    lock = threading.Lock()
+    counters = {"processed": 0, "errors": 0, "findings": 0, "done": 0}
+    t_start = time.monotonic()
+    total = len(candidates)
+
+    def _process_one(source_path: Path, source_type: str) -> None:
         stored = db.to_relative(str(source_path.resolve()))
         if source_type == "video":
-            frames = video_frames(source_path, interval_sec=interval)
+            frame_iter = video_frames(source_path, interval_sec=interval)
         else:
-            frames = photo_frames(source_path)
+            frame_iter = photo_frames(source_path)
 
         try:
             initial = SourceAnalysis(source_path=stored, source_type=source_type)
@@ -221,15 +231,17 @@ def analyse(
                     initial.latitude, initial.longitude = gps
 
             result = pipeline.analyse_source(
-                source_path, source_type=source_type, frames=frames, initial_state=initial
+                source_path, source_type=source_type, frames=frame_iter, initial_state=initial
             )
         except OSError:
-            errors += 1
-            continue
+            with lock:
+                counters["errors"] += 1
+                counters["done"] += 1
+            return
 
         n_findings = len(result.findings)
-        total_findings += n_findings
 
+        # Persistence is serialised by the DB lock
         if persister is not None and (n_findings > 0 or result.caption):
             if force:
                 existing = db.conn.execute(
@@ -239,27 +251,42 @@ def analyse(
                 ).fetchone()
                 if existing:
                     db.delete_scan(existing[0])
-            persister.persist(result, strategy_id=pipeline.strategy_id)
+            persister.persist(result, strategy_id=strategy_id)
 
-        processed += 1
-        if i % 10 == 0 or i == len(candidates):
-            elapsed = time.monotonic() - t_start
-            rate = i / elapsed
-            remaining = (len(candidates) - i) / rate
-            eta_min, eta_sec = divmod(int(remaining), 60)
-            eta_h, eta_min = divmod(eta_min, 60)
-            eta = f"{eta_h}h{eta_min:02d}m" if eta_h else f"{eta_min}m{eta_sec:02d}s"
-            print(
-                f"\r  [{i}/{len(candidates)}] processed={processed} "
-                f"findings={total_findings} errors={errors} "
-                f"{rate:.1f}/s ETA {eta}   ",
-                end="",
-                flush=True,
-            )
+        with lock:
+            counters["processed"] += 1
+            counters["findings"] += n_findings
+            counters["done"] += 1
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_process_one, src, stype): i for i, (src, stype) in enumerate(candidates, 1)
+        }
+        for future in as_completed(futures):
+            future.result()  # propagate unexpected exceptions
+            with lock:
+                done = counters["done"]
+            if done % 10 == 0 or done == total:
+                elapsed = time.monotonic() - t_start
+                rate = done / elapsed if elapsed > 0 else 0
+                remaining = (total - done) / rate if rate > 0 else 0
+                eta_min, eta_sec = divmod(int(remaining), 60)
+                eta_h, eta_min = divmod(eta_min, 60)
+                eta = f"{eta_h}h{eta_min:02d}m" if eta_h else f"{eta_min}m{eta_sec:02d}s"
+                print(
+                    f"\r  [{done}/{total}] processed={counters['processed']} "
+                    f"findings={counters['findings']} errors={counters['errors']} "
+                    f"{rate:.1f}/s ETA {eta}   ",
+                    end="",
+                    flush=True,
+                )
 
     print()
     mode = " (dry run)" if dry_run else ""
-    print(f"Done!{mode} processed={processed}  findings={total_findings}  errors={errors}")
+    print(
+        f"Done!{mode} processed={counters['processed']}  "
+        f"findings={counters['findings']}  errors={counters['errors']}"
+    )
     db.close()
 
 
