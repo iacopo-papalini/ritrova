@@ -32,13 +32,13 @@ from .services import (
     compute_singleton_hints,
 )
 from .undo import (
-    ClusterAssignPayload,
-    ClusterDismissPayload,
-    ClusterMergePayload,
-    ClusterNamePayload,
+    DeleteSubjectPayload,
+    DismissPayload,
     FindingFieldsSnapshot,
-    SubjectDeletePayload,
-    SubjectMergePayload,
+    FindingPersonSnapshot,
+    RestoreClusterPayload,
+    RestorePersonIdsPayload,
+    ResurrectSubjectPayload,
     SubjectSnapshot,
     UndoStore,
 )
@@ -293,9 +293,22 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         face_ids: list[int] = Body(...),
         target_person_id: int = Body(...),
     ) -> JSONResponse:
+        prior = db.snapshot_findings_fields(face_ids)
+        snapshots = [
+            FindingPersonSnapshot(finding_id=fid, person_id=pid) for fid, pid, _cid in prior
+        ]
         for fid in face_ids:
             db.assign_finding_to_subject(fid, target_person_id)
-        return JSONResponse({"ok": True, "swapped": len(face_ids)})
+        subject = db.get_subject(target_person_id)
+        name = subject.name if subject else f"#{target_person_id}"
+        message = _describe_findings_reassign("Swapped", name, len(face_ids))
+        token = undo_store.put(
+            description=message,
+            payload=RestorePersonIdsPayload(snapshots=snapshots),
+        )
+        return JSONResponse(
+            {"ok": True, "swapped": len(face_ids), "undo_token": token, "message": message}
+        )
 
     @app.get("/search", response_class=HTMLResponse)
     def search_page(request: Request, q: str = "") -> HTMLResponse:
@@ -320,12 +333,25 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         face_ids: list[int] = Body(..., embed=True),
         force: bool = Body(False, embed=True),
     ) -> JSONResponse:
+        prior = db.snapshot_findings_fields(face_ids)
+        snapshots = [
+            FindingPersonSnapshot(finding_id=fid, person_id=pid) for fid, pid, _cid in prior
+        ]
         try:
             for fid in face_ids:
                 db.assign_finding_to_subject(fid, subject_id, force=force)
         except ValueError as e:
             return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
-        return JSONResponse({"ok": True, "claimed": len(face_ids)})
+        subject = db.get_subject(subject_id)
+        name = subject.name if subject else f"#{subject_id}"
+        message = _describe_findings_reassign("Claimed", name, len(face_ids))
+        token = undo_store.put(
+            description=message,
+            payload=RestorePersonIdsPayload(snapshots=snapshots),
+        )
+        return JSONResponse(
+            {"ok": True, "claimed": len(face_ids), "undo_token": token, "message": message}
+        )
 
     @app.get("/api/clusters/{cluster_id}/hint")
     def cluster_hint_api(cluster_id: int) -> JSONResponse:
@@ -561,6 +587,18 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         noun = "face" if n == 1 else "faces"
         return f"Merged {source_name} into {target_name} ({n} {noun})"
 
+    def _describe_findings_dismiss(n: int) -> str:
+        noun = "face" if n == 1 else "faces"
+        return f"Dismissed {n} {noun}"
+
+    def _describe_findings_exclude(cluster_id: int, n: int) -> str:
+        noun = "face" if n == 1 else "faces"
+        return f"Excluded {n} {noun} from cluster #{cluster_id}"
+
+    def _describe_findings_reassign(verb: str, subject_name: str, n: int) -> str:
+        noun = "face" if n == 1 else "faces"
+        return f"{verb} {n} {noun} for {subject_name}"
+
     def _next_similar_cluster(subject_id: int, cluster_id: int) -> str:
         """Find the unnamed cluster most similar to this subject, return redirect URL."""
         findings = db.get_cluster_findings(cluster_id, limit=1)
@@ -586,13 +624,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         subject_id = db.create_subject(name, kind=subject_kind)
         db.assign_cluster_to_subject(cluster_id, subject_id)
         undo_store.put(
-            kind="cluster_name",
             description=_describe_cluster_name(name, len(pending_ids)),
-            payload=ClusterNamePayload(
-                created_subject_id=subject_id,
-                cluster_id=cluster_id,
-                assigned_finding_ids=pending_ids,
-            ),
+            payload=DeleteSubjectPayload(subject_id=subject_id),
         )
         # Redirect path; the toast is recovered by /api/undo/peek on the next
         # page (same pattern as assign_cluster_to_existing's non-HX branch).
@@ -617,12 +650,11 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         except ValueError as e:
             return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
         token = undo_store.put(
-            kind="cluster_assign",
             description=_describe_cluster_assign(subject.name, len(pending_ids)),
-            payload=ClusterAssignPayload(
-                cluster_id=cluster_id,
-                subject_id=person_id,
-                assigned_finding_ids=pending_ids,
+            payload=RestorePersonIdsPayload(
+                snapshots=[
+                    FindingPersonSnapshot(finding_id=fid, person_id=None) for fid in pending_ids
+                ]
             ),
         )
         message = _describe_cluster_assign(subject.name, len(pending_ids))
@@ -648,9 +680,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         db.dismiss_findings(finding_ids)
         message = _describe_cluster_dismiss(cluster_id, len(finding_ids))
         token = undo_store.put(
-            kind="cluster_dismiss",
             description=message,
-            payload=ClusterDismissPayload(cluster_id=cluster_id, snapshots=snapshots),
+            payload=DismissPayload(snapshots=snapshots),
         )
         return JSONResponse(
             {"ok": True, "dismissed": len(finding_ids), "undo_token": token, "message": message}
@@ -669,13 +700,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         db.merge_clusters(source_cluster, target_cluster)
         message = _describe_cluster_merge(source_cluster, target_cluster, len(moved_ids))
         token = undo_store.put(
-            kind="cluster_merge",
             description=message,
-            payload=ClusterMergePayload(
-                source_cluster_id=source_cluster,
-                target_cluster_id=target_cluster,
-                moved_finding_ids=moved_ids,
-            ),
+            payload=RestoreClusterPayload(cluster_id=source_cluster, finding_ids=moved_ids),
         )
         if request.headers.get("HX-Request"):
             return HTMLResponse("", headers=_undo_hx_trigger(message, token))
@@ -702,71 +728,45 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         entry = undo_store.pop(token)
         if entry is None:
             raise HTTPException(404, "Undo token missing, already used, or expired")
-
-        if entry.kind == "cluster_dismiss":
-            payload = entry.payload
-            assert isinstance(payload, ClusterDismissPayload)
-            db.restore_dismissed_findings(
-                [(s.finding_id, s.person_id, s.cluster_id) for s in payload.snapshots]
-            )
-        elif entry.kind == "cluster_merge":
-            payload = entry.payload
-            assert isinstance(payload, ClusterMergePayload)
-            db.restore_cluster_id(payload.moved_finding_ids, payload.source_cluster_id)
-        elif entry.kind == "cluster_assign":
-            payload = entry.payload
-            assert isinstance(payload, ClusterAssignPayload)
-            db.clear_person_id(payload.assigned_finding_ids)
-        elif entry.kind == "cluster_name":
-            payload = entry.payload
-            assert isinstance(payload, ClusterNamePayload)
-            # delete_subject cascades ON DELETE SET NULL on every finding
-            # pointing at this subject — cleaner than manually chasing the
-            # assigned_finding_ids list.
-            db.delete_subject(payload.created_subject_id)
-        elif entry.kind == "subject_delete":
-            payload = entry.payload
-            assert isinstance(payload, SubjectDeletePayload)
-            db.recreate_subject(
-                payload.subject.id,
-                payload.subject.name,
-                payload.subject.kind,
-                payload.subject.created_at,
-            )
-            db.set_person_id(payload.finding_ids, payload.subject.id)
-        elif entry.kind == "subject_merge":
-            payload = entry.payload
-            assert isinstance(payload, SubjectMergePayload)
-            # Resurrect source subject first so the FK on findings.person_id
-            # is valid, then flip those findings back from target -> source.
-            db.recreate_subject(
-                payload.source_subject.id,
-                payload.source_subject.name,
-                payload.source_subject.kind,
-                payload.source_subject.created_at,
-            )
-            db.set_person_id(payload.moved_finding_ids, payload.source_subject.id)
-        else:
-            # Defensive — unknown kind means undo.py and app.py are out of
-            # sync and we'd silently do nothing. Fail loud.
-            raise HTTPException(500, f"Unknown undo kind: {entry.kind}")
-
+        entry.payload.undo(db)
         return JSONResponse({"ok": True, "undone": entry.description})
 
     @app.post("/api/findings/dismiss")
     def dismiss_findings(face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
         """Mark findings as non-faces (statues, paintings, dogs, etc.)."""
+        if not face_ids:
+            return JSONResponse({"ok": True, "dismissed": 0})
+        rows = db.snapshot_findings_fields(face_ids)
+        snapshots = [
+            FindingFieldsSnapshot(finding_id=fid, person_id=pid, cluster_id=cid)
+            for fid, pid, cid in rows
+        ]
         db.dismiss_findings(face_ids)
-        return JSONResponse({"ok": True, "dismissed": len(face_ids)})
+        message = _describe_findings_dismiss(len(face_ids))
+        token = undo_store.put(
+            description=message,
+            payload=DismissPayload(snapshots=snapshots),
+        )
+        return JSONResponse(
+            {"ok": True, "dismissed": len(face_ids), "undo_token": token, "message": message}
+        )
 
     @app.post("/api/findings/exclude")
     def exclude_findings(
         face_ids: list[int] = Body(..., embed=True),
         cluster_id: int = Body(..., embed=True),
     ) -> JSONResponse:
-        if face_ids:
-            db.exclude_findings(face_ids, cluster_id=cluster_id)
-        return JSONResponse({"ok": True, "excluded": len(face_ids)})
+        if not face_ids:
+            return JSONResponse({"ok": True, "excluded": 0})
+        db.exclude_findings(face_ids, cluster_id=cluster_id)
+        message = _describe_findings_exclude(cluster_id, len(face_ids))
+        token = undo_store.put(
+            description=message,
+            payload=RestoreClusterPayload(cluster_id=cluster_id, finding_ids=face_ids),
+        )
+        return JSONResponse(
+            {"ok": True, "excluded": len(face_ids), "undo_token": token, "message": message}
+        )
 
     @app.post("/api/findings/{finding_id}/assign")
     def assign_finding(
@@ -780,7 +780,21 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.post("/api/findings/{finding_id}/unassign")
     def unassign_finding(finding_id: int) -> JSONResponse:
+        prior_person_id = db.get_finding_person_id(finding_id)
         db.unassign_finding(finding_id)
+        if prior_person_id is not None:
+            subject = db.get_subject(prior_person_id)
+            name = subject.name if subject else f"#{prior_person_id}"
+            message = f"Removed face from {name}"
+            token = undo_store.put(
+                description=message,
+                payload=RestorePersonIdsPayload(
+                    snapshots=[
+                        FindingPersonSnapshot(finding_id=finding_id, person_id=prior_person_id)
+                    ]
+                ),
+            )
+            return JSONResponse({"ok": True, "undo_token": token, "message": message})
         return JSONResponse({"ok": True})
 
     @app.post("/api/subjects/{subject_id}/rename")
@@ -812,13 +826,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         kind = _kind_for_subject(target.kind)
         db.merge_subjects(source_id, target_id)
         undo_store.put(
-            kind="subject_merge",
             description=_describe_subject_merge(source_snapshot.name, target.name, len(moved_ids)),
-            payload=SubjectMergePayload(
-                source_subject=source_snapshot,
-                target_subject_id=target_id,
-                moved_finding_ids=moved_ids,
-            ),
+            payload=ResurrectSubjectPayload(subject=source_snapshot, finding_ids=moved_ids),
         )
         return RedirectResponse(f"/{kind}/{target_id}", status_code=303)
 
@@ -837,9 +846,8 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         kind = _kind_for_subject(subject.kind)
         db.delete_subject(subject_id)
         undo_store.put(
-            kind="subject_delete",
             description=_describe_subject_delete(snapshot.name, len(finding_ids)),
-            payload=SubjectDeletePayload(subject=snapshot, finding_ids=finding_ids),
+            payload=ResurrectSubjectPayload(subject=snapshot, finding_ids=finding_ids),
         )
         return RedirectResponse(f"/{kind}", status_code=303)
 

@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from ritrova.app import create_app
 from ritrova.db import FaceDB
 from ritrova.undo import (
-    ClusterDismissPayload,
+    DismissPayload,
     FindingFieldsSnapshot,
     UndoStore,
 )
@@ -49,15 +49,14 @@ class TestUndoStore(TestCase):
     def setUp(self) -> None:
         self.store = UndoStore(ttl=60.0)
 
-    def _sample_payload(self, cluster_id: int = 1) -> ClusterDismissPayload:
-        return ClusterDismissPayload(
-            cluster_id=cluster_id,
+    def _sample_payload(self, cluster_id: int = 1) -> DismissPayload:
+        return DismissPayload(
             snapshots=[FindingFieldsSnapshot(finding_id=10, person_id=5, cluster_id=cluster_id)],
         )
 
     def test_put_returns_unique_token(self) -> None:
-        t1 = self.store.put("cluster_dismiss", "one", self._sample_payload(1))
-        t2 = self.store.put("cluster_dismiss", "two", self._sample_payload(2))
+        t1 = self.store.put("one", self._sample_payload(1))
+        t2 = self.store.put("two", self._sample_payload(2))
         assert t1 != t2
         # Second put clobbers first — single-slot semantics.
         assert self.store.pop(t1) is None
@@ -66,13 +65,13 @@ class TestUndoStore(TestCase):
         assert entry.description == "two"
 
     def test_pop_is_one_shot(self) -> None:
-        token = self.store.put("cluster_dismiss", "x", self._sample_payload())
+        token = self.store.put("x", self._sample_payload())
         first = self.store.pop(token)
         assert first is not None
         assert self.store.pop(token) is None
 
     def test_peek_does_not_consume(self) -> None:
-        token = self.store.put("cluster_dismiss", "x", self._sample_payload())
+        token = self.store.put("x", self._sample_payload())
         e1 = self.store.peek()
         e2 = self.store.peek()
         assert e1 is not None and e2 is not None
@@ -82,19 +81,19 @@ class TestUndoStore(TestCase):
 
     def test_expired_entry_is_not_returned(self) -> None:
         store = UndoStore(ttl=0.0)  # everything is instantly stale
-        token = store.put("cluster_dismiss", "x", self._sample_payload())
+        token = store.put("x", self._sample_payload())
         # Tiny sleep so monotonic() advances past created_at on fast clocks.
         time.sleep(0.001)
         assert store.peek() is None
         assert store.pop(token) is None
 
     def test_clear_drops_pending(self) -> None:
-        token = self.store.put("cluster_dismiss", "x", self._sample_payload())
+        token = self.store.put("x", self._sample_payload())
         self.store.clear()
         assert self.store.pop(token) is None
 
     def test_pop_wrong_token(self) -> None:
-        self.store.put("cluster_dismiss", "x", self._sample_payload())
+        self.store.put("x", self._sample_payload())
         assert self.store.pop("not-a-real-token") is None
 
 
@@ -340,6 +339,145 @@ class TestUndoEndpoints(TestCase):
         assert self.db.get_subject_row(target) == target_row
         assert self.db.get_finding(fid_s).person_id == source  # type: ignore[union-attr]
         assert self.db.get_finding(fid_t).person_id == target  # type: ignore[union-attr]
+
+    # ── Round 2B: mass-update ops ────────────
+
+    def test_undo_findings_dismiss_restores_assignments(self) -> None:
+        """Dismissing individual findings (not a whole cluster) is reversible:
+        findings return to their prior person_id/cluster_id and are removed
+        from dismissed_findings."""
+        alice = self.db.create_subject("Alice")
+        _, fid1 = _add_finding(self.db, "/d1.jpg", seed=10)
+        _, fid2 = _add_finding(self.db, "/d2.jpg", seed=11)
+        self.db.update_cluster_ids({fid1: 3, fid2: 3})
+        self.db.assign_finding_to_subject(fid1, alice)
+
+        resp = self.client.post("/api/findings/dismiss", json={"face_ids": [fid1, fid2]})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["dismissed"] == 2
+        assert "undo_token" in body
+
+        # Mid-flight: dismissed, NULLed.
+        for fid in (fid1, fid2):
+            f = self.db.get_finding(fid)
+            assert f is not None
+            assert f.cluster_id is None
+            assert f.person_id is None
+
+        resp = self.client.post(f"/api/undo/{body['undo_token']}")
+        assert resp.status_code == 200
+
+        f1 = self.db.get_finding(fid1)
+        f2 = self.db.get_finding(fid2)
+        assert f1 is not None and f2 is not None
+        assert f1.cluster_id == 3 and f1.person_id == alice
+        assert f2.cluster_id == 3 and f2.person_id is None
+
+    def test_undo_findings_exclude_restores_cluster_id(self) -> None:
+        """Excluding faces from a cluster sets cluster_id to NULL; undo
+        restores it."""
+        _, fid1 = _add_finding(self.db, "/e1.jpg", seed=20)
+        _, fid2 = _add_finding(self.db, "/e2.jpg", seed=21)
+        _, fid_stay = _add_finding(self.db, "/e3.jpg", seed=22)
+        self.db.update_cluster_ids({fid1: 8, fid2: 8, fid_stay: 8})
+
+        resp = self.client.post(
+            "/api/findings/exclude", json={"face_ids": [fid1, fid2], "cluster_id": 8}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["excluded"] == 2
+        assert "undo_token" in body
+
+        # Mid-flight: excluded findings have NULL cluster_id; fid_stay untouched.
+        assert self.db.get_finding(fid1).cluster_id is None  # type: ignore[union-attr]
+        assert self.db.get_finding(fid2).cluster_id is None  # type: ignore[union-attr]
+        assert self.db.get_finding(fid_stay).cluster_id == 8  # type: ignore[union-attr]
+
+        resp = self.client.post(f"/api/undo/{body['undo_token']}")
+        assert resp.status_code == 200
+
+        assert self.db.get_finding(fid1).cluster_id == 8  # type: ignore[union-attr]
+        assert self.db.get_finding(fid2).cluster_id == 8  # type: ignore[union-attr]
+
+    def test_undo_claim_faces_restores_prior_person_ids(self) -> None:
+        """claim-faces overwrites person_id; undo restores each finding's
+        prior value (including NULL for unassigned and a different subject)."""
+        alice = self.db.create_subject("Alice")
+        bob = self.db.create_subject("Bob")
+        _, fid_none = _add_finding(self.db, "/c1.jpg", seed=30)
+        _, fid_bob = _add_finding(self.db, "/c2.jpg", seed=31)
+        self.db.assign_finding_to_subject(fid_bob, bob)
+
+        resp = self.client.post(
+            f"/api/subjects/{alice}/claim-faces",
+            json={"face_ids": [fid_none, fid_bob], "force": True},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["claimed"] == 2
+        assert "undo_token" in body
+
+        # Mid-flight: both assigned to Alice.
+        assert self.db.get_finding(fid_none).person_id == alice  # type: ignore[union-attr]
+        assert self.db.get_finding(fid_bob).person_id == alice  # type: ignore[union-attr]
+
+        resp = self.client.post(f"/api/undo/{body['undo_token']}")
+        assert resp.status_code == 200
+
+        # Restored: fid_none back to NULL, fid_bob back to Bob.
+        assert self.db.get_finding(fid_none).person_id is None  # type: ignore[union-attr]
+        assert self.db.get_finding(fid_bob).person_id == bob  # type: ignore[union-attr]
+
+    def test_undo_swap_findings_restores_prior_person_ids(self) -> None:
+        """swap reassigns findings to a target subject; undo restores each
+        finding's prior person_id."""
+        alice = self.db.create_subject("Alice")
+        bob = self.db.create_subject("Bob")
+        _, fid1 = _add_finding(self.db, "/w1.jpg", seed=40)
+        _, fid2 = _add_finding(self.db, "/w2.jpg", seed=41)
+        self.db.assign_finding_to_subject(fid1, alice)
+        self.db.assign_finding_to_subject(fid2, alice)
+
+        resp = self.client.post(
+            "/api/findings/swap",
+            json={"face_ids": [fid1, fid2], "target_person_id": bob},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["swapped"] == 2
+        assert "undo_token" in body
+
+        # Mid-flight: both now Bob's.
+        assert self.db.get_finding(fid1).person_id == bob  # type: ignore[union-attr]
+        assert self.db.get_finding(fid2).person_id == bob  # type: ignore[union-attr]
+
+        resp = self.client.post(f"/api/undo/{body['undo_token']}")
+        assert resp.status_code == 200
+
+        # Restored back to Alice.
+        assert self.db.get_finding(fid1).person_id == alice  # type: ignore[union-attr]
+        assert self.db.get_finding(fid2).person_id == alice  # type: ignore[union-attr]
+
+    def test_undo_finding_unassign_restores_person_id(self) -> None:
+        """Removing a face from a person makes it vanish from the grid;
+        undo must restore the assignment."""
+        alice = self.db.create_subject("Alice")
+        _, fid = _add_finding(self.db, "/un1.jpg", seed=50)
+        self.db.assign_finding_to_subject(fid, alice)
+
+        resp = self.client.post(f"/api/findings/{fid}/unassign")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "undo_token" in body
+        assert self.db.get_finding(fid).person_id is None  # type: ignore[union-attr]
+
+        resp = self.client.post(f"/api/undo/{body['undo_token']}")
+        assert resp.status_code == 200
+        assert self.db.get_finding(fid).person_id == alice  # type: ignore[union-attr]
+
+    # ── cluster name ───────────────────────────
 
     def test_undo_cluster_name_deletes_subject_and_frees_findings(self) -> None:
         """cluster/name creates a subject + assigns the cluster in one shot.

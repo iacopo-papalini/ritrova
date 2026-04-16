@@ -121,7 +121,7 @@
                class="aspect-square w-full cursor-pointer object-cover">
           <button @click.stop="(await confirmDialog({title: `Remove this face from ${$el.closest('[data-subject-name]').dataset.subjectName}?`, confirmLabel: 'Remove', danger: true})) &&
                     fetch('/api/findings/{{ face.id }}/unassign', { method: 'POST' })
-                      .then(r => { if(r.ok) $el.closest('.group').remove() })"
+                      .then(r => r.ok && r.json()).then(d => { if(d) { $el.closest('.group').remove(); if(d.undo_token) window.showUndoToast({message: d.message, token: d.undo_token}) } })"
                   class="absolute top-1 right-1 z-10 hidden group-hover:flex h-6 w-6 items-center justify-center
                          rounded-full bg-black/60 text-gallery-text transition-colors hover:bg-gallery-danger hover:text-white"
                   title="Not this person">

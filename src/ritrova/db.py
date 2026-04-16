@@ -1344,16 +1344,12 @@ class FaceDB:
         self.conn.commit()
 
     @_locked
-    def clear_person_id(self, finding_ids: list[int]) -> None:
-        """NULL person_id on the given findings (used to unwind assign_cluster_to_subject)."""
-        if not finding_ids:
-            return
-        placeholders = ",".join("?" * len(finding_ids))
-        self.conn.execute(
-            f"UPDATE findings SET person_id = NULL WHERE id IN ({placeholders})",
-            tuple(finding_ids),
-        )
-        self.conn.commit()
+    def get_finding_person_id(self, finding_id: int) -> int | None:
+        """Read just the person_id for a finding, without deserializing the embedding."""
+        row = self.conn.execute(
+            "SELECT person_id FROM findings WHERE id = ?", (finding_id,)
+        ).fetchone()
+        return row["person_id"] if row else None
 
     @_locked
     def get_unassigned_cluster_finding_ids(self, cluster_id: int) -> list[int]:
@@ -1410,17 +1406,19 @@ class FaceDB:
         self.conn.commit()
 
     @_locked
-    def set_person_id(self, finding_ids: list[int], subject_id: int) -> None:
-        """Set person_id on the given findings (opposite of ``clear_person_id``).
+    def restore_person_ids(self, snapshots: list[tuple[int, int | None]]) -> None:
+        """Set per-finding person_id from a snapshot map.
 
-        Used by undo to restore prior assignments after delete_subject /
-        merge_subjects reshuffled them.
+        Each element is ``(finding_id, prior_person_id)`` — handles mixed
+        NULLs, uniform values, and different subjects in one batch.
+        Subsumes the old ``set_person_id`` (uniform subject) and
+        ``clear_person_id`` (uniform NULL) helpers.
         """
-        if not finding_ids:
+        if not snapshots:
             return
         self.conn.executemany(
             "UPDATE findings SET person_id = ? WHERE id = ?",
-            [(subject_id, fid) for fid in finding_ids],
+            [(pid, fid) for fid, pid in snapshots],
         )
         self.conn.commit()
 

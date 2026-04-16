@@ -5,22 +5,24 @@ previous token. Entries expire after ``ttl`` seconds so stale tokens can never
 resurrect old state. Thread-safe: all mutations hold ``_lock``.
 
 The store itself is transport-agnostic. Each endpoint that wants to be undoable
-builds a kind-specific payload (see dataclasses below), calls ``put()`` to get
-a token, and returns that token to the client. On undo, ``pop()`` hands the
-payload back to the endpoint that knows how to invert it.
+builds a payload (an ``UndoPayload`` subclass), calls ``put()`` to get a token,
+and returns that token to the client. On undo, ``pop()`` hands the payload
+back and calls ``payload.undo(db)`` to invert the mutation.
 """
 
 from __future__ import annotations
 
 import time
 import uuid
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING
 
-# ── Payload dataclasses ──────────────────────────────────────────────
-# One per undoable operation kind. Each carries exactly the prior-state
-# information needed to invert the mutation.
+if TYPE_CHECKING:
+    from .db import FaceDB
+
+# ── Snapshot types ──────────────────────────────────────────────────
 
 
 @dataclass
@@ -33,34 +35,11 @@ class FindingFieldsSnapshot:
 
 
 @dataclass
-class ClusterDismissPayload:
-    """Undo a ``dismiss_findings`` call on every finding in a cluster.
+class FindingPersonSnapshot:
+    """Prior person_id for a single finding."""
 
-    ``snapshots`` holds the pre-dismiss person_id/cluster_id per finding so we
-    can restore both fields. Undo also deletes the dismissed_findings rows.
-    """
-
-    cluster_id: int
-    snapshots: list[FindingFieldsSnapshot]
-
-
-@dataclass
-class ClusterMergePayload:
-    """Undo a cluster merge: flip cluster_id back from target to source."""
-
-    source_cluster_id: int
-    target_cluster_id: int
-    moved_finding_ids: list[int]
-
-
-@dataclass
-class ClusterAssignPayload:
-    """Undo ``assign_cluster_to_subject``: NULL the person_id on findings that
-    were actually updated (those that had person_id IS NULL pre-assign)."""
-
-    cluster_id: int
-    subject_id: int
-    assigned_finding_ids: list[int]
+    finding_id: int
+    person_id: int | None
 
 
 @dataclass
@@ -73,35 +52,95 @@ class SubjectSnapshot:
     created_at: str
 
 
+# ── Payload ABC ─────────────────────────────────────────────────────
+
+
+class UndoPayload(ABC):
+    """Base for all undo payloads. Each subclass carries the prior-state
+    information needed to invert one kind of mutation."""
+
+    @abstractmethod
+    def undo(self, db: FaceDB) -> None:
+        """Apply the inverse mutation to restore prior state."""
+
+
+# ── Concrete payloads ───────────────────────────────────────────────
+
+
 @dataclass
-class SubjectDeletePayload:
-    """Undo ``delete_subject``: recreate the row + restore person_id on every
-    finding that was previously assigned to this subject."""
+class DismissPayload(UndoPayload):
+    """Undo ``dismiss_findings``: remove dismissed_findings rows and restore
+    the prior ``(person_id, cluster_id)`` for each finding.
+
+    Used for both whole-cluster dismiss and partial (selected faces) dismiss.
+    """
+
+    snapshots: list[FindingFieldsSnapshot]
+
+    def undo(self, db: FaceDB) -> None:
+        db.restore_dismissed_findings(
+            [(s.finding_id, s.person_id, s.cluster_id) for s in self.snapshots]
+        )
+
+
+@dataclass
+class RestoreClusterPayload(UndoPayload):
+    """Undo cluster merge or findings exclude: restore cluster_id on findings."""
+
+    cluster_id: int
+    finding_ids: list[int]
+
+    def undo(self, db: FaceDB) -> None:
+        db.restore_cluster_id(self.finding_ids, self.cluster_id)
+
+
+@dataclass
+class RestorePersonIdsPayload(UndoPayload):
+    """Undo claim-faces, swap, unassign, or cluster assign: restore
+    per-finding person_id (including NULL for previously-unassigned)."""
+
+    snapshots: list[FindingPersonSnapshot]
+
+    def undo(self, db: FaceDB) -> None:
+        db.restore_person_ids([(s.finding_id, s.person_id) for s in self.snapshots])
+
+
+@dataclass
+class DeleteSubjectPayload(UndoPayload):
+    """Undo cluster naming: delete the subject that was created.
+
+    The subjects FK ``ON DELETE SET NULL`` cascades to NULL ``person_id`` on
+    every finding that was assigned to this subject.
+    """
+
+    subject_id: int
+
+    def undo(self, db: FaceDB) -> None:
+        db.delete_subject(self.subject_id)
+
+
+@dataclass
+class ResurrectSubjectPayload(UndoPayload):
+    """Undo subject delete or merge: recreate the destroyed subject row
+    and reassign its findings.
+
+    NOTE: recreate + reassign are two separate commits — not atomic.
+    If the process crashes between them the subject exists but its findings
+    are not yet reassigned. Acceptable for a single-user desktop app; a
+    production system would wrap both in a single transaction.
+    """
 
     subject: SubjectSnapshot
     finding_ids: list[int]
 
-
-@dataclass
-class SubjectMergePayload:
-    """Undo ``merge_subjects`` (source -> target): recreate the destroyed
-    source subject + flip back every finding that moved source -> target."""
-
-    source_subject: SubjectSnapshot
-    target_subject_id: int
-    moved_finding_ids: list[int]
-
-
-@dataclass
-class ClusterNamePayload:
-    """Undo ``/api/clusters/{id}/name``: the endpoint both created a subject
-    AND assigned the cluster to it. Undo deletes the subject (the subjects
-    FK's ON DELETE SET NULL would null person_id on its findings) but we
-    also track the exact finding ids it touched for belt-and-suspenders."""
-
-    created_subject_id: int
-    cluster_id: int
-    assigned_finding_ids: list[int]
+    def undo(self, db: FaceDB) -> None:
+        db.recreate_subject(
+            self.subject.id,
+            self.subject.name,
+            self.subject.kind,
+            self.subject.created_at,
+        )
+        db.restore_person_ids([(fid, self.subject.id) for fid in self.finding_ids])
 
 
 # ── Store ────────────────────────────────────────────────────────────
@@ -110,9 +149,8 @@ class ClusterNamePayload:
 @dataclass
 class UndoEntry:
     token: str
-    kind: str
     description: str
-    payload: Any
+    payload: UndoPayload
     created_at: float = field(default_factory=time.monotonic)
 
 
@@ -123,6 +161,12 @@ class UndoStore:
     serialise on ``_lock``. The DB mutations guarded by an undo entry are
     themselves serialised by FaceDB's own lock, so the happens-before chain
     (snapshot → mutate → put) is preserved per-request.
+
+    NOTE: the snapshot-then-mutate pattern in each endpoint acquires and
+    releases the DB lock twice (once for snapshot, once for mutation).
+    A concurrent request could theoretically interleave. Acceptable for a
+    single-user desktop app; a production system would hold the lock across
+    both operations.
     """
 
     def __init__(self, ttl: float = 60.0) -> None:
@@ -130,10 +174,10 @@ class UndoStore:
         self._current: UndoEntry | None = None
         self._ttl = ttl
 
-    def put(self, kind: str, description: str, payload: Any) -> str:
+    def put(self, description: str, payload: UndoPayload) -> str:
         """Register a new undoable action. Clobbers any prior pending entry."""
         token = uuid.uuid4().hex
-        entry = UndoEntry(token=token, kind=kind, description=description, payload=payload)
+        entry = UndoEntry(token=token, description=description, payload=payload)
         with self._lock:
             self._current = entry
         return token
