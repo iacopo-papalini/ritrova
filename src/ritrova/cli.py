@@ -87,6 +87,12 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
 @click.option("--dry-run", is_flag=True, help="Run pipeline but don't persist to DB")
 @click.option("--sample", default=0, type=int, help="Process only N random sources (0 = all)")
 @click.option("--interval", default=2.0, help="Seconds between sampled video frames")
+@click.option(
+    "--scan-dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Subdirectory to scan (defaults to --photos-dir). Paths are always stored relative to --photos-dir.",
+)
 @click.pass_context
 def analyse(
     ctx: click.Context,
@@ -103,6 +109,7 @@ def analyse(
     dry_run: bool,
     sample: int,
     interval: float,
+    scan_dir: str | None,
 ) -> None:
     """Unified source analysis: detect faces, pets, and generate captions in one pass."""
     import random
@@ -120,6 +127,8 @@ def analyse(
 
     photos_dir = _require_photos_dir(ctx)
     db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
+    # scan_dir: where to discover files. base_dir (photos_dir): prefix to strip for relative paths.
+    discovery_dir = scan_dir or photos_dir
     frames_dir = Path(ctx.obj["db_path"]).parent / "tmp" / "frames"
 
     builder = AnalysisPipelineBuilder()
@@ -153,14 +162,14 @@ def analyse(
 
     # Discover sources: photos + optionally videos
     candidates: list[tuple[Path, str]] = []  # (path, source_type)
-    for img_path in find_images(Path(photos_dir)):
+    for img_path in find_images(Path(discovery_dir)):
         stored = db.to_relative(str(img_path.resolve()))
         if not force and db.is_scanned(stored, "composite"):
             continue
         candidates.append((img_path, "photo"))
 
     if not no_videos:
-        for vid_path in find_videos(Path(photos_dir)):
+        for vid_path in find_videos(Path(discovery_dir)):
             stored = db.to_relative(str(vid_path.resolve()))
             if not force and db.is_scanned(stored, "composite"):
                 continue
