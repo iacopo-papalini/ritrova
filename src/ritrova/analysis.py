@@ -67,6 +67,10 @@ class SourceAnalysis:
     findings: list[AnalysisFinding] = field(default_factory=list)
     caption: str = ""
     tags: set[str] = field(default_factory=set)
+    # Video frame cache: frame_number → PIL Image for frames that produced findings.
+    # The persister saves these as JPEGs and stores the path as frame_path.
+    # Empty for photo sources (frame 0 = the source file itself).
+    frame_images: dict[int, Image.Image] = field(default_factory=dict)
 
 
 # ── Step ABC ─────────────────────────────────────────────────────────────
@@ -111,6 +115,45 @@ def photo_frames(source_path: Path) -> Iterator[FrameRef]:
         width=w,
         height=h,
     )
+
+
+def video_frames(source_path: Path, interval_sec: float = 2.0) -> Iterator[FrameRef]:
+    """Yield one ``FrameRef`` per sampled frame from a video.
+
+    Samples every ``interval_sec`` seconds.  Each yielded frame is an RGB
+    PIL Image with its original frame index as ``frame_number``.
+    """
+    import cv2
+
+    cap = cv2.VideoCapture(str(source_path))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        logger.warning("Could not read video (fps=0): %s", source_path)
+        cap.release()
+        return
+
+    frame_interval = max(1, int(fps * interval_sec))
+    frame_idx = 0
+
+    try:
+        while True:
+            ret, bgr_frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % frame_interval == 0:
+                h, w = bgr_frame.shape[:2]
+                rgb = bgr_frame[:, :, ::-1]  # BGR → RGB
+                img = Image.fromarray(rgb)
+                yield FrameRef(
+                    source_path=source_path,
+                    frame_number=frame_idx,
+                    image=img,
+                    width=w,
+                    height=h,
+                )
+            frame_idx += 1
+    finally:
+        cap.release()
 
 
 # ── Pipeline ─────────────────────────────────────────────────────────────
@@ -158,8 +201,16 @@ class AnalysisPipeline:
             if frame_count == 0:
                 state.width = frame.width
                 state.height = frame.height
+            findings_before = len(state.findings)
             for step in self.steps:
                 state = step.analyse(frame, state)
+            # Cache the frame image if new findings were produced on a video frame
+            if (
+                len(state.findings) > findings_before
+                and frame.frame_number > 0
+                and frame.frame_number not in state.frame_images
+            ):
+                state.frame_images[frame.frame_number] = frame.image
 
         return state
 
@@ -196,11 +247,12 @@ class AnalysisPersister:
 
     Not an ``AnalysisStep`` — runs after the pipeline completes.
     Handles source creation, scan recording, finding insertion,
-    and description storage in one transaction boundary.
+    frame cache saving (for videos), and description storage.
     """
 
-    def __init__(self, db: FaceDB) -> None:
+    def __init__(self, db: FaceDB, frames_dir: Path | None = None) -> None:
         self._db = db
+        self._frames_dir = frames_dir
 
     def persist(
         self,
@@ -212,6 +264,7 @@ class AnalysisPersister:
 
         Creates or updates the source row, records a scan, inserts findings
         grouped by species, and stores the description if present.
+        For video findings, saves cached frame JPEGs to ``frames_dir``.
         """
         source_id = self._db.get_or_create_source(
             analysis.source_path,
@@ -223,6 +276,18 @@ class AnalysisPersister:
             longitude=analysis.longitude,
         )
         scan_id = self._db.record_scan(source_id, scan_type, detection_strategy=strategy_id)
+
+        # Save frame cache JPEGs for video findings
+        frame_paths: dict[int, str] = {}
+        if analysis.source_type == "video" and analysis.frame_images and self._frames_dir:
+            self._frames_dir.mkdir(parents=True, exist_ok=True)
+            import hashlib
+
+            vid_hash = hashlib.md5(analysis.source_path.encode()).hexdigest()[:10]  # noqa: S324
+            for frame_number, img in analysis.frame_images.items():
+                frame_file = self._frames_dir / f"vid_{vid_hash}_{frame_number}.jpg"
+                img.save(str(frame_file), "JPEG", quality=85)
+                frame_paths[frame_number] = str(frame_file.relative_to(self._db.db_path.parent))
 
         # Group findings by (species, frame_number) for batch insert
         by_key: dict[
@@ -238,6 +303,7 @@ class AnalysisPersister:
                 scan_id=scan_id,
                 species=species,
                 frame_number=frame_number,
+                frame_path=frame_paths.get(frame_number),
             )
 
         if analysis.caption:

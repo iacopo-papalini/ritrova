@@ -18,6 +18,7 @@ from ritrova.analysis import (
     FrameRef,
     SourceAnalysis,
     photo_frames,
+    video_frames,
 )
 from ritrova.db import FaceDB
 
@@ -333,3 +334,81 @@ class TestAnalysisPersister(TestCase):
         scans = self.db.find_scans()
         assert len(scans) == 1
         assert scans[0]["scan_type"] == "composite"
+
+    def test_persists_frame_number(self) -> None:
+        analysis = SourceAnalysis(
+            source_path="/video.mp4",
+            source_type="video",
+            width=640,
+            height=480,
+            findings=[
+                AnalysisFinding(
+                    bbox=(10, 10, 50, 50),
+                    embedding=_emb(1),
+                    confidence=0.95,
+                    frame_number=30,
+                ),
+            ],
+        )
+        self.persister.persist(analysis, strategy_id="composite")
+        source = self.db.get_source_by_path("/video.mp4")
+        assert source is not None
+        findings = self.db.get_source_findings(source.id)
+        assert len(findings) == 1
+        assert findings[0].frame_number == 30
+
+    def test_saves_video_frame_cache(self) -> None:
+        """Persister saves frame images as JPEGs for video findings."""
+        frames_dir = self.db.db_path.parent / "tmp" / "frames"
+        persister = AnalysisPersister(self.db, frames_dir=frames_dir)
+
+        frame_img = Image.new("RGB", (640, 480), color="red")
+        analysis = SourceAnalysis(
+            source_path="/video.mp4",
+            source_type="video",
+            width=640,
+            height=480,
+            findings=[
+                AnalysisFinding(
+                    bbox=(10, 10, 50, 50),
+                    embedding=_emb(1),
+                    confidence=0.95,
+                    frame_number=60,
+                ),
+            ],
+            frame_images={60: frame_img},
+        )
+        persister.persist(analysis, strategy_id="composite")
+
+        # Frame JPEG should exist
+        assert frames_dir.exists()
+        jpgs = list(frames_dir.glob("vid_*.jpg"))
+        assert len(jpgs) == 1
+        assert "60" in jpgs[0].name
+
+        # Finding should have frame_path set
+        source = self.db.get_source_by_path("/video.mp4")
+        assert source is not None
+        findings = self.db.get_source_findings(source.id)
+        assert len(findings) == 1
+        assert findings[0].frame_path is not None
+        assert "60" in findings[0].frame_path
+
+
+# ── Video frames tests ───────────────────────────────────────────────────
+
+
+class TestVideoFrames(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+
+    def test_yields_nothing_for_missing_file(self) -> None:
+        frames = list(video_frames(Path("/nonexistent.mp4")))
+        assert frames == []
+
+    def test_yields_nothing_for_invalid_file(self) -> None:
+        bad = self.tmp / "bad.mp4"
+        bad.write_bytes(b"not a video")
+        frames = list(video_frames(bad))
+        assert frames == []

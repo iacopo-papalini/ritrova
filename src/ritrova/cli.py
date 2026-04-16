@@ -101,6 +101,7 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
 @click.option("--no-faces", is_flag=True, help="Skip human face detection")
 @click.option("--no-pets", is_flag=True, help="Skip pet detection")
 @click.option("--no-caption", is_flag=True, help="Skip VLM captioning + translation")
+@click.option("--no-videos", is_flag=True, help="Skip video files (photos only)")
 @click.option("--min-face-confidence", default=0.65, help="Min confidence for face detection")
 @click.option("--min-pet-confidence", default=0.7, help="Min confidence for pet detection")
 @click.option(
@@ -117,12 +118,14 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
 @click.option("--force", is_flag=True, help="Re-analyse already-scanned sources")
 @click.option("--dry-run", is_flag=True, help="Run pipeline but don't persist to DB")
 @click.option("--sample", default=0, type=int, help="Process only N random sources (0 = all)")
+@click.option("--interval", default=2.0, help="Seconds between sampled video frames")
 @click.pass_context
 def analyse(
     ctx: click.Context,
     no_faces: bool,
     no_pets: bool,
     no_caption: bool,
+    no_videos: bool,
     min_face_confidence: float,
     min_pet_confidence: float,
     vlm_model: str | None,
@@ -131,17 +134,25 @@ def analyse(
     force: bool,
     dry_run: bool,
     sample: int,
+    interval: float,
 ) -> None:
     """Unified source analysis: detect faces, pets, and generate captions in one pass."""
     import random
 
-    from .analysis import AnalysisPersister, AnalysisPipelineBuilder, photo_frames
+    from .analysis import (
+        AnalysisPersister,
+        AnalysisPipelineBuilder,
+        SourceAnalysis,
+        photo_frames,
+        video_frames,
+    )
     from .analysis_steps import CaptionStep, DeduplicationStep, FaceDetectionStep, PetDetectionStep
     from .db import FaceDB
-    from .scanner import find_images
+    from .scanner import find_images, find_videos, get_exif_date, get_exif_gps
 
     photos_dir = _require_photos_dir(ctx)
     db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
+    frames_dir = Path(ctx.obj["db_path"]).parent / "tmp" / "frames"
 
     builder = AnalysisPipelineBuilder()
 
@@ -172,42 +183,52 @@ def analyse(
     builder.add_step(DeduplicationStep())
     pipeline = builder.build()
 
-    images = find_images(Path(photos_dir))
-    sources = []
-    for img_path in images:
+    # Discover sources: photos + optionally videos
+    candidates: list[tuple[Path, str]] = []  # (path, source_type)
+    for img_path in find_images(Path(photos_dir)):
         stored = db.to_relative(str(img_path.resolve()))
         if not force and db.is_scanned(stored, "composite"):
             continue
-        sources.append(img_path)
+        candidates.append((img_path, "photo"))
 
-    if sample > 0 and len(sources) > sample:
-        sources = random.sample(sources, sample)
+    if not no_videos:
+        for vid_path in find_videos(Path(photos_dir)):
+            stored = db.to_relative(str(vid_path.resolve()))
+            if not force and db.is_scanned(stored, "composite"):
+                continue
+            candidates.append((vid_path, "video"))
+
+    if sample > 0 and len(candidates) > sample:
+        candidates = random.sample(candidates, sample)
 
     print(f"Database: {ctx.obj['db_path']}")
     print(f"Pipeline: {pipeline.strategy_id}")
-    print(f"Sources to analyse: {len(sources)}")
+    n_photos = sum(1 for _, t in candidates if t == "photo")
+    n_videos = sum(1 for _, t in candidates if t == "video")
+    print(f"Sources to analyse: {len(candidates)} ({n_photos} photos, {n_videos} videos)")
 
-    persister = AnalysisPersister(db) if not dry_run else None
+    persister = AnalysisPersister(db, frames_dir=frames_dir) if not dry_run else None
     processed = 0
     errors = 0
     total_findings = 0
 
-    for i, source_path in enumerate(sources, 1):
+    for i, (source_path, source_type) in enumerate(candidates, 1):
         stored = db.to_relative(str(source_path.resolve()))
-        frames = photo_frames(source_path)
+        if source_type == "video":
+            frames = video_frames(source_path, interval_sec=interval)
+        else:
+            frames = photo_frames(source_path)
+
         try:
-            from .analysis import SourceAnalysis
-
-            initial = SourceAnalysis(source_path=stored, source_type="photo")
-            from .scanner import get_exif_date, get_exif_gps
-
-            initial.taken_at = get_exif_date(source_path)
-            gps = get_exif_gps(source_path)
-            if gps:
-                initial.latitude, initial.longitude = gps
+            initial = SourceAnalysis(source_path=stored, source_type=source_type)
+            if source_type == "photo":
+                initial.taken_at = get_exif_date(source_path)
+                gps = get_exif_gps(source_path)
+                if gps:
+                    initial.latitude, initial.longitude = gps
 
             result = pipeline.analyse_source(
-                source_path, source_type="photo", frames=frames, initial_state=initial
+                source_path, source_type=source_type, frames=frames, initial_state=initial
             )
         except OSError:
             errors += 1
@@ -228,9 +249,9 @@ def analyse(
             persister.persist(result, strategy_id=pipeline.strategy_id)
 
         processed += 1
-        if i % 10 == 0 or i == len(sources):
+        if i % 10 == 0 or i == len(candidates):
             print(
-                f"\r  [{i}/{len(sources)}] processed={processed} "
+                f"\r  [{i}/{len(candidates)}] processed={processed} "
                 f"findings={total_findings} errors={errors}",
                 end="",
                 flush=True,
