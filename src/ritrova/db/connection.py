@@ -105,6 +105,7 @@ class FaceDB(
             "ALTER TABLE scans ADD COLUMN detection_strategy TEXT NOT NULL DEFAULT 'unknown'",
             "ALTER TABLE findings ADD COLUMN embedding_dim INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE findings ADD COLUMN scan_id INTEGER REFERENCES scans(id) ON DELETE CASCADE",
+            "ALTER TABLE findings ADD COLUMN frame_number INTEGER NOT NULL DEFAULT 0",
         ]:
             with contextlib.suppress(sqlite3.OperationalError):
                 self.conn.execute(migration)
@@ -229,12 +230,13 @@ class FaceDB(
                 species TEXT NOT NULL DEFAULT 'human',
                 detected_at TEXT NOT NULL,
                 frame_path TEXT,
-                embedding_dim INTEGER NOT NULL DEFAULT 0
+                embedding_dim INTEGER NOT NULL DEFAULT 0,
+                frame_number INTEGER NOT NULL DEFAULT 0
             );
             INSERT INTO findings_new
                 SELECT id, source_id, scan_id, bbox_x, bbox_y, bbox_w, bbox_h,
                        embedding, person_id, cluster_id, confidence, species,
-                       detected_at, frame_path, embedding_dim
+                       detected_at, frame_path, embedding_dim, 0
                 FROM findings;
             DROP TABLE findings;
             ALTER TABLE findings_new RENAME TO findings;

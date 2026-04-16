@@ -17,6 +17,7 @@ class FindingMixin(_DBAccessor):
         scan_id: int,
         species: str = "human",
         frame_path: str | None = None,
+        frame_number: int = 0,
     ) -> None:
         """Add multiple findings in a single transaction.
 
@@ -27,10 +28,22 @@ class FindingMixin(_DBAccessor):
         now = self._now()
         self.conn.executemany(
             "INSERT INTO findings (source_id, bbox_x, bbox_y, bbox_w, bbox_h, "
-            "embedding, confidence, detected_at, species, frame_path, embedding_dim, scan_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "embedding, confidence, detected_at, species, frame_path, "
+            "embedding_dim, scan_id, frame_number) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                (sid, *bbox, emb.tobytes(), conf, now, species, frame_path, len(emb), scan_id)
+                (
+                    sid,
+                    *bbox,
+                    emb.tobytes(),
+                    conf,
+                    now,
+                    species,
+                    frame_path,
+                    len(emb),
+                    scan_id,
+                    frame_number,
+                )
                 for sid, bbox, emb, conf in findings_data
             ],
         )

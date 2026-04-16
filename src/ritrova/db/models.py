@@ -38,6 +38,7 @@ class Finding:
     # 0 only as an in-memory default for tests/fixtures that don't round-trip via SQLite.
     # Real DB rows always have scan_id NOT NULL after the migration.
     scan_id: int = 0
+    frame_number: int = 0
 
 
 @dataclass

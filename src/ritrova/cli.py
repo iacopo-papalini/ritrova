@@ -98,6 +98,151 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
 
 
 @cli.command()
+@click.option("--no-faces", is_flag=True, help="Skip human face detection")
+@click.option("--no-pets", is_flag=True, help="Skip pet detection")
+@click.option("--no-caption", is_flag=True, help="Skip VLM captioning + translation")
+@click.option("--min-face-confidence", default=0.65, help="Min confidence for face detection")
+@click.option("--min-pet-confidence", default=0.7, help="Min confidence for pet detection")
+@click.option(
+    "--vlm-model",
+    default=None,
+    help=f"VLM model ID (default: {DEFAULT_VLM_MODEL})",
+)
+@click.option(
+    "--translator-model",
+    default=None,
+    help=f"Translation model ID (default: {DEFAULT_TRANSLATOR_MODEL})",
+)
+@click.option("--no-translate", is_flag=True, help="Skip translation (English output)")
+@click.option("--force", is_flag=True, help="Re-analyse already-scanned sources")
+@click.option("--dry-run", is_flag=True, help="Run pipeline but don't persist to DB")
+@click.option("--sample", default=0, type=int, help="Process only N random sources (0 = all)")
+@click.pass_context
+def analyse(
+    ctx: click.Context,
+    no_faces: bool,
+    no_pets: bool,
+    no_caption: bool,
+    min_face_confidence: float,
+    min_pet_confidence: float,
+    vlm_model: str | None,
+    translator_model: str | None,
+    no_translate: bool,
+    force: bool,
+    dry_run: bool,
+    sample: int,
+) -> None:
+    """Unified source analysis: detect faces, pets, and generate captions in one pass."""
+    import random
+
+    from .analysis import AnalysisPersister, AnalysisPipelineBuilder, photo_frames
+    from .analysis_steps import CaptionStep, DeduplicationStep, FaceDetectionStep, PetDetectionStep
+    from .db import FaceDB
+    from .scanner import find_images
+
+    photos_dir = _require_photos_dir(ctx)
+    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
+
+    builder = AnalysisPipelineBuilder()
+
+    if not no_faces:
+        from .detector import FaceDetector
+
+        print("Loading face detection model...")
+        builder.add_step(FaceDetectionStep(FaceDetector(), min_face_confidence))
+
+    if not no_pets:
+        from .pet_detector import PetDetector
+
+        print("Loading pet detection models...")
+        builder.add_step(PetDetectionStep(PetDetector(), min_pet_confidence))
+
+    if not no_caption:
+        from .describer import Describer, Translator
+
+        vlm_id = vlm_model or DEFAULT_VLM_MODEL
+        trans_id = translator_model or DEFAULT_TRANSLATOR_MODEL
+        print(f"Loading VLM: {vlm_id}")
+        describer = Describer(model_id=vlm_id)
+        translator_obj = None if no_translate else Translator(model_id=trans_id)
+        if translator_obj:
+            print(f"Loading translator: {trans_id}")
+        builder.add_step(CaptionStep(describer, translator_obj))
+
+    builder.add_step(DeduplicationStep())
+    pipeline = builder.build()
+
+    images = find_images(Path(photos_dir))
+    sources = []
+    for img_path in images:
+        stored = db.to_relative(str(img_path.resolve()))
+        if not force and db.is_scanned(stored, "composite"):
+            continue
+        sources.append(img_path)
+
+    if sample > 0 and len(sources) > sample:
+        sources = random.sample(sources, sample)
+
+    print(f"Database: {ctx.obj['db_path']}")
+    print(f"Pipeline: {pipeline.strategy_id}")
+    print(f"Sources to analyse: {len(sources)}")
+
+    persister = AnalysisPersister(db) if not dry_run else None
+    processed = 0
+    errors = 0
+    total_findings = 0
+
+    for i, source_path in enumerate(sources, 1):
+        stored = db.to_relative(str(source_path.resolve()))
+        frames = photo_frames(source_path)
+        try:
+            from .analysis import SourceAnalysis
+
+            initial = SourceAnalysis(source_path=stored, source_type="photo")
+            from .scanner import get_exif_date, get_exif_gps
+
+            initial.taken_at = get_exif_date(source_path)
+            gps = get_exif_gps(source_path)
+            if gps:
+                initial.latitude, initial.longitude = gps
+
+            result = pipeline.analyse_source(
+                source_path, source_type="photo", frames=frames, initial_state=initial
+            )
+        except OSError:
+            errors += 1
+            continue
+
+        n_findings = len(result.findings)
+        total_findings += n_findings
+
+        if persister is not None and (n_findings > 0 or result.caption):
+            if force:
+                existing = db.conn.execute(
+                    "SELECT sc.id FROM scans sc JOIN sources s ON s.id = sc.source_id "
+                    "WHERE s.file_path = ? AND sc.scan_type = 'composite'",
+                    (stored,),
+                ).fetchone()
+                if existing:
+                    db.delete_scan(existing[0])
+            persister.persist(result, strategy_id=pipeline.strategy_id)
+
+        processed += 1
+        if i % 10 == 0 or i == len(sources):
+            print(
+                f"\r  [{i}/{len(sources)}] processed={processed} "
+                f"findings={total_findings} errors={errors}",
+                end="",
+                flush=True,
+            )
+
+    print()
+    mode = " (dry run)" if dry_run else ""
+    print(f"Done!{mode} processed={processed}  findings={total_findings}  errors={errors}")
+    db.close()
+
+
+@cli.command()
 @click.option(
     "--model",
     default=None,
