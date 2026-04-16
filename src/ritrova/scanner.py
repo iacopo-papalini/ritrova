@@ -3,7 +3,7 @@
 import hashlib
 import logging
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any
 
 import cv2
 import numpy as np
@@ -12,6 +12,9 @@ from PIL.ExifTags import Base as ExifBase
 
 from .db import FaceDB
 from .detector import FaceDetector
+
+if TYPE_CHECKING:
+    from .pet_detector import PetDetector
 
 logger = logging.getLogger(__name__)
 
@@ -152,11 +155,11 @@ def scan_one_photo_for_human(
     """
     stored_path = db.to_relative(str(image_path.resolve()))
     try:
-        detected_faces, width, height = detector.detect(image_path)
+        result = detector.detect(image_path)
     except OSError:
         logger.warning("Error reading %s", image_path)
         return (False, 0)
-    if width == 0 and height == 0:
+    if result.width == 0 and result.height == 0:
         return (False, 0)
 
     taken_at = get_exif_date(image_path)
@@ -165,8 +168,8 @@ def scan_one_photo_for_human(
     source_id = db.get_or_create_source(
         stored_path,
         source_type="photo",
-        width=width,
-        height=height,
+        width=result.width,
+        height=result.height,
         taken_at=taken_at,
         latitude=lat,
         longitude=lon,
@@ -174,9 +177,9 @@ def scan_one_photo_for_human(
     scan_id = db.record_scan(source_id, "human", detection_strategy="arcface_v1")
 
     batch = [
-        (source_id, face["bbox"], face["embedding"], face["confidence"])
-        for face in detected_faces
-        if cast(float, face["confidence"]) >= min_confidence
+        (source_id, face.bbox, face.embedding, face.confidence)
+        for face in result.detections
+        if face.confidence >= min_confidence
     ]
     if batch:
         db.add_findings_batch(batch, scan_id=scan_id)
@@ -190,50 +193,16 @@ def scan_photos(
     min_confidence: float = 0.65,
 ) -> dict[str, int]:
     """Scan all photos, detect faces, store in DB. Returns stats dict."""
+    from .scan_pipeline import HumanPhotoScan
+
     images = find_images(photos_dir)
-    total = len(images)
-    logger.info("Found %d images to process", total)
-
-    skipped = 0
-    processed = 0
-    faces_found = 0
-    errors = 0
-
-    for i, image_path in enumerate(images, 1):
-        stored_path = db.to_relative(str(image_path.resolve()))
-
-        if db.is_scanned(stored_path, "human"):
-            skipped += 1
-            if i % 500 == 0 or i == total:
-                print(
-                    f"\r  [{i}/{total}] processed={processed} skipped={skipped} "
-                    f"faces={faces_found} errors={errors}",
-                    end="",
-                    flush=True,
-                )
-            continue
-
-        success, n_faces = scan_one_photo_for_human(db, image_path, detector, min_confidence)
-        if not success:
-            errors += 1
-        else:
-            faces_found += n_faces
-            processed += 1
-
-        if i % 100 == 0 or i == total:
-            print(
-                f"\r  [{i}/{total}] processed={processed} skipped={skipped} "
-                f"faces={faces_found} errors={errors}",
-                end="",
-                flush=True,
-            )
-
-    print()
+    logger.info("Found %d images to process", len(images))
+    stats = HumanPhotoScan(db, photos_dir, detector, min_confidence).run()
     return {
-        "processed": processed,
-        "skipped": skipped,
-        "faces_found": faces_found,
-        "errors": errors,
+        "processed": stats.processed,
+        "skipped": stats.skipped,
+        "faces_found": stats.found,
+        "errors": stats.errors,
     }
 
 
@@ -380,84 +349,47 @@ def scan_videos(
     dedup_threshold: float = 0.6,
 ) -> dict[str, int]:
     """Scan videos: extract frames, detect faces, deduplicate per video."""
+    from .scan_pipeline import HumanVideoScan
+
     videos = find_videos(photos_dir)
-    total = len(videos)
-    logger.info("Found %d videos to process", total)
-
-    skipped = 0
-    processed = 0
-    faces_found = 0
-    errors = 0
-
-    for i, video_path in enumerate(videos, 1):
-        abs_video = str(video_path.resolve())
-        stored_video = db.to_relative(abs_video)
-
-        if db.is_scanned(stored_video, "human"):
-            skipped += 1
-            if i % 50 == 0 or i == total:
-                print(
-                    f"\r  [{i}/{total}] processed={processed} skipped={skipped} "
-                    f"faces={faces_found} errors={errors}",
-                    end="",
-                    flush=True,
-                )
-            continue
-
-        success, n_faces = scan_one_video_for_human(
-            db, video_path, detector, frames_dir, min_confidence, interval_sec, dedup_threshold
-        )
-        if not success:
-            errors += 1
-        else:
-            faces_found += n_faces
-            processed += 1
-
-        if i % 10 == 0 or i == total:
-            print(
-                f"\r  [{i}/{total}] processed={processed} skipped={skipped} "
-                f"faces={faces_found} errors={errors}",
-                end="",
-                flush=True,
-            )
-
-    print()
+    logger.info("Found %d videos to process", len(videos))
+    stats = HumanVideoScan(
+        db, photos_dir, detector, frames_dir, min_confidence, interval_sec, dedup_threshold
+    ).run()
     return {
-        "processed": processed,
-        "skipped": skipped,
-        "faces_found": faces_found,
-        "errors": errors,
+        "processed": stats.processed,
+        "skipped": stats.skipped,
+        "faces_found": stats.found,
+        "errors": stats.errors,
     }
 
 
 def scan_one_photo_for_pets(
     db: FaceDB,
     image_path: Path,
-    pet_detector: Any,
+    pet_detector: PetDetector,
     min_confidence: float = 0.5,
 ) -> tuple[bool, int]:
     """Run a pet scan on a single photo. Returns (success, n_pets)."""
-    from PIL import Image as _Image
-    from PIL import ImageOps as _ImageOps
-
     stored_path = db.to_relative(str(image_path.resolve()))
     try:
-        detected = pet_detector.detect(image_path)
-        good = [p for p in detected if p["confidence"] >= min_confidence]
-        with _Image.open(image_path) as img:
-            oriented = _ImageOps.exif_transpose(img)
-            w, h = oriented.size
+        result = pet_detector.detect(image_path)
     except OSError, ValueError:
         logger.warning("Error processing %s", image_path)
         return (False, 0)
+    if result.width == 0 and result.height == 0:
+        return (False, 0)
 
-    source_id = db.get_or_create_source(stored_path, source_type="photo", width=w, height=h)
+    good = [d for d in result.detections if d.confidence >= min_confidence]
+    source_id = db.get_or_create_source(
+        stored_path, source_type="photo", width=result.width, height=result.height
+    )
     scan_id = db.record_scan(source_id, "pet", detection_strategy="siglip_v1")
     for pet in good:
         db.add_findings_batch(
-            [(source_id, pet["bbox"], pet["embedding"], pet["confidence"])],
+            [(source_id, pet.bbox, pet.embedding, pet.confidence)],
             scan_id=scan_id,
-            species=pet["species"],
+            species=pet.species,
         )
     return (True, len(good))
 
@@ -465,52 +397,18 @@ def scan_one_photo_for_pets(
 def scan_pets(
     db: FaceDB,
     photos_dir: Path,
-    pet_detector: Any,
+    pet_detector: PetDetector,
     min_confidence: float = 0.5,
 ) -> dict[str, int]:
     """Scan all photos for dogs and cats using YOLO + SigLIP."""
+    from .scan_pipeline import PetPhotoScan
+
     images = find_images(photos_dir)
-    total = len(images)
-    logger.info("Found %d images to scan for pets", total)
-
-    skipped = 0
-    processed = 0
-    pets_found = 0
-    errors = 0
-
-    for i, image_path in enumerate(images, 1):
-        stored_path = db.to_relative(str(image_path.resolve()))
-
-        if db.is_scanned(stored_path, "pet"):
-            skipped += 1
-            if i % 500 == 0 or i == total:
-                print(
-                    f"\r  [{i}/{total}] processed={processed} skipped={skipped} "
-                    f"pets={pets_found} errors={errors}",
-                    end="",
-                    flush=True,
-                )
-            continue
-
-        success, n_pets = scan_one_photo_for_pets(db, image_path, pet_detector, min_confidence)
-        if not success:
-            errors += 1
-        else:
-            pets_found += n_pets
-            processed += 1
-
-        if i % 50 == 0 or i == total:
-            print(
-                f"\r  [{i}/{total}] processed={processed} skipped={skipped} "
-                f"pets={pets_found} errors={errors}",
-                end="",
-                flush=True,
-            )
-
-    print()
+    logger.info("Found %d images to scan for pets", len(images))
+    stats = PetPhotoScan(db, photos_dir, pet_detector, min_confidence).run()
     return {
-        "processed": processed,
-        "skipped": skipped,
-        "pets_found": pets_found,
-        "errors": errors,
+        "processed": stats.processed,
+        "skipped": stats.skipped,
+        "pets_found": stats.found,
+        "errors": stats.errors,
     }

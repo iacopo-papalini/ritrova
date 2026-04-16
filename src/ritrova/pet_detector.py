@@ -8,6 +8,8 @@ import torch
 from PIL import Image, ImageFile, ImageOps
 from ultralytics import YOLO  # type: ignore[attr-defined]
 
+from .detection import Detection, DetectionResult
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 logger = logging.getLogger(__name__)
@@ -39,11 +41,11 @@ class PetDetector:
         else:
             self.device = "cpu"
 
-    def detect(self, image_path: Path) -> list[dict[str, object]]:
+    def detect(self, image_path: Path) -> DetectionResult:
         """Detect dogs and cats in an image.
 
-        Returns list of dicts with keys:
-            species (str), bbox (x, y, w, h), embedding (np.ndarray), confidence (float)
+        Returns a ``DetectionResult`` with each pet's bounding box, embedding,
+        confidence, and species, plus the source image dimensions.
         """
         try:
             img_raw = Image.open(image_path)
@@ -51,14 +53,14 @@ class PetDetector:
             img_rgb = img.convert("RGB")
         except OSError:
             logger.warning("Could not read image: %s", image_path)
-            return []
+            return DetectionResult(detections=[], width=0, height=0)
 
         w_img, h_img = img_rgb.size
 
         # YOLO detection — filter for cat/dog only
         results = self.yolo(img_rgb, verbose=False, classes=[COCO_CAT, COCO_DOG])
 
-        pets = []
+        pets: list[Detection] = []
         for result in results:
             for box in result.boxes:
                 cls_id = int(box.cls[0])
@@ -70,22 +72,20 @@ class PetDetector:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 x1, y1 = max(0, int(x1)), max(0, int(y1))
                 x2, y2 = min(w_img, int(x2)), min(h_img, int(y2))
-                bbox = (x1, y1, x2 - x1, y2 - y1)
 
-                # Crop and get embedding
                 crop = img_rgb.crop((x1, y1, x2, y2))
                 embedding = self._embed(crop)
 
                 pets.append(
-                    {
-                        "species": species,
-                        "bbox": bbox,
-                        "embedding": embedding,
-                        "confidence": conf,
-                    }
+                    Detection(
+                        bbox=(x1, y1, x2 - x1, y2 - y1),
+                        embedding=embedding,
+                        confidence=conf,
+                        species=species,
+                    )
                 )
 
-        return pets
+        return DetectionResult(detections=pets, width=w_img, height=h_img)
 
     def _embed(self, crop: Image.Image) -> np.ndarray:
         """Get SigLIP embedding for a cropped pet image."""

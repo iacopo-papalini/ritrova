@@ -15,11 +15,14 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from PIL import Image, ImageFile, ImageOps
 
 from .db import FaceDB
+
+if TYPE_CHECKING:
+    from .description_stages import DescriptionPipeline
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -313,11 +316,46 @@ def describe_sources(
 ) -> DescribeResult:
     """Run the describe pipeline on a list of sources.
 
-    Stage 1 (VLM) produces English captions + tags.
-    Stage 2 (translation, optional) converts to Italian.
-    If ``translator`` is None, English output is stored directly.
+    Builds a ``DescriptionPipeline`` from the provided describer + optional
+    translator and delegates to ``describe_sources_with_pipeline``.
     """
+    from .description_stages import (
+        DescriptionPipeline,
+        DescriptionStage,
+        TranslationStage,
+        VLMCaptionStage,
+    )
+
+    vlm_stage = VLMCaptionStage(model_id=describer.model_id)
+    vlm_stage._describer = describer
+
+    stages: list[DescriptionStage] = [vlm_stage]
+
+    if translator is not None:
+        t_stage = TranslationStage(model_id=translator.model_id)
+        t_stage._translator = translator
+        stages.append(t_stage)
+
+    pipeline = DescriptionPipeline(stages)
+    return describe_sources_with_pipeline(
+        db, source_ids, pipeline, force=force, vocab_refresh_interval=vocab_refresh_interval
+    )
+
+
+def describe_sources_with_pipeline(
+    db: FaceDB,
+    source_ids: list[int],
+    pipeline: DescriptionPipeline,
+    *,
+    force: bool = False,
+    vocab_refresh_interval: int = 500,
+) -> DescribeResult:
+    """Run a ``DescriptionPipeline`` on a list of sources."""
     vocab_hint = _build_vocab_hint(db)
+    vlm_stage = pipeline.vlm_stage
+    if vlm_stage and vocab_hint:
+        vlm_stage.vocab_hint = vocab_hint
+
     described = 0
     errors = 0
     total = len(source_ids)
@@ -331,30 +369,25 @@ def describe_sources(
             errors += 1
             continue
 
-        if i > 1 and (i - 1) % vocab_refresh_interval == 0:
+        if vlm_stage and i > 1 and (i - 1) % vocab_refresh_interval == 0:
             vocab_hint = _build_vocab_hint(db)
+            vlm_stage.vocab_hint = vocab_hint
 
-        caption, tags = describer.describe(resolved, vocab_hint=vocab_hint)
-        if not caption:
+        result = pipeline.describe(resolved)
+        if not result.caption:
             errors += 1
             continue
-
-        if translator is not None:
-            caption, tags = translator.translate(caption, tags)
 
         if force:
             db.delete_describe_scans(source_id)
 
-        strategy = describer.model_id
-        if translator is not None:
-            strategy = f"{describer.model_id}+{translator.model_id}"
-        scan_id = db.record_scan(source_id, "describe", detection_strategy=strategy)
-        db.add_description(source_id, scan_id, caption, tags)
+        scan_id = db.record_scan(source_id, "describe", detection_strategy=pipeline.strategy_id)
+        db.add_description(source_id, scan_id, result.caption, result.tags)
         described += 1
 
-        tag_str = ", ".join(sorted(tags)) if tags else "(no tags)"
+        tag_str = ", ".join(sorted(result.tags)) if result.tags else "(no tags)"
         logger.info("%s", resolved)
-        logger.info("  %s", caption)
+        logger.info("  %s", result.caption)
         logger.info("  [%s]", tag_str)
 
     if total > 0 and described == 0 and errors == 0:

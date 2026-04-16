@@ -7,6 +7,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageFile, ImageOps
 
+from .detection import Detection, DetectionResult
+
 # Some JPEGs are slightly truncated but still perfectly viewable
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -39,21 +41,20 @@ class FaceDetector:
             logger.warning("Could not read image: %s", image_path)
             return None
 
-    def detect(self, image_path: Path) -> tuple[list[dict[str, object]], int, int]:
+    def detect(self, image_path: Path) -> DetectionResult:
         """Detect faces in an image.
 
-        Returns:
-            (faces, width, height) where each face dict has keys:
-            bbox (x, y, w, h), embedding (np.ndarray), confidence (float)
+        Returns a ``DetectionResult`` with each face's bounding box,
+        embedding, and confidence, plus the source image dimensions.
         """
         img = self._load_image(image_path)
         if img is None:
-            return [], 0, 0
+            return DetectionResult(detections=[], width=0, height=0)
 
         h, w = img.shape[:2]
         raw_faces = self.app.get(img)
 
-        faces = []
+        faces: list[Detection] = []
         for face in raw_faces:
             x1, y1, x2, y2 = face.bbox.astype(int)
             x1, y1 = max(0, x1), max(0, y1)
@@ -71,11 +72,11 @@ class FaceDetector:
                 continue
 
             faces.append(
-                {
-                    "bbox": (int(x1), int(y1), int(fw), int(fh)),
-                    "embedding": face.normed_embedding.astype(np.float32),
-                    "confidence": float(face.det_score),
-                }
+                Detection(
+                    bbox=(int(x1), int(y1), int(fw), int(fh)),
+                    embedding=face.normed_embedding.astype(np.float32),
+                    confidence=float(face.det_score),
+                )
             )
 
-        return faces, w, h
+        return DetectionResult(detections=faces, width=w, height=h)

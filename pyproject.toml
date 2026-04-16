@@ -58,6 +58,7 @@ ignore = ["E501", "UP047"]
 "src/ritrova/app.py" = ["B008"]
 "src/ritrova/cli.py" = ["T20"]
 "src/ritrova/scanner.py" = ["T20"]
+"src/ritrova/scan_pipeline.py" = ["T20"]
 
 [tool.mypy]
 python_version = "3.14"

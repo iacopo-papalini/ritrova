@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from ritrova.db import FaceDB
+from ritrova.detection import Detection, DetectionResult
 from ritrova.scanner import _is_duplicate, find_images, find_videos, scan_pets, scan_photos
 
 
@@ -148,16 +149,16 @@ class TestScanPhotos(TestCase):
 
     def _mock_detector(
         self,
-        faces: list[dict[str, object]] | None = None,
+        detections: list[Detection] | None = None,
         w: int = 200,
         h: int = 200,
     ) -> MagicMock:
         detector = MagicMock()
-        if faces is None:
-            faces = [
-                {"bbox": (10, 10, 50, 50), "embedding": _emb(1), "confidence": 0.95},
+        if detections is None:
+            detections = [
+                Detection(bbox=(10, 10, 50, 50), embedding=_emb(1), confidence=0.95),
             ]
-        detector.detect.return_value = (faces, w, h)
+        detector.detect.return_value = DetectionResult(detections=detections, width=w, height=h)
         return detector
 
     def test_scans_new_photo(self) -> None:
@@ -180,10 +181,10 @@ class TestScanPhotos(TestCase):
 
     def test_filters_by_confidence(self) -> None:
         _make_jpeg(self.photos_dir / "a.jpg")
-        low_conf_faces: list[dict[str, object]] = [
-            {"bbox": (10, 10, 50, 50), "embedding": _emb(1), "confidence": 0.3},
+        low_conf = [
+            Detection(bbox=(10, 10, 50, 50), embedding=_emb(1), confidence=0.3),
         ]
-        detector = self._mock_detector(faces=low_conf_faces)
+        detector = self._mock_detector(detections=low_conf)
 
         result = scan_photos(self.db, self.photos_dir, detector, min_confidence=0.65)
         assert result["processed"] == 1
@@ -191,7 +192,7 @@ class TestScanPhotos(TestCase):
 
     def test_handles_detection_error(self) -> None:
         _make_jpeg(self.photos_dir / "a.jpg")
-        detector = self._mock_detector(faces=[], w=0, h=0)
+        detector = self._mock_detector(detections=[], w=0, h=0)
 
         result = scan_photos(self.db, self.photos_dir, detector)
         assert result["errors"] == 1
@@ -207,11 +208,11 @@ class TestScanPhotos(TestCase):
 
     def test_multiple_findings_per_source(self) -> None:
         _make_jpeg(self.photos_dir / "a.jpg")
-        faces: list[dict[str, object]] = [
-            {"bbox": (10, 10, 50, 50), "embedding": _emb(1), "confidence": 0.95},
-            {"bbox": (70, 10, 50, 50), "embedding": _emb(2), "confidence": 0.90},
+        multi = [
+            Detection(bbox=(10, 10, 50, 50), embedding=_emb(1), confidence=0.95),
+            Detection(bbox=(70, 10, 50, 50), embedding=_emb(2), confidence=0.90),
         ]
-        detector = self._mock_detector(faces=faces)
+        detector = self._mock_detector(detections=multi)
 
         result = scan_photos(self.db, self.photos_dir, detector)
         assert result["faces_found"] == 2
@@ -225,18 +226,23 @@ class TestScanPets(TestCase):
         self.photos_dir = tmp_path / "photos"
         self.photos_dir.mkdir()
 
-    def _mock_pet_detector(self, detections: list[dict[str, object]] | None = None) -> MagicMock:
+    def _mock_pet_detector(
+        self,
+        detections: list[Detection] | None = None,
+        w: int = 200,
+        h: int = 200,
+    ) -> MagicMock:
         detector = MagicMock()
         if detections is None:
             detections = [
-                {
-                    "species": "dog",
-                    "bbox": (10, 10, 50, 50),
-                    "embedding": _emb(1, dim=768),
-                    "confidence": 0.9,
-                },
+                Detection(
+                    bbox=(10, 10, 50, 50),
+                    embedding=_emb(1, dim=768),
+                    confidence=0.9,
+                    species="dog",
+                ),
             ]
-        detector.detect.return_value = detections
+        detector.detect.return_value = DetectionResult(detections=detections, width=w, height=h)
         return detector
 
     def test_scans_pets(self) -> None:
@@ -251,12 +257,12 @@ class TestScanPets(TestCase):
         _make_jpeg(self.photos_dir / "a.jpg")
         detector = self._mock_pet_detector(
             [
-                {
-                    "species": "cat",
-                    "bbox": (10, 10, 50, 50),
-                    "embedding": _emb(1, dim=768),
-                    "confidence": 0.9,
-                },
+                Detection(
+                    bbox=(10, 10, 50, 50),
+                    embedding=_emb(1, dim=768),
+                    confidence=0.9,
+                    species="cat",
+                ),
             ]
         )
 
@@ -276,12 +282,12 @@ class TestScanPets(TestCase):
         _make_jpeg(self.photos_dir / "a.jpg")
         detector = self._mock_pet_detector(
             [
-                {
-                    "species": "dog",
-                    "bbox": (10, 10, 50, 50),
-                    "embedding": _emb(1, dim=768),
-                    "confidence": 0.1,
-                },
+                Detection(
+                    bbox=(10, 10, 50, 50),
+                    embedding=_emb(1, dim=768),
+                    confidence=0.1,
+                    species="dog",
+                ),
             ]
         )
 
