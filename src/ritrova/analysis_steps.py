@@ -8,6 +8,7 @@ Steps never touch the database.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING
 
 from .analysis import AnalysisFinding, AnalysisStep, FrameRef, SourceAnalysis
@@ -18,6 +19,10 @@ if TYPE_CHECKING:
     from .pet_detector import PetDetector
 
 logger = logging.getLogger(__name__)
+
+# Serialise GPU/ANE inference across threads. Metal and CoreML don't support
+# concurrent command buffer submissions from multiple threads safely.
+_inference_lock = threading.Lock()
 
 
 class FaceDetectionStep(AnalysisStep):
@@ -32,7 +37,8 @@ class FaceDetectionStep(AnalysisStep):
         return "arcface"
 
     def analyse(self, frame: FrameRef, state: SourceAnalysis) -> SourceAnalysis:
-        result = self._detector.detect_image(frame.image)
+        with _inference_lock:
+            result = self._detector.detect_image(frame.image)
         for d in result.detections:
             if d.confidence >= self._min_confidence:
                 state.findings.append(
@@ -59,7 +65,8 @@ class PetDetectionStep(AnalysisStep):
         return "siglip"
 
     def analyse(self, frame: FrameRef, state: SourceAnalysis) -> SourceAnalysis:
-        result = self._detector.detect_image(frame.image)
+        with _inference_lock:
+            result = self._detector.detect_image(frame.image)
         for d in result.detections:
             if d.confidence >= self._min_confidence:
                 state.findings.append(
@@ -99,12 +106,14 @@ class CaptionStep(AnalysisStep):
         if frame.frame_number != 0:
             return state
 
-        caption, tags = self._describer.describe_image(frame.image, vocab_hint=self.vocab_hint)
+        with _inference_lock:
+            caption, tags = self._describer.describe_image(frame.image, vocab_hint=self.vocab_hint)
         if not caption:
             return state
 
         if self._translator is not None:
-            caption, tags = self._translator.translate(caption, tags)
+            with _inference_lock:
+                caption, tags = self._translator.translate(caption, tags)
 
         state.caption = caption
         state.tags = tags
