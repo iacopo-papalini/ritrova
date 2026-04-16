@@ -70,12 +70,12 @@
 
     {# Delete #}
     <button data-subject-name="{{ subject.name }}"
-            @click="if (await confirmDialog({
+            @click="(await confirmDialog({
                       title: `Delete ${$el.dataset.subjectName}?`,
                       message: 'All faces assigned to this subject will become unassigned.',
                       confirmLabel: 'Delete',
                       danger: true
-                    }))
+                    })) &&
                       fetch('/api/subjects/{{ subject.id }}/delete', { method: 'POST' })
                         .then(r => { if (r.redirected) location.href = r.url; else location.href = '/{{ kind }}'; })"
             class="rounded-lg border border-gallery-danger/30 px-4 py-2 text-sm font-medium text-gallery-danger
@@ -119,7 +119,7 @@
                alt="face"
                @click="$store.lightbox.openFromGrid($el, 'finding')"
                class="aspect-square w-full cursor-pointer object-cover">
-          <button @click.stop="if (await confirmDialog({title: `Remove this face from ${$el.closest('[data-subject-name]').dataset.subjectName}?`, confirmLabel: 'Remove', danger: true}))
+          <button @click.stop="(await confirmDialog({title: `Remove this face from ${$el.closest('[data-subject-name]').dataset.subjectName}?`, confirmLabel: 'Remove', danger: true})) &&
                     fetch('/api/findings/{{ face.id }}/unassign', { method: 'POST' })
                       .then(r => { if(r.ok) $el.closest('.group').remove() })"
                   class="absolute top-1 right-1 z-10 hidden group-hover:flex h-6 w-6 items-center justify-center

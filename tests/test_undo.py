@@ -255,3 +255,118 @@ class TestUndoEndpoints(TestCase):
         assert data["pending"] is True
         # Single-slot: peek reflects the *second* write.
         assert data["token"] == second["undo_token"]
+
+    # ── Round 2A: destructive subject ops ──────
+
+    def _pending_token(self) -> str:
+        """Helper: fetch the currently-pending undo token via peek."""
+        data = self.client.get("/api/undo/peek").json()
+        assert data["pending"] is True, "expected a pending undo but /peek says none"
+        token = data["token"]
+        assert isinstance(token, str)
+        return token
+
+    def test_undo_subject_delete_restores_row_and_assignments(self) -> None:
+        """Delete subject + undo: subject row is recreated with the original id,
+        and every finding previously assigned to it gets its person_id back."""
+        alice = self.db.create_subject("Alice")
+        _, fid1 = _add_finding(self.db, "/a1.jpg", seed=1)
+        _, fid2 = _add_finding(self.db, "/a2.jpg", seed=2)
+        self.db.assign_finding_to_subject(fid1, alice)
+        self.db.assign_finding_to_subject(fid2, alice)
+        original_row = self.db.get_subject_row(alice)
+        assert original_row is not None
+
+        resp = self.client.post(f"/api/subjects/{alice}/delete", follow_redirects=False)
+        # The route redirects to /{kind}; that's fine — we just need it to
+        # have fired and the undo to be registered.
+        assert resp.status_code in (303, 307)
+
+        # Mid-flight: subject gone, findings unassigned.
+        assert self.db.get_subject(alice) is None
+        assert self.db.get_finding(fid1).person_id is None  # type: ignore[union-attr]
+        assert self.db.get_finding(fid2).person_id is None  # type: ignore[union-attr]
+
+        token = self._pending_token()
+        resp = self.client.post(f"/api/undo/{token}")
+        assert resp.status_code == 200
+
+        # Subject row restored verbatim — same id, name, kind, created_at.
+        restored = self.db.get_subject_row(alice)
+        assert restored == original_row
+        # Findings reassigned.
+        assert self.db.get_finding(fid1).person_id == alice  # type: ignore[union-attr]
+        assert self.db.get_finding(fid2).person_id == alice  # type: ignore[union-attr]
+
+    def test_undo_subject_delete_with_zero_findings(self) -> None:
+        """Deleting an unused subject must still be undoable (no findings to
+        restore — just the row)."""
+        orphan = self.db.create_subject("NobodyCares")
+        original_row = self.db.get_subject_row(orphan)
+        self.client.post(f"/api/subjects/{orphan}/delete", follow_redirects=False)
+        assert self.db.get_subject(orphan) is None
+
+        self.client.post(f"/api/undo/{self._pending_token()}")
+        assert self.db.get_subject_row(orphan) == original_row
+
+    def test_undo_subject_merge_recreates_source_and_unswaps_findings(self) -> None:
+        """Source subject is re-INSERTed with its original id; findings that
+        moved source -> target are flipped back. Target subject is untouched."""
+        source = self.db.create_subject("Bob")
+        target = self.db.create_subject("Uncle Bob")
+        _, fid_s = _add_finding(self.db, "/s.jpg", seed=1)
+        _, fid_t = _add_finding(self.db, "/t.jpg", seed=2)
+        self.db.assign_finding_to_subject(fid_s, source)
+        self.db.assign_finding_to_subject(fid_t, target)
+        source_row = self.db.get_subject_row(source)
+        target_row = self.db.get_subject_row(target)
+
+        resp = self.client.post(
+            "/api/subjects/merge",
+            data={"source_id": str(source), "target_id": str(target)},
+            follow_redirects=False,
+        )
+        assert resp.status_code in (303, 307)
+        # Mid-flight: source gone, its finding re-pointed at target.
+        assert self.db.get_subject(source) is None
+        assert self.db.get_finding(fid_s).person_id == target  # type: ignore[union-attr]
+        assert self.db.get_finding(fid_t).person_id == target  # type: ignore[union-attr]
+
+        self.client.post(f"/api/undo/{self._pending_token()}")
+
+        # Source restored with the same row, source's finding back on source,
+        # target's own finding untouched.
+        assert self.db.get_subject_row(source) == source_row
+        assert self.db.get_subject_row(target) == target_row
+        assert self.db.get_finding(fid_s).person_id == source  # type: ignore[union-attr]
+        assert self.db.get_finding(fid_t).person_id == target  # type: ignore[union-attr]
+
+    def test_undo_cluster_name_deletes_subject_and_frees_findings(self) -> None:
+        """cluster/name creates a subject + assigns the cluster in one shot.
+        Undo must remove the subject entirely AND free the findings it grabbed."""
+        _, fid1 = _add_finding(self.db, "/c1.jpg", seed=1)
+        _, fid2 = _add_finding(self.db, "/c2.jpg", seed=2)
+        self.db.update_cluster_ids({fid1: 42, fid2: 42})
+
+        # Pre-state: no subject with this name.
+        assert not any(s.name == "Freshly Named" for s in self.db.get_subjects())
+
+        resp = self.client.post(
+            "/api/clusters/42/name",
+            data={"name": "Freshly Named"},
+            follow_redirects=False,
+        )
+        assert resp.status_code in (303, 307)
+
+        created = next(s for s in self.db.get_subjects() if s.name == "Freshly Named")
+        assert self.db.get_finding(fid1).person_id == created.id  # type: ignore[union-attr]
+
+        self.client.post(f"/api/undo/{self._pending_token()}")
+
+        # Subject gone, findings back to NULL person_id but still in the cluster.
+        assert not any(s.name == "Freshly Named" for s in self.db.get_subjects())
+        for fid in (fid1, fid2):
+            f = self.db.get_finding(fid)
+            assert f is not None
+            assert f.person_id is None
+            assert f.cluster_id == 42

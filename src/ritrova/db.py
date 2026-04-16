@@ -1368,6 +1368,63 @@ class FaceDB:
         return [r[0] for r in rows]
 
     @_locked
+    def get_subject_row(self, subject_id: int) -> tuple[int, str, str, str] | None:
+        """Return ``(id, name, kind, created_at)`` for a subject, or None.
+
+        Used to snapshot a subject before delete/merge so undo can resurrect
+        the row verbatim. ``get_subject`` doesn't carry ``created_at`` because
+        the UI doesn't need it; undo does.
+        """
+        row = self.conn.execute(
+            "SELECT id, name, kind, created_at FROM subjects WHERE id = ?",
+            (subject_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return (row["id"], row["name"], row["kind"], row["created_at"])
+
+    @_locked
+    def get_subject_finding_ids(self, subject_id: int) -> list[int]:
+        """Return finding IDs currently assigned to ``subject_id``.
+
+        Light-weight alternative to ``get_subject_findings`` when undo only
+        needs ids, not full Finding rows + embeddings.
+        """
+        rows = self.conn.execute(
+            "SELECT id FROM findings WHERE person_id = ?", (subject_id,)
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    @_locked
+    def recreate_subject(self, subject_id: int, name: str, kind: str, created_at: str) -> None:
+        """INSERT a subject row with an explicit id.
+
+        Used by undo to resurrect a subject that was destroyed by
+        ``delete_subject`` or ``merge_subjects``. AUTOINCREMENT only ever
+        advances, so the freed id is safe to reuse — no live row can collide.
+        """
+        self.conn.execute(
+            "INSERT INTO subjects (id, name, kind, created_at) VALUES (?, ?, ?, ?)",
+            (subject_id, name, kind, created_at),
+        )
+        self.conn.commit()
+
+    @_locked
+    def set_person_id(self, finding_ids: list[int], subject_id: int) -> None:
+        """Set person_id on the given findings (opposite of ``clear_person_id``).
+
+        Used by undo to restore prior assignments after delete_subject /
+        merge_subjects reshuffled them.
+        """
+        if not finding_ids:
+            return
+        self.conn.executemany(
+            "UPDATE findings SET person_id = ? WHERE id = ?",
+            [(subject_id, fid) for fid in finding_ids],
+        )
+        self.conn.commit()
+
+    @_locked
     def get_unclustered_embeddings(
         self, species: str = "human", embedding_dim: int | None = None
     ) -> list[tuple[int, np.ndarray]]:

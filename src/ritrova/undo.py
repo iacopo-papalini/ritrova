@@ -63,6 +63,47 @@ class ClusterAssignPayload:
     assigned_finding_ids: list[int]
 
 
+@dataclass
+class SubjectSnapshot:
+    """Enough of a ``subjects`` row to resurrect it verbatim."""
+
+    id: int
+    name: str
+    kind: str
+    created_at: str
+
+
+@dataclass
+class SubjectDeletePayload:
+    """Undo ``delete_subject``: recreate the row + restore person_id on every
+    finding that was previously assigned to this subject."""
+
+    subject: SubjectSnapshot
+    finding_ids: list[int]
+
+
+@dataclass
+class SubjectMergePayload:
+    """Undo ``merge_subjects`` (source -> target): recreate the destroyed
+    source subject + flip back every finding that moved source -> target."""
+
+    source_subject: SubjectSnapshot
+    target_subject_id: int
+    moved_finding_ids: list[int]
+
+
+@dataclass
+class ClusterNamePayload:
+    """Undo ``/api/clusters/{id}/name``: the endpoint both created a subject
+    AND assigned the cluster to it. Undo deletes the subject (the subjects
+    FK's ON DELETE SET NULL would null person_id on its findings) but we
+    also track the exact finding ids it touched for belt-and-suspenders."""
+
+    created_subject_id: int
+    cluster_id: int
+    assigned_finding_ids: list[int]
+
+
 # ── Store ────────────────────────────────────────────────────────────
 
 

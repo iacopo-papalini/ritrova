@@ -35,7 +35,11 @@ from .undo import (
     ClusterAssignPayload,
     ClusterDismissPayload,
     ClusterMergePayload,
+    ClusterNamePayload,
     FindingFieldsSnapshot,
+    SubjectDeletePayload,
+    SubjectMergePayload,
+    SubjectSnapshot,
     UndoStore,
 )
 
@@ -545,6 +549,18 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         noun = "face" if n == 1 else "faces"
         return f"Assigned {n} {noun} to {subject_name}"
 
+    def _describe_cluster_name(subject_name: str, n: int) -> str:
+        noun = "face" if n == 1 else "faces"
+        return f"Created {subject_name} and assigned {n} {noun}"
+
+    def _describe_subject_delete(subject_name: str, n: int) -> str:
+        noun = "face" if n == 1 else "faces"
+        return f"Deleted {subject_name} ({n} {noun} unassigned)"
+
+    def _describe_subject_merge(source_name: str, target_name: str, n: int) -> str:
+        noun = "face" if n == 1 else "faces"
+        return f"Merged {source_name} into {target_name} ({n} {noun})"
+
     def _next_similar_cluster(subject_id: int, cluster_id: int) -> str:
         """Find the unnamed cluster most similar to this subject, return redirect URL."""
         findings = db.get_cluster_findings(cluster_id, limit=1)
@@ -563,8 +579,23 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         # Determine subject kind from cluster's finding species
         findings = db.get_cluster_findings(cluster_id, limit=1)
         subject_kind = _subject_kind_for_species(findings[0].species) if findings else "person"
+        # Snapshot exactly which findings assign_cluster_to_subject will touch
+        # (WHERE person_id IS NULL) so undo can NULL precisely those — not any
+        # pre-existing assignments in the cluster.
+        pending_ids = db.get_unassigned_cluster_finding_ids(cluster_id)
         subject_id = db.create_subject(name, kind=subject_kind)
         db.assign_cluster_to_subject(cluster_id, subject_id)
+        undo_store.put(
+            kind="cluster_name",
+            description=_describe_cluster_name(name, len(pending_ids)),
+            payload=ClusterNamePayload(
+                created_subject_id=subject_id,
+                cluster_id=cluster_id,
+                assigned_finding_ids=pending_ids,
+            ),
+        )
+        # Redirect path; the toast is recovered by /api/undo/peek on the next
+        # page (same pattern as assign_cluster_to_existing's non-HX branch).
         return RedirectResponse(_next_similar_cluster(subject_id, cluster_id), status_code=303)
 
     @app.post("/api/clusters/{cluster_id}/assign", response_model=None)
@@ -686,6 +717,35 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             payload = entry.payload
             assert isinstance(payload, ClusterAssignPayload)
             db.clear_person_id(payload.assigned_finding_ids)
+        elif entry.kind == "cluster_name":
+            payload = entry.payload
+            assert isinstance(payload, ClusterNamePayload)
+            # delete_subject cascades ON DELETE SET NULL on every finding
+            # pointing at this subject — cleaner than manually chasing the
+            # assigned_finding_ids list.
+            db.delete_subject(payload.created_subject_id)
+        elif entry.kind == "subject_delete":
+            payload = entry.payload
+            assert isinstance(payload, SubjectDeletePayload)
+            db.recreate_subject(
+                payload.subject.id,
+                payload.subject.name,
+                payload.subject.kind,
+                payload.subject.created_at,
+            )
+            db.set_person_id(payload.finding_ids, payload.subject.id)
+        elif entry.kind == "subject_merge":
+            payload = entry.payload
+            assert isinstance(payload, SubjectMergePayload)
+            # Resurrect source subject first so the FK on findings.person_id
+            # is valid, then flip those findings back from target -> source.
+            db.recreate_subject(
+                payload.source_subject.id,
+                payload.source_subject.name,
+                payload.source_subject.kind,
+                payload.source_subject.created_at,
+            )
+            db.set_person_id(payload.moved_finding_ids, payload.source_subject.id)
         else:
             # Defensive — unknown kind means undo.py and app.py are out of
             # sync and we'd silently do nothing. Fail loud.
@@ -739,8 +799,27 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         target = db.get_subject(target_id)
         if not target:
             raise HTTPException(404, "Target subject not found")
+        # Snapshot the source subject row and all its findings BEFORE merge
+        # destroys both. merge_subjects flips person_id source->target on
+        # every finding, then DELETEs the source row.
+        source_row = db.get_subject_row(source_id)
+        if not source_row:
+            raise HTTPException(404, "Source subject not found")
+        moved_ids = db.get_subject_finding_ids(source_id)
+        source_snapshot = SubjectSnapshot(
+            id=source_row[0], name=source_row[1], kind=source_row[2], created_at=source_row[3]
+        )
         kind = _kind_for_subject(target.kind)
         db.merge_subjects(source_id, target_id)
+        undo_store.put(
+            kind="subject_merge",
+            description=_describe_subject_merge(source_snapshot.name, target.name, len(moved_ids)),
+            payload=SubjectMergePayload(
+                source_subject=source_snapshot,
+                target_subject_id=target_id,
+                moved_finding_ids=moved_ids,
+            ),
+        )
         return RedirectResponse(f"/{kind}/{target_id}", status_code=303)
 
     @app.post("/api/subjects/{subject_id}/delete")
@@ -749,8 +828,19 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         subject = db.get_subject(subject_id)
         if not subject:
             raise HTTPException(404, "Subject not found")
+        # Snapshot the full row + every assigned finding_id BEFORE delete
+        # destroys the row and NULLs the person_ids.
+        row = db.get_subject_row(subject_id)
+        assert row is not None  # get_subject hit means the row exists
+        finding_ids = db.get_subject_finding_ids(subject_id)
+        snapshot = SubjectSnapshot(id=row[0], name=row[1], kind=row[2], created_at=row[3])
         kind = _kind_for_subject(subject.kind)
         db.delete_subject(subject_id)
+        undo_store.put(
+            kind="subject_delete",
+            description=_describe_subject_delete(snapshot.name, len(finding_ids)),
+            payload=SubjectDeletePayload(subject=snapshot, finding_ids=finding_ids),
+        )
         return RedirectResponse(f"/{kind}", status_code=303)
 
     @app.post("/api/subjects/create")

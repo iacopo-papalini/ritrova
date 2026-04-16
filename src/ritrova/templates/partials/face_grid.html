@@ -10,7 +10,7 @@
        @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
        class="aspect-square w-full object-cover">
   <!-- Remove single face button -->
-  <button @click.stop="if (await confirmDialog({title: 'Remove this face from cluster?', confirmLabel: 'Remove', danger: true}))
+  <button @click.stop="(await confirmDialog({title: 'Remove this face from cluster?', confirmLabel: 'Remove', danger: true})) &&
             fetch('/api/findings/exclude', {
               method: 'POST', headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({face_ids: [{{ face.id }}], cluster_id: {{ cluster_id }}})
