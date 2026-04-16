@@ -32,7 +32,7 @@ class FaceDetectionStep(AnalysisStep):
         return "arcface"
 
     def analyse(self, frame: FrameRef, state: SourceAnalysis) -> SourceAnalysis:
-        result = self._detector.detect(frame.source_path)
+        result = self._detector.detect_image(frame.image)
         for d in result.detections:
             if d.confidence >= self._min_confidence:
                 state.findings.append(
@@ -59,7 +59,7 @@ class PetDetectionStep(AnalysisStep):
         return "siglip"
 
     def analyse(self, frame: FrameRef, state: SourceAnalysis) -> SourceAnalysis:
-        result = self._detector.detect(frame.source_path)
+        result = self._detector.detect_image(frame.image)
         for d in result.detections:
             if d.confidence >= self._min_confidence:
                 state.findings.append(
@@ -99,7 +99,7 @@ class CaptionStep(AnalysisStep):
         if frame.frame_number != 0:
             return state
 
-        caption, tags = self._describer.describe(frame.source_path, vocab_hint=self.vocab_hint)
+        caption, tags = self._describer.describe_image(frame.image, vocab_hint=self.vocab_hint)
         if not caption:
             return state
 

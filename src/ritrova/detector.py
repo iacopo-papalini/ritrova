@@ -48,15 +48,22 @@ class FaceDetector:
             return None
 
     def detect(self, image_path: Path) -> DetectionResult:
-        """Detect faces in an image.
+        """Detect faces from a file path (opens the file).
 
-        Returns a ``DetectionResult`` with each face's bounding box,
-        embedding, and confidence, plus the source image dimensions.
+        Use ``detect_image`` when you already have a loaded PIL Image.
         """
         img = self._load_image(image_path)
         if img is None:
             return DetectionResult(detections=[], width=0, height=0)
+        return self._detect_bgr(img)
 
+    def detect_image(self, pil_image: Image.Image) -> DetectionResult:
+        """Detect faces from an already-loaded PIL RGB Image."""
+        bgr = np.array(pil_image)[:, :, ::-1]
+        return self._detect_bgr(bgr)
+
+    def _detect_bgr(self, img: np.ndarray) -> DetectionResult:
+        """Core detection on a BGR numpy array."""
         h, w = img.shape[:2]
         raw_faces = self.app.get(img)
 
@@ -71,7 +78,7 @@ class FaceDetector:
                 continue
 
             area = fw * fh
-            scale = _REF_AREA / max(area, _REF_AREA)  # 1.0 at 50x50, shrinks for larger
+            scale = _REF_AREA / max(area, _REF_AREA)
             crop_gray = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
             if cv2.Laplacian(crop_gray, cv2.CV_64F).var() < _BASE_SHARPNESS * scale:
                 continue

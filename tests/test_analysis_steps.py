@@ -49,7 +49,9 @@ class TestFaceDetectionStep(TestCase):
             detections = [
                 Detection(bbox=(10, 10, 50, 50), embedding=_emb(1), confidence=0.95),
             ]
-        detector.detect.return_value = DetectionResult(detections=detections, width=200, height=200)
+        detector.detect_image.return_value = DetectionResult(
+            detections=detections, width=200, height=200
+        )
         return detector
 
     def test_appends_findings(self) -> None:
@@ -97,7 +99,9 @@ class TestPetDetectionStep(TestCase):
                     species="dog",
                 ),
             ]
-        detector.detect.return_value = DetectionResult(detections=detections, width=200, height=200)
+        detector.detect_image.return_value = DetectionResult(
+            detections=detections, width=200, height=200
+        )
         return detector
 
     def test_appends_pet_findings(self) -> None:
@@ -142,7 +146,7 @@ class TestCaptionStep(TestCase):
     ) -> MagicMock:
         describer = MagicMock()
         describer.model_id = "fake-vlm"
-        describer.describe.return_value = (caption, tags or {"dog", "park"})
+        describer.describe_image.return_value = (caption, tags or {"dog", "park"})
         return describer
 
     def _mock_translator(self) -> MagicMock:

@@ -102,11 +102,25 @@ class Describer:
         self._model, self._processor = load(self.model_id)
 
     def describe(self, image_path: Path, vocab_hint: str | None = None) -> tuple[str, set[str]]:
-        """Generate an English caption and tags for a single image.
+        """Generate an English caption and tags from a file path.
 
-        Returns ``(caption, tags)``. Returns ``("", set())`` if the image
-        is unreadable.
+        Use ``describe_image`` when you already have a loaded PIL Image.
         """
+        try:
+            raw = Image.open(image_path)
+            img = ImageOps.exif_transpose(raw)
+            if img is None:
+                img = raw
+            img = img.convert("RGB")
+        except OSError:
+            logger.warning("Could not read image: %s", image_path)
+            return ("", set())
+        return self.describe_image(img, vocab_hint=vocab_hint)
+
+    def describe_image(
+        self, pil_image: Image.Image, vocab_hint: str | None = None
+    ) -> tuple[str, set[str]]:
+        """Generate an English caption and tags from an already-loaded PIL RGB Image."""
         self._ensure_loaded()
         assert self._model is not None
         assert self._processor is not None
@@ -130,17 +144,7 @@ class Describer:
         ]
         formatted = self._processor.apply_chat_template(messages, add_generation_prompt=True)
 
-        try:
-            raw = Image.open(image_path)
-            img = ImageOps.exif_transpose(raw)
-            if img is None:
-                img = raw
-            img = img.convert("RGB")
-        except OSError:
-            logger.warning("Could not read image: %s", image_path)
-            return ("", set())
-
-        img = _resize_for_vlm(img, max_side=1024)
+        img = _resize_for_vlm(pil_image, max_side=1024)
 
         output = generate(
             self._model,

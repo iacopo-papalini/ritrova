@@ -42,10 +42,9 @@ class PetDetector:
             self.device = "cpu"
 
     def detect(self, image_path: Path) -> DetectionResult:
-        """Detect dogs and cats in an image.
+        """Detect pets from a file path (opens the file).
 
-        Returns a ``DetectionResult`` with each pet's bounding box, embedding,
-        confidence, and species, plus the source image dimensions.
+        Use ``detect_image`` when you already have a loaded PIL Image.
         """
         try:
             img_raw = Image.open(image_path)
@@ -54,11 +53,13 @@ class PetDetector:
         except OSError:
             logger.warning("Could not read image: %s", image_path)
             return DetectionResult(detections=[], width=0, height=0)
+        return self.detect_image(img_rgb)
 
-        w_img, h_img = img_rgb.size
+    def detect_image(self, pil_image: Image.Image) -> DetectionResult:
+        """Detect dogs and cats from an already-loaded PIL RGB Image."""
+        w_img, h_img = pil_image.size
 
-        # YOLO detection — filter for cat/dog only
-        results = self.yolo(img_rgb, verbose=False, classes=[COCO_CAT, COCO_DOG])
+        results = self.yolo(pil_image, verbose=False, classes=[COCO_CAT, COCO_DOG])
 
         pets: list[Detection] = []
         for result in results:
@@ -73,7 +74,7 @@ class PetDetector:
                 x1, y1 = max(0, int(x1)), max(0, int(y1))
                 x2, y2 = min(w_img, int(x2)), min(h_img, int(y2))
 
-                crop = img_rgb.crop((x1, y1, x2, y2))
+                crop = pil_image.crop((x1, y1, x2, y2))
                 embedding = self._embed(crop)
 
                 pets.append(
