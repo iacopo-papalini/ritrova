@@ -111,6 +111,16 @@ class TestFaceDetectionStep(TestCase):
         assert len(result.findings) == 1
         detector.detect_image.assert_called_once()
 
+    def test_prefilter_does_not_skip_later_video_frames(self) -> None:
+        """has_people reflects frame 0 only; videos must still scan later frames."""
+        detector = self._mock_detector()
+        step = FaceDetectionStep(detector, prefilter_enabled=True)
+        state = _state()
+        state.has_people = False  # VLM said "no people on frame 0"
+        result = step.analyse(_frame(frame_number=5), state)
+        assert len(result.findings) == 1  # still detected on frame 5
+        detector.detect_image.assert_called_once()
+
 
 # ── PetDetectionStep ────────────────────────────────────────────────────
 
@@ -179,6 +189,16 @@ class TestPetDetectionStep(TestCase):
         state.has_animals = True
         result = step.analyse(_frame(), state)
         assert len(result.findings) == 1
+
+    def test_prefilter_does_not_skip_later_video_frames(self) -> None:
+        """has_animals reflects frame 0 only; a pet walking in at frame 5 must count."""
+        detector = self._mock_detector()
+        step = PetDetectionStep(detector, prefilter_enabled=True)
+        state = _state()
+        state.has_animals = False  # VLM said "no animals on frame 0"
+        result = step.analyse(_frame(frame_number=5), state)
+        assert len(result.findings) == 1
+        detector.detect_image.assert_called_once()
 
 
 # ── CaptionStep ──────────────────────────────────────────────────────────

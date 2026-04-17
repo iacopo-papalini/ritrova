@@ -92,7 +92,13 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
     type=int,
     help="Seed for --sample selection (reproducible across runs). Default: OS entropy.",
 )
-@click.option("--interval", default=2.0, help="Seconds between sampled video frames")
+@click.option(
+    "--interval",
+    default=5.0,
+    help="Seconds between sampled video frames. Higher = faster (fewer frames "
+    "to decode + detect) but wider windows to miss brief subject appearances. "
+    "Default 5s based on drill-down showing arcface at 37% of video wall time.",
+)
 @click.option(
     "--workers", "-j", default=1, help="Number of parallel workers (default 1; GPU serialised)"
 )
@@ -286,26 +292,23 @@ def analyse(
     lock = threading.Lock()
     counters = {"processed": 0, "errors": 0, "findings": 0, "done": 0}
 
-    # Profile buckets split by source_type. Each entry accumulates:
-    #   steps (dict of step_name -> seconds)
-    #   exif  (EXIF extraction time, photos only)
-    #   io    (frame load inside pipeline: PIL.open / cv2 VideoCapture)
-    #   persist (DB write time)
-    #   total (end-to-end _process_one wall time)
-    #   n     (number of sources in this bucket)
-    def _empty_bucket() -> dict[str, object]:
-        return {
-            "steps": {},
-            "exif": 0.0,
-            "io": 0.0,
-            "persist": 0.0,
-            "total": 0.0,
-            "n": 0,
-        }
+    # Profile buckets split by source_type. Dataclass (not dict) so mypy can
+    # track the per-field types cleanly.
+    from dataclasses import dataclass
+    from dataclasses import field as _dc_field
 
-    profile_buckets: dict[str, dict[str, object]] = {
-        "photo": _empty_bucket(),
-        "video": _empty_bucket(),
+    @dataclass
+    class _ProfileBucket:
+        steps: dict[str, float] = _dc_field(default_factory=dict)
+        exif: float = 0.0
+        io: float = 0.0
+        persist: float = 0.0
+        total: float = 0.0
+        n: int = 0
+
+    profile_buckets: dict[str, _ProfileBucket] = {
+        "photo": _ProfileBucket(),
+        "video": _ProfileBucket(),
     }
     t_start = time.monotonic()
     total = len(candidates)
@@ -377,18 +380,17 @@ def analyse(
             if per_source_times is not None:
                 bucket = profile_buckets[source_type]
                 step_sum = 0.0
-                bsteps: dict[str, float] = bucket["steps"]  # type: ignore[assignment]
                 for name, elapsed in per_source_times.items():
-                    bsteps[name] = bsteps.get(name, 0.0) + elapsed
+                    bucket.steps[name] = bucket.steps.get(name, 0.0) + elapsed
                     step_sum += elapsed
                 # I/O time inside the pipeline = pipeline wall minus step work.
                 # Captures PIL.open + EXIF-transpose + RGB convert for photos,
                 # and cv2 VideoCapture frame decoding for videos.
-                bucket["io"] = bucket["io"] + max(t_pipeline - step_sum, 0.0)  # type: ignore[operator]
-                bucket["exif"] = bucket["exif"] + t_exif  # type: ignore[operator]
-                bucket["persist"] = bucket["persist"] + t_persist  # type: ignore[operator]
-                bucket["total"] = bucket["total"] + time.monotonic() - t_source_start  # type: ignore[operator]
-                bucket["n"] = int(bucket["n"]) + 1  # type: ignore[operator]
+                bucket.io += max(t_pipeline - step_sum, 0.0)
+                bucket.exif += t_exif
+                bucket.persist += t_persist
+                bucket.total += time.monotonic() - t_source_start
+                bucket.n += 1
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
@@ -422,38 +424,32 @@ def analyse(
 
     if profile and counters["processed"] > 0:
         for bucket_name, bucket in profile_buckets.items():
-            n = int(bucket["n"])
-            if n == 0:
+            if bucket.n == 0:
                 continue
-            steps: dict[str, float] = bucket["steps"]  # type: ignore[assignment]
-            io = float(bucket["io"])  # type: ignore[arg-type]
-            exif = float(bucket["exif"])  # type: ignore[arg-type]
-            persist = float(bucket["persist"])  # type: ignore[arg-type]
-            total_wall = float(bucket["total"])  # type: ignore[arg-type]
 
             # Name rows in display order: exif → frame I/O → each step → persist
             rows: list[tuple[str, float]] = []
-            if exif > 0:
-                rows.append(("exif", exif))
-            if io > 0:
-                rows.append(("frame I/O", io))
+            if bucket.exif > 0:
+                rows.append(("exif", bucket.exif))
+            if bucket.io > 0:
+                rows.append(("frame I/O", bucket.io))
             # Steps sorted by total descending so bottlenecks are obvious.
-            rows.extend(sorted(steps.items(), key=lambda kv: kv[1], reverse=True))
-            if persist > 0:
-                rows.append(("persist", persist))
+            rows.extend(sorted(bucket.steps.items(), key=lambda kv: kv[1], reverse=True))
+            if bucket.persist > 0:
+                rows.append(("persist", bucket.persist))
             accounted = sum(v for _, v in rows)
-            overhead = max(total_wall - accounted, 0.0)
+            overhead = max(bucket.total - accounted, 0.0)
             if overhead > 0:
                 rows.append(("overhead", overhead))
 
-            denom = total_wall if total_wall > 0 else accounted if accounted > 0 else 1.0
+            denom = bucket.total if bucket.total > 0 else accounted if accounted > 0 else 1.0
             name_w = max(len(k) for k, _ in rows)
             print()
-            print(f"=== {bucket_name.upper()}S ({n} sources, avg per source) ===")
+            print(f"=== {bucket_name.upper()}S ({bucket.n} sources, avg per source) ===")
             for name, total_t in rows:
                 pct = 100 * total_t / denom
-                print(f"  {name:<{name_w}}  {total_t / n:7.3f}s  ({pct:5.1f}%)")
-            print(f"  {'TOTAL':<{name_w}}  {total_wall / n:7.3f}s")
+                print(f"  {name:<{name_w}}  {total_t / bucket.n:7.3f}s  ({pct:5.1f}%)")
+            print(f"  {'TOTAL':<{name_w}}  {bucket.total / bucket.n:7.3f}s")
 
     db.close()
 
