@@ -41,14 +41,21 @@ DEFAULT_SYSTEM_PROMPT = (
     "Rules for tags:\n"
     "- 3 to 10 single-word English nouns for visible things.\n"
     "- No adjectives, no verbs, no guesses.\n\n"
-    "Reply with the caption on the first line, then each tag on its own line.\n"
+    "Rules for has_people / has_animals:\n"
+    "- has_people: true if ANY human face, head, or identifiable person "
+    "(even partial, even blurry) is visible. Only false when there are "
+    "clearly no people at all.\n"
+    "- has_animals: true if ANY dog, cat, or other pet is visible (even "
+    "partial, even peripheral). Only false when there are no animals.\n"
+    "- When in doubt, answer true. False positives cost nothing; false "
+    "negatives cause people and pets to be missed.\n\n"
+    "Reply with a single JSON object, no prose, no markdown fences:\n"
+    '{"caption": "...", "tags": ["...", "..."], '
+    '"has_people": true, "has_animals": false}\n\n'
     "Example:\n"
-    "A dog sits on a beach at sunset.\n"
-    "dog\n"
-    "beach\n"
-    "sunset\n"
-    "sand\n"
-    "water"
+    '{"caption": "A dog sits on a beach at sunset.", '
+    '"tags": ["dog", "beach", "sunset", "sand", "water"], '
+    '"has_people": false, "has_animals": true}'
 )
 
 DEFAULT_USER_PROMPT_WITH_VOCAB = (
@@ -58,6 +65,20 @@ DEFAULT_USER_PROMPT_WITH_VOCAB = (
 )
 
 DEFAULT_USER_PROMPT_NO_VOCAB = "Describe this image."
+
+
+@dataclass
+class DescribeOutput:
+    """VLM output for one image.
+
+    ``has_people`` / ``has_animals`` default to True so that unparsable or
+    absent fields fail open — detection still runs and nothing is missed.
+    """
+
+    caption: str
+    tags: set[str]
+    has_people: bool = True
+    has_animals: bool = True
 
 
 def _resize_for_vlm(img: Image.Image, max_side: int = 1024) -> Image.Image:
@@ -85,11 +106,20 @@ class Describer:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         user_prompt_with_vocab: str = DEFAULT_USER_PROMPT_WITH_VOCAB,
         user_prompt_no_vocab: str = DEFAULT_USER_PROMPT_NO_VOCAB,
+        *,
+        max_tokens: int = 128,
+        max_side: int = 896,
     ) -> None:
         self.model_id = model_id
         self.system_prompt = system_prompt
         self.user_prompt_with_vocab = user_prompt_with_vocab
         self.user_prompt_no_vocab = user_prompt_no_vocab
+        # Observed captions are ~20-24 words (≈50-80 tokens); 128 keeps a
+        # comfortable headroom while saving ~half of the old 256-token budget.
+        # Image side 896 shaves ~9% off VLM time vs 1024 with no quality loss
+        # on a 20-photo high-complexity A/B (ADR-010 §2a Phase B).
+        self.max_tokens = max_tokens
+        self.max_side = max_side
         self._model = None
         self._processor = None
 
@@ -101,7 +131,7 @@ class Describer:
         logger.info("Loading VLM: %s", self.model_id)
         self._model, self._processor = load(self.model_id)
 
-    def describe(self, image_path: Path, vocab_hint: str | None = None) -> tuple[str, set[str]]:
+    def describe(self, image_path: Path, vocab_hint: str | None = None) -> DescribeOutput:
         """Generate an English caption and tags from a file path.
 
         Use ``describe_image`` when you already have a loaded PIL Image.
@@ -114,44 +144,44 @@ class Describer:
             img = img.convert("RGB")
         except OSError:
             logger.warning("Could not read image: %s", image_path)
-            return ("", set())
+            return DescribeOutput(caption="", tags=set())
         return self.describe_image(img, vocab_hint=vocab_hint)
 
     def describe_image(
         self, pil_image: Image.Image, vocab_hint: str | None = None
-    ) -> tuple[str, set[str]]:
+    ) -> DescribeOutput:
         """Generate an English caption and tags from an already-loaded PIL RGB Image."""
         self._ensure_loaded()
         assert self._model is not None
         assert self._processor is not None
 
         from mlx_vlm import generate
+        from mlx_vlm.prompt_utils import apply_chat_template
 
         if vocab_hint:
             user_text = self.user_prompt_with_vocab.format(vocab=vocab_hint)
         else:
             user_text = self.user_prompt_no_vocab
 
+        # Use mlx_vlm's family-aware helper: it inserts the image token and
+        # picks the right template for gemma3 / qwen / pixtral / llama-vision /
+        # anything else mlx_vlm understands. The HF processor's own
+        # apply_chat_template does not work for models (e.g. gemma-3) that
+        # ship without a chat template in their processor config.
         messages = [
             {"role": "system", "content": self.system_prompt},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": user_text},
-                ],
-            },
+            {"role": "user", "content": user_text},
         ]
-        formatted = self._processor.apply_chat_template(messages, add_generation_prompt=True)
+        formatted = apply_chat_template(self._processor, self._model.config, messages, num_images=1)
 
-        img = _resize_for_vlm(pil_image, max_side=1024)
+        img = _resize_for_vlm(pil_image, max_side=self.max_side)
 
         output = generate(
             self._model,
             self._processor,
             formatted,
             image=[img],
-            max_tokens=256,
+            max_tokens=self.max_tokens,
             temperature=0.0,
             repetition_penalty=1.2,
             verbose=False,
@@ -161,12 +191,15 @@ class Describer:
         return _parse_vlm_response(text)
 
 
-def _parse_vlm_response(text: str) -> tuple[str, set[str]]:
-    """Extract caption and tags from the VLM response.
+def _parse_vlm_response(text: str) -> DescribeOutput:
+    """Extract caption, tags and subject booleans from the VLM response.
 
     Supports two formats:
-    1. Line-based: first line is caption, subsequent lines are tags.
-    2. JSON: ``{"caption": "...", "tags": [...]}`` (with optional fences).
+    1. JSON: ``{"caption": "...", "tags": [...], "has_people": bool,
+       "has_animals": bool}`` (with optional fences).
+    2. Line-based fallback: first line is caption, subsequent lines are tags.
+       In line-mode ``has_people`` / ``has_animals`` are left at the fail-open
+       default (True), so no detection is ever skipped by a mis-parse.
 
     Tags are lowercased and capped at MAX_TAGS.
     """
@@ -186,14 +219,28 @@ def _parse_vlm_response(text: str) -> tuple[str, set[str]]:
                 json_tags.add(tag)
             if len(json_tags) >= MAX_TAGS:
                 break
-        return (caption, json_tags)
+        has_people = _coerce_bool_fail_open(data.get("has_people"))
+        has_animals = _coerce_bool_fail_open(data.get("has_animals"))
+        # Override: if the VLM contradicts itself (caption mentions a cat
+        # yet has_animals=false), trust the caption. Accuracy-first.
+        if not has_people and _text_mentions(_PEOPLE_KEYWORDS, caption, json_tags):
+            has_people = True
+        if not has_animals and _text_mentions(_ANIMAL_KEYWORDS, caption, json_tags):
+            has_animals = True
+        return DescribeOutput(
+            caption=caption,
+            tags=json_tags,
+            has_people=has_people,
+            has_animals=has_animals,
+        )
     except json.JSONDecodeError, AttributeError:
         pass
 
-    # Line-based: first line is caption, rest are tags
+    # Line-based fallback: first line is caption, rest are tags.
+    # Booleans stay at fail-open defaults.
     lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
     if not lines:
-        return ("", set())
+        return DescribeOutput(caption="", tags=set())
     caption = lines[0]
     line_tags: set[str] = set()
     for line in lines[1:]:
@@ -202,7 +249,73 @@ def _parse_vlm_response(text: str) -> tuple[str, set[str]]:
             line_tags.add(tag)
         if len(line_tags) >= MAX_TAGS:
             break
-    return (caption, line_tags)
+    return DescribeOutput(caption=caption, tags=line_tags)
+
+
+def _coerce_bool_fail_open(value: Any) -> bool:
+    """Return False ONLY when the VLM explicitly said false; True otherwise.
+
+    Anything unparseable, missing, or ambiguous defaults to True so detection
+    still runs. Accepts real booleans and the common string forms.
+    """
+    if isinstance(value, bool):
+        return value
+    return not (isinstance(value, str) and value.strip().lower() in {"false", "no", "0"})
+
+
+# Qwen2.5-VL sometimes describes a subject in the caption / tags yet emits
+# the opposite boolean in the same JSON (observed: "A person sitting with a
+# cat on their lap" with has_animals=false). Treat the boolean as advisory
+# and force-true whenever the caption or tags mention a relevant noun.
+# English only — the describer runs before translation.
+_PEOPLE_KEYWORDS = frozenset(
+    {
+        "person",
+        "people",
+        "man",
+        "men",
+        "woman",
+        "women",
+        "boy",
+        "girl",
+        "child",
+        "children",
+        "kid",
+        "kids",
+        "baby",
+        "infant",
+        "adult",
+        "human",
+        "face",
+        "crowd",
+    }
+)
+_ANIMAL_KEYWORDS = frozenset(
+    {
+        "cat",
+        "cats",
+        "kitten",
+        "kittens",
+        "feline",
+        "dog",
+        "dogs",
+        "puppy",
+        "puppies",
+        "canine",
+        "pet",
+        "pets",
+        "animal",
+        "animals",
+    }
+)
+
+
+def _text_mentions(keywords: frozenset[str], caption: str, tags: set[str]) -> bool:
+    """True if any keyword appears as a whole word in caption or as a tag."""
+    if any(t.lower() in keywords for t in tags):
+        return True
+    tokens = re.findall(r"[a-zA-Z]+", caption.lower())
+    return any(tok in keywords for tok in tokens)
 
 
 # ── Stage 2: Translation ────────────────────────────────────────────
@@ -222,6 +335,10 @@ class Translator:
         self._tokenizer: Any = None
         self._translation_model: Any = None
         self._target_lang_id: int | None = None
+        # Overridable by the translate-bench harness; None = use shipped
+        # defaults (num_beams=1 greedy, CPU).
+        self._device: str = "cpu"
+        self._bench_gen_kwargs: dict[str, object] | None = None
 
     def _ensure_loaded(self) -> None:
         if self._tokenizer is not None:
@@ -243,7 +360,22 @@ class Translator:
         assert self._translation_model is not None
         logger.debug("Translator input: %s", text)
         inputs = self._tokenizer(text, return_tensors="pt", truncation=True)
-        gen_kwargs: dict[str, object] = {"max_new_tokens": 256, "max_length": None}
+        if self._device != "cpu":
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
+        # opus-mt-tc-big-en-it ships with num_beams=4 by default (4-way beam
+        # search). For photo captions the quality difference vs greedy is
+        # negligible — switching to num_beams=1 cuts the decoder cost by
+        # roughly 3-4x. See ADR-010 §2a Phase E. translate-bench may override
+        # via _bench_gen_kwargs.
+        gen_kwargs: dict[str, object] = {
+            "max_new_tokens": 128,
+            "max_length": None,
+            "num_beams": 1,
+            "do_sample": False,
+        }
+        if self._bench_gen_kwargs is not None:
+            gen_kwargs.update(self._bench_gen_kwargs)
+            gen_kwargs["max_length"] = None  # preserve our no-max-length default
         if self._target_lang_id is not None:
             gen_kwargs["forced_bos_token_id"] = self._target_lang_id
         outputs = self._translation_model.generate(**inputs, **gen_kwargs)
@@ -342,11 +474,12 @@ def describe_sources(
         if i > 1 and (i - 1) % vocab_refresh_interval == 0:
             vocab_hint = _build_vocab_hint(db)
 
-        caption, tags = describer.describe(resolved, vocab_hint=vocab_hint)
-        if not caption:
+        output = describer.describe(resolved, vocab_hint=vocab_hint)
+        if not output.caption:
             errors += 1
             continue
 
+        caption, tags = output.caption, output.tags
         if translator is not None:
             caption, tags = translator.translate(caption, tags)
 

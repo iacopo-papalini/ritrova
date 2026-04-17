@@ -26,17 +26,31 @@ _inference_lock = threading.Lock()
 
 
 class FaceDetectionStep(AnalysisStep):
-    """Detect human faces in a frame using ArcFace."""
+    """Detect human faces in a frame using ArcFace.
 
-    def __init__(self, detector: FaceDetector, min_confidence: float = 0.65) -> None:
+    When ``prefilter_enabled`` is True, detection is skipped on frames where
+    the caption step previously set ``state.has_people`` to False. The default
+    is False so prefilter stays off unless an upstream opts in — see ADR-010.
+    """
+
+    def __init__(
+        self,
+        detector: FaceDetector,
+        min_confidence: float = 0.65,
+        *,
+        prefilter_enabled: bool = False,
+    ) -> None:
         self._detector = detector
         self._min_confidence = min_confidence
+        self._prefilter_enabled = prefilter_enabled
 
     @property
     def name(self) -> str:
         return "arcface"
 
     def analyse(self, frame: FrameRef, state: SourceAnalysis) -> SourceAnalysis:
+        if self._prefilter_enabled and not state.has_people:
+            return state
         with _inference_lock:
             result = self._detector.detect_image(frame.image)
         for d in result.detections:
@@ -54,17 +68,30 @@ class FaceDetectionStep(AnalysisStep):
 
 
 class PetDetectionStep(AnalysisStep):
-    """Detect dogs and cats in a frame using YOLO + SigLIP."""
+    """Detect dogs and cats in a frame using YOLO + SigLIP.
 
-    def __init__(self, detector: PetDetector, min_confidence: float = 0.5) -> None:
+    When ``prefilter_enabled`` is True, detection is skipped on frames where
+    the caption step previously set ``state.has_animals`` to False.
+    """
+
+    def __init__(
+        self,
+        detector: PetDetector,
+        min_confidence: float = 0.5,
+        *,
+        prefilter_enabled: bool = False,
+    ) -> None:
         self._detector = detector
         self._min_confidence = min_confidence
+        self._prefilter_enabled = prefilter_enabled
 
     @property
     def name(self) -> str:
         return "siglip"
 
     def analyse(self, frame: FrameRef, state: SourceAnalysis) -> SourceAnalysis:
+        if self._prefilter_enabled and not state.has_animals:
+            return state
         with _inference_lock:
             result = self._detector.detect_image(frame.image)
         for d in result.detections:
@@ -82,24 +109,19 @@ class PetDetectionStep(AnalysisStep):
 
 
 class CaptionStep(AnalysisStep):
-    """Generate caption and tags via VLM, optionally translate."""
+    """Generate caption and tags via VLM (no translation — see TranslationStep)."""
 
     def __init__(
         self,
         describer: Describer,
-        translator: Translator | None = None,
         vocab_hint: str | None = None,
     ) -> None:
         self._describer = describer
-        self._translator = translator
         self.vocab_hint = vocab_hint
 
     @property
     def name(self) -> str:
-        base = self._describer.model_id
-        if self._translator is not None:
-            return f"{base}+{self._translator.model_id}"
-        return base
+        return self._describer.model_id
 
     def analyse(self, frame: FrameRef, state: SourceAnalysis) -> SourceAnalysis:
         # Only caption the first frame (frame 0 for photos; first frame of a video)
@@ -107,16 +129,37 @@ class CaptionStep(AnalysisStep):
             return state
 
         with _inference_lock:
-            caption, tags = self._describer.describe_image(frame.image, vocab_hint=self.vocab_hint)
-        if not caption:
+            output = self._describer.describe_image(frame.image, vocab_hint=self.vocab_hint)
+        if not output.caption:
             return state
 
-        if self._translator is not None:
-            with _inference_lock:
-                caption, tags = self._translator.translate(caption, tags)
+        state.has_people = output.has_people
+        state.has_animals = output.has_animals
+        state.caption = output.caption
+        state.tags = output.tags
+        return state
 
-        state.caption = caption
-        state.tags = tags
+
+class TranslationStep(AnalysisStep):
+    """Translate an already-generated caption/tags into the target language.
+
+    Runs on CPU (MarianMT), so it does not contend with the Metal
+    _inference_lock. Placing it as a separate step lets --profile attribute
+    translation cost to a distinct row instead of hiding it inside the VLM
+    bucket.
+    """
+
+    def __init__(self, translator: Translator) -> None:
+        self._translator = translator
+
+    @property
+    def name(self) -> str:
+        return self._translator.model_id
+
+    def analyse(self, frame: FrameRef, state: SourceAnalysis) -> SourceAnalysis:
+        if frame.frame_number != 0 or not state.caption:
+            return state
+        state.caption, state.tags = self._translator.translate(state.caption, state.tags)
         return state
 
 

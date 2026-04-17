@@ -86,6 +86,12 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
 @click.option("--force", is_flag=True, help="Re-analyse already-scanned sources")
 @click.option("--dry-run", is_flag=True, help="Run pipeline but don't persist to DB")
 @click.option("--sample", default=0, type=int, help="Process only N random sources (0 = all)")
+@click.option(
+    "--sample-seed",
+    default=None,
+    type=int,
+    help="Seed for --sample selection (reproducible across runs). Default: OS entropy.",
+)
 @click.option("--interval", default=2.0, help="Seconds between sampled video frames")
 @click.option(
     "--workers", "-j", default=1, help="Number of parallel workers (default 1; GPU serialised)"
@@ -95,6 +101,31 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
     default=None,
     type=click.Path(exists=True, file_okay=False),
     help="Subdirectory to scan (defaults to --photos-dir). Paths are always stored relative to --photos-dir.",
+)
+@click.option(
+    "--profile",
+    is_flag=True,
+    help="Measure per-step wall time and print a summary at the end.",
+)
+@click.option(
+    "--scan-type",
+    default="composite",
+    help="Scan type label used to de-dup and to tag stored scans. "
+    "Use a distinct label (e.g. composite-vlm-3b) to let experiment runs coexist.",
+)
+@click.option(
+    "--max-tokens",
+    default=128,
+    type=int,
+    help="Upper bound on VLM generation length (tokens). Lower = faster; "
+    "default 128 fits observed 20-24 word captions with ~2x headroom.",
+)
+@click.option(
+    "--vlm-max-side",
+    default=896,
+    type=int,
+    help="Longest side (pixels) the image is resized to before the VLM. "
+    "Smaller = faster, but may lose fine detail on complex scenes.",
 )
 @click.pass_context
 def analyse(
@@ -111,9 +142,14 @@ def analyse(
     force: bool,
     dry_run: bool,
     sample: int,
+    sample_seed: int | None,
     interval: float,
     workers: int,
     scan_dir: str | None,
+    profile: bool,
+    scan_type: str,
+    max_tokens: int,
+    vlm_max_side: int,
 ) -> None:
     """Unified source analysis: detect faces, pets, and generate captions in one pass."""
     import random
@@ -138,7 +174,13 @@ def analyse(
         photo_frames,
         video_frames,
     )
-    from .analysis_steps import CaptionStep, DeduplicationStep, FaceDetectionStep, PetDetectionStep
+    from .analysis_steps import (
+        CaptionStep,
+        DeduplicationStep,
+        FaceDetectionStep,
+        PetDetectionStep,
+        TranslationStep,
+    )
     from .db import FaceDB
     from .scanner import find_images, find_videos, get_exif_date, get_exif_gps
 
@@ -150,29 +192,55 @@ def analyse(
 
     builder = AnalysisPipelineBuilder()
 
-    if not no_faces:
-        from .detector import FaceDetector
+    # Captioning runs first so face/pet detection can read has_people /
+    # has_animals and skip on sources where the VLM sees no subjects.
+    # Validated on 500 sources: every skipped detection was an ArcFace /
+    # YOLO false positive on statues, dolls, illustrations, or misframed
+    # video stills — prefilter improves precision as well as throughput.
+    # ``--no-caption`` is the only way to disable this behavior.
+    caption_enabled = not no_caption
 
-        print("Loading face detection model...")
-        builder.add_step(FaceDetectionStep(FaceDetector(), min_face_confidence))
-
-    if not no_pets:
-        from .pet_detector import PetDetector
-
-        print("Loading pet detection models...")
-        builder.add_step(PetDetectionStep(PetDetector(), min_pet_confidence))
-
-    if not no_caption:
+    translator_obj = None
+    if caption_enabled:
         from .describer import Describer, Translator
 
         vlm_id = vlm_model or DEFAULT_VLM_MODEL
         trans_id = translator_model or DEFAULT_TRANSLATOR_MODEL
         print(f"Loading VLM: {vlm_id}")
-        describer = Describer(model_id=vlm_id)
+        describer = Describer(model_id=vlm_id, max_tokens=max_tokens, max_side=vlm_max_side)
         translator_obj = None if no_translate else Translator(model_id=trans_id)
         if translator_obj:
             print(f"Loading translator: {trans_id}")
-        builder.add_step(CaptionStep(describer, translator_obj))
+        builder.add_step(CaptionStep(describer))
+
+    if not no_faces:
+        from .detector import FaceDetector
+
+        print("Loading face detection model...")
+        builder.add_step(
+            FaceDetectionStep(
+                FaceDetector(),
+                min_face_confidence,
+                prefilter_enabled=caption_enabled,
+            )
+        )
+
+    if not no_pets:
+        from .pet_detector import PetDetector
+
+        print("Loading pet detection models...")
+        builder.add_step(
+            PetDetectionStep(
+                PetDetector(),
+                min_pet_confidence,
+                prefilter_enabled=caption_enabled,
+            )
+        )
+
+    # Translation is CPU-only and parse of VLM output is English; we run it
+    # after detection so the profile records it as a distinct step.
+    if translator_obj is not None:
+        builder.add_step(TranslationStep(translator_obj))
 
     builder.add_step(DeduplicationStep())
     pipeline = builder.build()
@@ -181,19 +249,22 @@ def analyse(
     candidates: list[tuple[Path, str]] = []  # (path, source_type)
     for img_path in find_images(Path(discovery_dir)):
         stored = db.to_relative(str(img_path.resolve()))
-        if not force and db.is_scanned(stored, "composite"):
+        if not force and db.is_scanned(stored, scan_type):
             continue
         candidates.append((img_path, "photo"))
 
     if not no_videos:
         for vid_path in find_videos(Path(discovery_dir)):
             stored = db.to_relative(str(vid_path.resolve()))
-            if not force and db.is_scanned(stored, "composite"):
+            if not force and db.is_scanned(stored, scan_type):
                 continue
             candidates.append((vid_path, "video"))
 
     if sample > 0 and len(candidates) > sample:
-        candidates = random.sample(candidates, sample)
+        # Sort first so --sample-seed is reproducible regardless of filesystem order.
+        candidates.sort(key=lambda pair: str(pair[0]))
+        rng = random.Random(sample_seed) if sample_seed is not None else random
+        candidates = rng.sample(candidates, sample)
 
     print(f"Database: {ctx.obj['db_path']}")
     print(f"Pipeline: {pipeline.strategy_id}")
@@ -214,6 +285,7 @@ def analyse(
     # Shared counters protected by a lock
     lock = threading.Lock()
     counters = {"processed": 0, "errors": 0, "findings": 0, "done": 0}
+    step_totals: dict[str, float] = {}
     t_start = time.monotonic()
     total = len(candidates)
 
@@ -224,6 +296,9 @@ def analyse(
         else:
             frame_iter = photo_frames(source_path)
 
+        per_source_times: dict[str, float] | None = {} if profile else None
+        t_source_start = time.monotonic() if profile else 0.0
+
         try:
             initial = SourceAnalysis(source_path=stored, source_type=source_type)
             if source_type == "photo":
@@ -233,7 +308,11 @@ def analyse(
                     initial.latitude, initial.longitude = gps
 
             result = pipeline.analyse_source(
-                source_path, source_type=source_type, frames=frame_iter, initial_state=initial
+                source_path,
+                source_type=source_type,
+                frames=frame_iter,
+                initial_state=initial,
+                step_times=per_source_times,
             )
         except OSError:
             with lock:
@@ -248,17 +327,24 @@ def analyse(
             if force:
                 existing = db.conn.execute(
                     "SELECT sc.id FROM scans sc JOIN sources s ON s.id = sc.source_id "
-                    "WHERE s.file_path = ? AND sc.scan_type = 'composite'",
-                    (stored,),
+                    "WHERE s.file_path = ? AND sc.scan_type = ?",
+                    (stored, scan_type),
                 ).fetchone()
                 if existing:
                     db.delete_scan(existing[0])
-            persister.persist(result, strategy_id=strategy_id)
+            persister.persist(result, strategy_id=strategy_id, scan_type=scan_type)
 
         with lock:
             counters["processed"] += 1
             counters["findings"] += n_findings
             counters["done"] += 1
+            if per_source_times is not None:
+                for name, elapsed in per_source_times.items():
+                    step_totals[name] = step_totals.get(name, 0.0) + elapsed
+                total_key = "__source_wall__"
+                step_totals[total_key] = (
+                    step_totals.get(total_key, 0.0) + time.monotonic() - t_source_start
+                )
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
@@ -289,6 +375,23 @@ def analyse(
         f"Done!{mode} processed={counters['processed']}  "
         f"findings={counters['findings']}  errors={counters['errors']}"
     )
+
+    if profile and counters["processed"] > 0:
+        n = counters["processed"]
+        total_wall = step_totals.pop("__source_wall__", 0.0)
+        step_sum = sum(step_totals.values())
+        overhead = max(total_wall - step_sum, 0.0)
+        # Sort steps by total time descending so bottlenecks are top-of-list.
+        ordered = sorted(step_totals.items(), key=lambda kv: kv[1], reverse=True)
+        denom = total_wall if total_wall > 0 else step_sum if step_sum > 0 else 1.0
+        name_w = max((len(k) for k in step_totals), default=10)
+        print("Step timings (avg per source, summed across workers):")
+        for name, total_t in ordered:
+            pct = 100 * total_t / denom
+            print(f"  {name:<{name_w}}  {total_t / n:6.3f}s  ({pct:5.1f}%)")
+        print(f"  {'overhead':<{name_w}}  {overhead / n:6.3f}s  ({100 * overhead / denom:5.1f}%)")
+        print(f"  {'total':<{name_w}}  {total_wall / n:6.3f}s")
+
     db.close()
 
 
@@ -386,9 +489,48 @@ def describe(
 )
 @click.option("--count", default=100, type=int, help="Number of random photos to evaluate")
 @click.option("--output", "-o", default="describe_eval.csv", help="Output CSV path")
+@click.option(
+    "--max-tokens",
+    default=128,
+    type=int,
+    help="VLM generation cap (tokens). Must match across A/B runs.",
+)
+@click.option(
+    "--vlm-max-side",
+    default=896,
+    type=int,
+    help="Longest image side (pixels) fed to the VLM. Varied between A/B runs.",
+)
+@click.option(
+    "--high-complexity",
+    is_flag=True,
+    help="Bias the random sample to sources with ≥4 existing findings — the "
+    "busy, worst-case photos used to stress-test image resize / prompt trims.",
+)
+@click.option(
+    "--sample-seed",
+    default=None,
+    type=int,
+    help="Seed for the random sample (reproducible across A/B runs).",
+)
+@click.option(
+    "--no-translate",
+    is_flag=True,
+    help="Skip translation — write only source_id / path / en_caption / en_tags. "
+    "Use to build a corpus for the translate-bench rig.",
+)
 @click.pass_context
 def describe_eval(
-    ctx: click.Context, model: str | None, translator: str | None, count: int, output: str
+    ctx: click.Context,
+    model: str | None,
+    translator: str | None,
+    count: int,
+    output: str,
+    max_tokens: int,
+    vlm_max_side: int,
+    high_complexity: bool,
+    sample_seed: int | None,
+    no_translate: bool,
 ) -> None:
     """Generate a CSV of sample descriptions for human review.
 
@@ -413,30 +555,48 @@ def describe_eval(
     _require_photos_dir(ctx)
     db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
 
-    all_ids = db.get_all_source_ids()
-    source_ids = random.sample(all_ids, min(count, len(all_ids)))
+    if high_complexity:
+        rows = db.conn.execute(
+            """
+            SELECT s.id
+            FROM sources s
+            JOIN scans sc ON sc.source_id = s.id
+            LEFT JOIN findings f ON f.scan_id = sc.id
+            JOIN descriptions d ON d.scan_id = sc.id
+            WHERE sc.scan_type LIKE 'composite%' AND d.caption IS NOT NULL
+            GROUP BY s.id
+            HAVING COUNT(f.id) >= 4
+            """
+        ).fetchall()
+        all_ids = [r[0] for r in rows]
+        if not all_ids:
+            raise click.UsageError(
+                "--high-complexity found no sources with ≥4 findings; "
+                "run `ritrova analyse` first or drop the flag."
+            )
+    else:
+        all_ids = db.get_all_source_ids()
 
-    print(f"VLM: {model}")
+    all_ids.sort()  # stable order so --sample-seed is reproducible.
+    rng = random.Random(sample_seed) if sample_seed is not None else random
+    source_ids = rng.sample(all_ids, min(count, len(all_ids)))
+
+    print(f"VLM: {model}  max_tokens={max_tokens}  max_side={vlm_max_side}")
     print(f"Translator: {translator}")
-    print(f"Evaluating {len(source_ids)} random photos → {output}")
+    selector = "high-complexity" if high_complexity else "all"
+    print(f"Evaluating {len(source_ids)} random photos ({selector}) → {output}")
     print("Loading models...")
 
-    describer = Describer(model_id=model)
-    translator_obj = Translator(model_id=translator)
+    describer = Describer(model_id=model, max_tokens=max_tokens, max_side=vlm_max_side)
+    translator_obj = None if no_translate else Translator(model_id=translator)
+
+    columns = ["source_id", "path", "en_caption", "en_tags"]
+    if not no_translate:
+        columns.extend(["it_caption", "it_tags", "review"])
 
     with open(output, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(
-            [
-                "source_id",
-                "path",
-                "en_caption",
-                "en_tags",
-                "it_caption",
-                "it_tags",
-                "review",
-            ]
-        )
+        writer.writerow(columns)
 
         errors = 0
         for i, source_id in enumerate(source_ids, 1):
@@ -448,30 +608,160 @@ def describe_eval(
                 errors += 1
                 continue
 
-            en_caption, en_tags = describer.describe(resolved)
-            if not en_caption:
+            vlm_output = describer.describe(resolved)
+            if not vlm_output.caption:
                 errors += 1
                 continue
 
-            it_caption, it_tags = translator_obj.translate(en_caption, en_tags)
-
-            writer.writerow(
-                [
-                    source_id,
-                    str(resolved),
-                    en_caption,
-                    ", ".join(sorted(en_tags)),
-                    it_caption,
-                    ", ".join(sorted(it_tags)),
-                    "",
-                ]
-            )
+            en_caption, en_tags = vlm_output.caption, vlm_output.tags
+            row = [source_id, str(resolved), en_caption, ", ".join(sorted(en_tags))]
+            if translator_obj is not None:
+                it_caption, it_tags = translator_obj.translate(en_caption, en_tags)
+                row.extend([it_caption, ", ".join(sorted(it_tags)), ""])
+            writer.writerow(row)
 
             if i % 10 == 0 or i == len(source_ids):
                 print(f"\r  [{i}/{len(source_ids)}] errors={errors}", end="", flush=True)
 
     print(f"\nDone! Wrote {len(source_ids) - errors} rows to {output} ({errors} errors)")
     db.close()
+
+
+@cli.command("translate-bench")
+@click.option(
+    "--input",
+    "-i",
+    "input_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="CSV produced by `describe-eval --no-translate` (columns: "
+    "source_id, path, en_caption, en_tags).",
+)
+@click.option(
+    "--output",
+    "-o",
+    default=None,
+    help="Output CSV with en + it columns. Defaults to <input>.it.csv.",
+)
+@click.option(
+    "--translator",
+    default=None,
+    help=f"HuggingFace model ID (default: {DEFAULT_TRANSLATOR_MODEL}).",
+)
+@click.option(
+    "--num-beams",
+    default=1,
+    type=int,
+    help="Beam-search width. 1 = greedy (current default).",
+)
+@click.option(
+    "--max-new-tokens",
+    default=128,
+    type=int,
+    help="Max tokens per translation (safety cap; EOS usually triggers earlier).",
+)
+@click.option(
+    "--device",
+    default="cpu",
+    type=click.Choice(["cpu", "mps"]),
+    help="Torch device. Use 'mps' to run the translator on Apple Silicon GPU.",
+)
+@click.pass_context
+def translate_bench(
+    ctx: click.Context,
+    input_path: str,
+    output: str | None,
+    translator: str | None,
+    num_beams: int,
+    max_new_tokens: int,
+    device: str,
+) -> None:
+    """Replay-only translation benchmark.
+
+    Reads pre-recorded English captions from ``--input`` and runs ONLY the
+    translator with the supplied config. No VLM, no face/pet detection — the
+    idea is to iterate quickly on translator variants without re-paying the
+    ~20 min captioning cost for each A/B.
+    """
+    import csv
+    import time
+
+    from .describer import DEFAULT_TRANSLATOR_MODEL, Translator
+
+    translator_id = translator or DEFAULT_TRANSLATOR_MODEL
+    out_path = output or f"{input_path}.it.csv"
+
+    with open(input_path) as f:
+        rows = list(csv.DictReader(f))
+
+    print(
+        f"Translator: {translator_id}  num_beams={num_beams}  "
+        f"max_new_tokens={max_new_tokens}  device={device}"
+    )
+    print(f"Input:  {input_path} ({len(rows)} rows)")
+    print(f"Output: {out_path}")
+    print("Loading model...")
+
+    t_obj = Translator(model_id=translator_id)
+    t_obj._ensure_loaded()  # noqa: SLF001 — explicit warm-up so load time isn't counted.
+    if device == "mps":
+        # Move the already-loaded seq2seq onto Metal. Inputs are also moved
+        # in _translate_text below. MarianMT uses only standard transformer
+        # ops, all supported on MPS.
+        t_obj._translation_model = t_obj._translation_model.to("mps")  # noqa: SLF001
+        t_obj._device = "mps"  # noqa: SLF001 — read inside _translate_text
+    else:
+        t_obj._device = "cpu"  # noqa: SLF001
+
+    # Patch the generation kwargs to the bench values. _translate_text's
+    # current hard-coded kwargs are the shipped defaults; for bench we
+    # override from the CLI.
+    t_obj._bench_gen_kwargs = {  # noqa: SLF001
+        "num_beams": num_beams,
+        "max_new_tokens": max_new_tokens,
+        "do_sample": False,
+    }
+
+    with open(out_path, "w", newline="") as f_out:
+        writer = csv.writer(f_out)
+        writer.writerow(["source_id", "path", "en_caption", "en_tags", "it_caption", "it_tags"])
+
+        t_start = time.monotonic()
+        per_row: list[float] = []
+        for i, row in enumerate(rows, 1):
+            en_caption = row["en_caption"]
+            en_tags = {t.strip() for t in row["en_tags"].split(",") if t.strip()}
+            t0 = time.monotonic()
+            it_caption, it_tags = t_obj.translate(en_caption, en_tags)
+            per_row.append(time.monotonic() - t0)
+            writer.writerow(
+                [
+                    row["source_id"],
+                    row["path"],
+                    en_caption,
+                    row["en_tags"],
+                    it_caption,
+                    ", ".join(sorted(it_tags)),
+                ]
+            )
+            if i % 50 == 0 or i == len(rows):
+                elapsed = time.monotonic() - t_start
+                rate = i / elapsed if elapsed > 0 else 0
+                print(
+                    f"\r  [{i}/{len(rows)}] {rate:.1f}/s  avg {elapsed / i * 1000:.0f}ms/row",
+                    end="",
+                    flush=True,
+                )
+
+    total = time.monotonic() - t_start
+    per_row.sort()
+    p50 = per_row[len(per_row) // 2] * 1000
+    p95 = per_row[int(len(per_row) * 0.95)] * 1000
+    print()
+    print(
+        f"Done! {len(rows)} rows in {total:.1f}s  "
+        f"avg {total / len(rows) * 1000:.0f}ms  p50 {p50:.0f}ms  p95 {p95:.0f}ms"
+    )
 
 
 @cli.command()

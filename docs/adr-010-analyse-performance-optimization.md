@@ -42,13 +42,40 @@ Step timings (avg per source):
 
 Likely outcome: VLM captioning dominates (60-80%). Optimization strategies ranked by effort/impact:
 
-### 2a. Caption pre-filter (skip detection on 30% of sources)
+### 2a. Caption pre-filter ✅ implemented 2026-04-17
 
-Already backlogged and validated. Add `"has_people": bool, "has_animals": bool` to the VLM prompt. Skip face/pet detection when the VLM says no subjects. Zero extra inference cost — just a few more tokens in the existing caption call.
+VLM prompt requests JSON with `"has_people": bool, "has_animals": bool`. CaptionStep runs first; `FaceDetectionStep` / `PetDetectionStep` skip when the corresponding flag is false. No CLI flag — implicit whenever captioning is enabled; `--no-caption` disables both the caption and the filter.
 
-**Expected impact**: 30% fewer detection calls. If detection is 30% of total time, saves ~10% overall. If detection is 15%, saves ~5%.
+**Accuracy-first wiring**:
+- Booleans default to True on parse failure or missing fields (fail-open).
+- After parsing the JSON, the parser overrides `has_people` / `has_animals` back to True whenever the caption or a tag contains a matching keyword. Qwen2.5-VL-7B-4bit will sometimes describe a cat in the caption yet emit `has_animals: false` — the override catches this.
 
-**Files**: `src/ritrova/describer.py` (prompt), `src/ritrova/analysis_steps.py` (conditional step), `src/ritrova/cli.py` (step ordering in builder)
+**Validation (seed 2024, 500 random sources across the archive):**
+- Baseline: 737 findings (702 human + 35 animal), 2.788s/source.
+- Prefilter: 707 findings (673 human + 34 animal), 2.641s/source (−5.3%).
+- Every one of the 30 "missed" findings was a false positive:
+  - 29 ArcFace false positives on statues, busts, dolls, and illustrations.
+  - 1 YOLO false positive on a video still where the bbox covered almost the whole frame.
+- Net effect: prefilter is a **precision win AND a speed win**, not a trade-off. 0 true misses on 500 sources.
+
+**Files touched**: `src/ritrova/describer.py` (JSON prompt, DescribeOutput, keyword override in `_parse_vlm_response`), `src/ritrova/analysis_steps.py` (prefilter_enabled on detection steps, booleans populated from describer output), `src/ritrova/analysis.py` (SourceAnalysis.has_people/has_animals, default True), `src/ritrova/cli.py` (step ordering).
+
+### Running measurements (seed 42, 50 photos from 2024/)
+
+| Phase | s/source | VLM | translator | arcface | siglip | findings |
+|---|---|---|---|---|---|---|
+| Baseline (off, line prompt) | 2.735 | 2.188 (bundled) | — | 0.378 | 0.123 | 85 |
+| 2a prefilter-on | 2.932 | 2.499 (bundled) | — | 0.343 | 0.043 | 83 |
+| +A max_tokens 256→128, split translator | 2.754 | **1.989** | **0.341** | 0.335 | 0.043 | 83 |
+| +B max_side 1024→896 | 2.611 | **1.815** | 0.372 | 0.335 | 0.043 | 83 |
+| D trimmed prompt (74w/100t) | 2.337 | 1.646 | 0.268 | 0.334 | 0.042 | 82 |
+| D middle prompt (101w/130t) | 2.772 | 1.925 | 0.424 | 0.332 | 0.046 | 84 |
+
+Translation is 12% of wall time — larger than expected, promotes §2f (translator swap) from last-priority to mid-priority.
+
+Phase B A/B details: on a 20-photo high-complexity sample (seed 2024), captions at 896 were differently worded from 1024 in 17/18 shared sources but none exhibited content regression. At 768 we began to see hallucinations (e.g. IMG_2553 "a man in jeans with his arms around her" not in 1024) and detail loss; 640 regressed further with frequent generic "a group of people". 896 therefore wins on quality-neutrality at the cost of a modest 8.7% VLM speedup (below the original 10% threshold but above the "no regression" criterion that matters more for a personal searchable archive).
+
+Phase D outcome: **rejected as a speed optimisation** — both variants miss or hurt. The trimmed 74-word prompt shortens captions (avg 8.5 vs 16.6 words), losing detail ("red tracksuit on a wooden ladder" → "one person dancing"), for a −10.5% total. The middle 101-word prompt that restored the RIGHT example *added* detail ("red plates, drinks in white cups and bottles" vs "table with food and drinks") but produced longer captions (24.9 words), so generation + translation cost rose, net +6% slower. The old prompt is the best accuracy/speed point; shorter prompts do not monotonically speed things up because they reshape output length. Keep the current prompt as default; the middle variant is a *quality* upgrade option to consider if captioning detail becomes more important than 6% throughput.
 
 ### 2b. Smaller/faster VLM model
 

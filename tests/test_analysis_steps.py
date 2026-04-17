@@ -15,7 +15,9 @@ from ritrova.analysis_steps import (
     DeduplicationStep,
     FaceDetectionStep,
     PetDetectionStep,
+    TranslationStep,
 )
+from ritrova.describer import DescribeOutput
 from ritrova.detection import Detection, DetectionResult
 
 
@@ -83,6 +85,32 @@ class TestFaceDetectionStep(TestCase):
         result = step.analyse(_frame(frame_number=7), _state())
         assert result.findings[0].frame_number == 7
 
+    def test_prefilter_skips_when_no_people(self) -> None:
+        detector = self._mock_detector()
+        step = FaceDetectionStep(detector, prefilter_enabled=True)
+        state = _state()
+        state.has_people = False
+        result = step.analyse(_frame(), state)
+        assert result.findings == []
+        detector.detect_image.assert_not_called()
+
+    def test_prefilter_runs_when_people_present(self) -> None:
+        step = FaceDetectionStep(self._mock_detector(), prefilter_enabled=True)
+        state = _state()
+        state.has_people = True
+        result = step.analyse(_frame(), state)
+        assert len(result.findings) == 1
+
+    def test_prefilter_disabled_always_runs(self) -> None:
+        """With prefilter off the has_people flag is ignored."""
+        detector = self._mock_detector()
+        step = FaceDetectionStep(detector, prefilter_enabled=False)
+        state = _state()
+        state.has_people = False
+        result = step.analyse(_frame(), state)
+        assert len(result.findings) == 1
+        detector.detect_image.assert_called_once()
+
 
 # ── PetDetectionStep ────────────────────────────────────────────────────
 
@@ -136,24 +164,44 @@ class TestPetDetectionStep(TestCase):
         result = step.analyse(_frame(), _state())
         assert result.findings == []
 
+    def test_prefilter_skips_when_no_animals(self) -> None:
+        detector = self._mock_detector()
+        step = PetDetectionStep(detector, prefilter_enabled=True)
+        state = _state()
+        state.has_animals = False
+        result = step.analyse(_frame(), state)
+        assert result.findings == []
+        detector.detect_image.assert_not_called()
+
+    def test_prefilter_runs_when_animals_present(self) -> None:
+        step = PetDetectionStep(self._mock_detector(), prefilter_enabled=True)
+        state = _state()
+        state.has_animals = True
+        result = step.analyse(_frame(), state)
+        assert len(result.findings) == 1
+
 
 # ── CaptionStep ──────────────────────────────────────────────────────────
 
 
 class TestCaptionStep(TestCase):
     def _mock_describer(
-        self, caption: str = "A dog in a park", tags: set[str] | None = None
+        self,
+        caption: str = "A dog in a park",
+        tags: set[str] | None = None,
+        *,
+        has_people: bool = True,
+        has_animals: bool = True,
     ) -> MagicMock:
         describer = MagicMock()
         describer.model_id = "fake-vlm"
-        describer.describe_image.return_value = (caption, tags or {"dog", "park"})
+        describer.describe_image.return_value = DescribeOutput(
+            caption=caption,
+            tags=tags if tags is not None else {"dog", "park"},
+            has_people=has_people,
+            has_animals=has_animals,
+        )
         return describer
-
-    def _mock_translator(self) -> MagicMock:
-        translator = MagicMock()
-        translator.model_id = "fake-translator"
-        translator.translate.return_value = ("Un cane nel parco", {"cane", "parco"})
-        return translator
 
     def test_sets_caption_and_tags(self) -> None:
         step = CaptionStep(self._mock_describer())
@@ -161,11 +209,10 @@ class TestCaptionStep(TestCase):
         assert result.caption == "A dog in a park"
         assert result.tags == {"dog", "park"}
 
-    def test_with_translator(self) -> None:
-        step = CaptionStep(self._mock_describer(), translator=self._mock_translator())
-        result = step.analyse(_frame(), _state())
-        assert result.caption == "Un cane nel parco"
-        assert result.tags == {"cane", "parco"}
+    def test_step_name_is_vlm_model_id(self) -> None:
+        """CaptionStep no longer composes VLM+translator in its name."""
+        step = CaptionStep(self._mock_describer())
+        assert step.name == "fake-vlm"
 
     def test_skips_non_zero_frames(self) -> None:
         step = CaptionStep(self._mock_describer())
@@ -178,13 +225,61 @@ class TestCaptionStep(TestCase):
         assert result.caption == ""
         assert result.tags == set()
 
-    def test_name_includes_translator(self) -> None:
-        step = CaptionStep(self._mock_describer(), translator=self._mock_translator())
-        assert step.name == "fake-vlm+fake-translator"
+    def test_propagates_subject_booleans(self) -> None:
+        step = CaptionStep(self._mock_describer(has_people=False, has_animals=True))
+        result = step.analyse(_frame(), _state())
+        assert result.has_people is False
+        assert result.has_animals is True
 
-    def test_name_without_translator(self) -> None:
-        step = CaptionStep(self._mock_describer())
-        assert step.name == "fake-vlm"
+    def test_empty_caption_leaves_booleans_at_default(self) -> None:
+        """When VLM returns nothing usable, booleans stay fail-open True."""
+        step = CaptionStep(self._mock_describer(caption="", has_people=False, has_animals=False))
+        result = step.analyse(_frame(), _state())
+        assert result.has_people is True
+        assert result.has_animals is True
+
+
+# ── TranslationStep ─────────────────────────────────────────────────────
+
+
+class TestTranslationStep(TestCase):
+    def _mock_translator(self) -> MagicMock:
+        translator = MagicMock()
+        translator.model_id = "fake-translator"
+        translator.translate.return_value = ("Un cane nel parco", {"cane", "parco"})
+        return translator
+
+    def test_translates_caption_and_tags(self) -> None:
+        translator = self._mock_translator()
+        step = TranslationStep(translator)
+        state = _state()
+        state.caption = "A dog in a park"
+        state.tags = {"dog", "park"}
+        result = step.analyse(_frame(), state)
+        assert result.caption == "Un cane nel parco"
+        assert result.tags == {"cane", "parco"}
+        translator.translate.assert_called_once_with("A dog in a park", {"dog", "park"})
+
+    def test_noop_when_caption_empty(self) -> None:
+        translator = self._mock_translator()
+        step = TranslationStep(translator)
+        state = _state()
+        state.caption = ""
+        result = step.analyse(_frame(), state)
+        translator.translate.assert_not_called()
+        assert result.caption == ""
+
+    def test_noop_on_non_zero_frames(self) -> None:
+        translator = self._mock_translator()
+        step = TranslationStep(translator)
+        state = _state()
+        state.caption = "A dog in a park"
+        step.analyse(_frame(frame_number=3), state)
+        translator.translate.assert_not_called()
+
+    def test_step_name_is_translator_model_id(self) -> None:
+        step = TranslationStep(self._mock_translator())
+        assert step.name == "fake-translator"
 
 
 # ── DeduplicationStep ────────────────────────────────────────────────────

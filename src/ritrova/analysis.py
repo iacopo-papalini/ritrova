@@ -67,6 +67,11 @@ class SourceAnalysis:
     findings: list[AnalysisFinding] = field(default_factory=list)
     caption: str = ""
     tags: set[str] = field(default_factory=set)
+    # Caption pre-filter flags. Default True so that, when the caption step
+    # never ran or parsing failed, every detection step still runs — accuracy
+    # trumps the speedup and missed findings cannot be recovered later.
+    has_people: bool = True
+    has_animals: bool = True
     # Video frame cache: frame_number → PIL Image for frames that produced findings.
     # The persister saves these as JPEGs and stores the path as frame_path.
     # Empty for photo sources (frame 0 = the source file itself).
@@ -183,11 +188,14 @@ class AnalysisPipeline:
         *,
         frames: Iterator[FrameRef] | None = None,
         initial_state: SourceAnalysis | None = None,
+        step_times: dict[str, float] | None = None,
     ) -> SourceAnalysis:
         """Run the full pipeline on a source.
 
         If ``frames`` is not provided, uses ``photo_frames`` for photos.
         If ``initial_state`` is provided, enriches it; otherwise creates a new one.
+        If ``step_times`` is provided, per-step elapsed wall time (seconds,
+        summed across frames) is accumulated into it keyed by step name.
         """
         if frames is None:
             frames = photo_frames(source_path)
@@ -202,8 +210,16 @@ class AnalysisPipeline:
                 state.width = frame.width
                 state.height = frame.height
             findings_before = len(state.findings)
-            for step in self.steps:
-                state = step.analyse(frame, state)
+            if step_times is None:
+                for step in self.steps:
+                    state = step.analyse(frame, state)
+            else:
+                import time
+
+                for step in self.steps:
+                    t0 = time.monotonic()
+                    state = step.analyse(frame, state)
+                    step_times[step.name] = step_times.get(step.name, 0.0) + time.monotonic() - t0
             # Cache the frame image if new findings were produced on a video frame
             if (
                 len(state.findings) > findings_before

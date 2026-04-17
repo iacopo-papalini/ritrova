@@ -8,7 +8,7 @@ from unittest import TestCase
 import pytest
 
 from ritrova.db import FaceDB
-from ritrova.describer import _parse_vlm_response
+from ritrova.describer import Describer, _parse_vlm_response
 
 
 class TestDescriptionsDB(TestCase):
@@ -183,80 +183,164 @@ class TestDescriberParsing(TestCase):
 
     def test_parse_clean_json(self) -> None:
         text = '{"caption": "Un gruppo a tavola", "tags": ["cena", "giardino"]}'
-        caption, tags = _parse_vlm_response(text)
-        assert caption == "Un gruppo a tavola"
-        assert tags == {"cena", "giardino"}
+        out = _parse_vlm_response(text)
+        assert out.caption == "Un gruppo a tavola"
+        assert out.tags == {"cena", "giardino"}
 
     def test_parse_json_with_markdown_fences(self) -> None:
         text = '```json\n{"caption": "Spiaggia", "tags": ["mare", "estate"]}\n```'
-        caption, tags = _parse_vlm_response(text)
-        assert caption == "Spiaggia"
-        assert tags == {"mare", "estate"}
+        out = _parse_vlm_response(text)
+        assert out.caption == "Spiaggia"
+        assert out.tags == {"mare", "estate"}
 
     def test_parse_tags_lowercased(self) -> None:
         text = '{"caption": "Test", "tags": ["Mare", "ESTATE", "Cena"]}'
-        caption, tags = _parse_vlm_response(text)
-        assert tags == {"mare", "estate", "cena"}
+        out = _parse_vlm_response(text)
+        assert out.tags == {"mare", "estate", "cena"}
 
     def test_parse_empty_tags(self) -> None:
         text = '{"caption": "Niente di speciale", "tags": []}'
-        caption, tags = _parse_vlm_response(text)
-        assert caption == "Niente di speciale"
-        assert tags == set()
+        out = _parse_vlm_response(text)
+        assert out.caption == "Niente di speciale"
+        assert out.tags == set()
 
     def test_parse_invalid_json_falls_back(self) -> None:
         text = "This is not JSON at all"
-        caption, tags = _parse_vlm_response(text)
-        assert caption == "This is not JSON at all"
-        assert tags == set()
+        out = _parse_vlm_response(text)
+        assert out.caption == "This is not JSON at all"
+        assert out.tags == set()
 
     def test_parse_strips_whitespace(self) -> None:
         text = '  {"caption": "  Ciao  ", "tags": ["  mare  ", "neve"]}  '
-        caption, tags = _parse_vlm_response(text)
-        assert caption == "Ciao"
-        assert tags == {"mare", "neve"}
+        out = _parse_vlm_response(text)
+        assert out.caption == "Ciao"
+        assert out.tags == {"mare", "neve"}
 
     def test_parse_missing_caption_key(self) -> None:
         text = '{"tags": ["mare"]}'
-        caption, tags = _parse_vlm_response(text)
-        assert caption == ""
-        assert tags == {"mare"}
+        out = _parse_vlm_response(text)
+        assert out.caption == ""
+        assert out.tags == {"mare"}
 
     def test_parse_missing_tags_key(self) -> None:
         text = '{"caption": "Una foto"}'
-        caption, tags = _parse_vlm_response(text)
-        assert caption == "Una foto"
-        assert tags == set()
+        out = _parse_vlm_response(text)
+        assert out.caption == "Una foto"
+        assert out.tags == set()
 
     def test_parse_multiword_tags_kept_in_json(self) -> None:
         """JSON format: multi-word tags are kept intact (lowercased)."""
         text = '{"caption": "Test", "tags": ["bird of prey", "stone wall"]}'
-        _, tags = _parse_vlm_response(text)
-        assert tags == {"bird of prey", "stone wall"}
+        out = _parse_vlm_response(text)
+        assert out.tags == {"bird of prey", "stone wall"}
 
     def test_parse_line_based_format(self) -> None:
         """Line-based format: first line is caption, rest are single-word tags."""
         text = "A dog sits on a beach at sunset.\ndog\nbeach\nsunset\nsand"
-        caption, tags = _parse_vlm_response(text)
-        assert caption == "A dog sits on a beach at sunset."
-        assert tags == {"dog", "beach", "sunset", "sand"}
+        out = _parse_vlm_response(text)
+        assert out.caption == "A dog sits on a beach at sunset."
+        assert out.tags == {"dog", "beach", "sunset", "sand"}
 
     def test_parse_line_based_skips_multiword_lines(self) -> None:
         """Line-based: lines with multiple words after the caption are ignored."""
         text = "A man holds a bird.\neagle\nthis is not a tag\ncrowd"
-        caption, tags = _parse_vlm_response(text)
-        assert caption == "A man holds a bird."
-        assert tags == {"eagle", "crowd"}
+        out = _parse_vlm_response(text)
+        assert out.caption == "A man holds a bird."
+        assert out.tags == {"eagle", "crowd"}
 
     def test_parse_line_based_strips_dots(self) -> None:
         text = "A photo.\ndog.\ncat."
-        caption, tags = _parse_vlm_response(text)
-        assert caption == "A photo."
-        assert tags == {"dog", "cat"}
+        out = _parse_vlm_response(text)
+        assert out.caption == "A photo."
+        assert out.tags == {"dog", "cat"}
 
     def test_parse_prefers_json_over_lines(self) -> None:
         """If the output is valid JSON, use that even if it has newlines."""
         text = '{\n"caption": "Test",\n"tags": ["a", "b"]\n}'
-        caption, tags = _parse_vlm_response(text)
-        assert caption == "Test"
-        assert tags == {"a", "b"}
+        out = _parse_vlm_response(text)
+        assert out.caption == "Test"
+        assert out.tags == {"a", "b"}
+
+    # ── Prefilter booleans (ADR-010 step 2a) ─────────────────────────
+
+    def test_parse_reads_subject_booleans(self) -> None:
+        text = '{"caption": "A cat", "tags": ["cat"], "has_people": false, "has_animals": true}'
+        out = _parse_vlm_response(text)
+        assert out.has_people is False
+        assert out.has_animals is True
+
+    def test_parse_subject_booleans_default_true_when_missing(self) -> None:
+        """Accuracy-first: unknown fields fail open so detection still runs."""
+        text = '{"caption": "A scene", "tags": []}'
+        out = _parse_vlm_response(text)
+        assert out.has_people is True
+        assert out.has_animals is True
+
+    def test_parse_subject_booleans_default_true_on_line_format(self) -> None:
+        """Line-based replies never supply the booleans — default to True."""
+        text = "A photo.\nthing\nstuff"
+        out = _parse_vlm_response(text)
+        assert out.has_people is True
+        assert out.has_animals is True
+
+    def test_parse_subject_booleans_accept_string_false(self) -> None:
+        """Some VLMs emit string 'false' instead of JSON boolean — treat as false."""
+        text = (
+            '{"caption": "Empty room", "tags": ["room"], '
+            '"has_people": "false", "has_animals": "no"}'
+        )
+        out = _parse_vlm_response(text)
+        assert out.has_people is False
+        assert out.has_animals is False
+
+    def test_parse_subject_booleans_unrecognised_value_is_true(self) -> None:
+        """Anything we can't interpret as a clear 'false' stays True (fail-open)."""
+        text = '{"caption": "Maybe", "tags": ["thing"], "has_people": "maybe", "has_animals": null}'
+        out = _parse_vlm_response(text)
+        assert out.has_people is True
+        assert out.has_animals is True
+
+    def test_parse_caption_mentions_override_false_booleans(self) -> None:
+        """Qwen sometimes emits has_animals=false while describing a cat.
+
+        The caption/tag keywords force the boolean back to true so detection
+        is not skipped.
+        """
+        text = (
+            '{"caption": "A person sitting with a cat on their lap.", '
+            '"tags": ["person", "cat", "tablet"], '
+            '"has_people": false, "has_animals": false}'
+        )
+        out = _parse_vlm_response(text)
+        assert out.has_people is True  # caption mentions "person"
+        assert out.has_animals is True  # tags include "cat"
+
+    def test_parse_booleans_stay_false_when_nothing_mentioned(self) -> None:
+        """Override only fires when keywords appear — empty scenes stay false."""
+        text = (
+            '{"caption": "A snowy mountain ridge under clear skies.", '
+            '"tags": ["mountain", "snow", "sky"], '
+            '"has_people": false, "has_animals": false}'
+        )
+        out = _parse_vlm_response(text)
+        assert out.has_people is False
+        assert out.has_animals is False
+
+
+class TestDescriberKwargs(TestCase):
+    """VLM generation tuning knobs — defaults and propagation."""
+
+    def test_default_max_tokens_is_128(self) -> None:
+        """Lower cap than the old 256: captions fit in <100 tokens anyway."""
+        d = Describer(model_id="dummy")
+        assert d.max_tokens == 128
+
+    def test_default_max_side_is_896(self) -> None:
+        """Phase B A/B: 896 matches 1024 quality on high-complexity photos."""
+        d = Describer(model_id="dummy")
+        assert d.max_side == 896
+
+    def test_kwargs_override_defaults(self) -> None:
+        d = Describer(model_id="dummy", max_tokens=64, max_side=640)
+        assert d.max_tokens == 64
+        assert d.max_side == 640
