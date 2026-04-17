@@ -32,7 +32,10 @@ class PetDetector:
         # SigLIP for embeddings
         from transformers import AutoModel, AutoProcessor
 
-        self.processor = AutoProcessor.from_pretrained(siglip_model, use_fast=False)  # type: ignore[no-untyped-call]
+        # backend="pil" replaces the deprecated ``use_fast=False`` in modern
+        # transformers. SigLIP's PIL path gives slightly different (and more
+        # stable) resize/normalise numerics than torchvision — keep PIL.
+        self.processor = AutoProcessor.from_pretrained(siglip_model, backend="pil")  # type: ignore[no-untyped-call]
         self.siglip = AutoModel.from_pretrained(siglip_model)
         self.siglip.eval()
         if torch.backends.mps.is_available():
