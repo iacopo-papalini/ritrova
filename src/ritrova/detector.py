@@ -29,10 +29,16 @@ _BASE_EDGE_DENSITY = 0.02  # Canny edge ratio at reference size
 class FaceDetector:
     def __init__(self, det_size: int = 640):
         from insightface.app import FaceAnalysis
+        import onnxruntime as ort
 
+        providers = [
+            provider
+            for provider in ("CUDAExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider")
+            if provider in ort.get_available_providers()
+        ]
         self.app = FaceAnalysis(
             name="buffalo_l",
-            providers=["CoreMLExecutionProvider", "CPUExecutionProvider"],
+            providers=providers,
         )
         self.app.prepare(ctx_id=0, det_size=(det_size, det_size))
 

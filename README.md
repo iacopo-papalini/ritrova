@@ -2,7 +2,7 @@
 
 Face recognition and tagging for photo collections. Detects faces in photos and videos, clusters them by identity using ArcFace embeddings, detects pets (dogs and cats) using YOLO + SigLIP, and provides a web UI for naming and searching people and animals across years of photos.
 
-Built for Apple Silicon (CoreML acceleration) but works on any platform via CPU fallback.
+Built for Apple Silicon (CoreML acceleration) but most scanning features work cross-platform.
 
 ## Requirements
 
@@ -17,6 +17,15 @@ uv sync
 cp .env.example .env
 # Edit .env: set PHOTOS_DIR to your photos root directory
 ```
+
+### Windows + Nvidia notes
+
+- `uv sync` skips `mlx-vlm` on Windows, because MLX does not publish Windows wheels there.
+- Apple Silicon defaults to the MLX backend for image captioning.
+- Windows and Linux fall back to a `transformers` VLM backend for image captioning.
+- On Windows, `uv sync` pulls `torch` and `torchvision` from the official PyTorch CUDA 12.8 wheel index.
+- If you want GPU acceleration for face detection on Windows, the project installs `onnxruntime-gpu` so InsightFace can use `CUDAExecutionProvider`.
+- Pet embedding and the transformers VLM prefer CUDA automatically when a CUDA-enabled PyTorch build is installed.
 
 The first run of `scan` downloads the InsightFace `buffalo_l` model (~300 MB) to `~/.insightface/models/`. The first run of `scan-pets` downloads YOLO and SigLIP models.
 

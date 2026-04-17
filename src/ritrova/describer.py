@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import torch
 from PIL import Image, ImageFile, ImageOps
 
 from .db import FaceDB
@@ -25,9 +27,17 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_VLM_MODEL = "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
+DEFAULT_VLM_MODEL_MLX = "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
+DEFAULT_VLM_MODEL_TRANSFORMERS = "Qwen/Qwen2.5-VL-3B-Instruct"
 DEFAULT_TRANSLATOR_MODEL = "Helsinki-NLP/opus-mt-tc-big-en-it"
 MAX_TAGS = 15
+
+
+def _prefers_mlx_backend() -> bool:
+    return platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
+
+
+DEFAULT_VLM_MODEL = DEFAULT_VLM_MODEL_MLX if _prefers_mlx_backend() else DEFAULT_VLM_MODEL_TRANSFORMERS
 
 DEFAULT_SYSTEM_PROMPT = (
     "You catalog photos.\n\n"
@@ -122,14 +132,57 @@ class Describer:
         self.max_side = max_side
         self._model = None
         self._processor = None
+        self._backend_name: str | None = None
+
+    def _load_mlx_backend(self) -> None:
+        from mlx_vlm import load
+
+        logger.info("Loading VLM via MLX: %s", self.model_id)
+        self._model, self._processor = load(self.model_id)
+        self._backend_name = "mlx"
+
+    def _load_transformers_backend(self) -> None:
+        from transformers import pipeline
+
+        logger.info("Loading VLM via transformers: %s", self.model_id)
+        if torch.cuda.is_available():
+            device: str | int = 0
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = -1
+        self._model = pipeline(
+            task="image-text-to-text",
+            model=self.model_id,
+            device=device,
+            dtype="auto",
+        )
+        self._processor = None
+        self._backend_name = "transformers"
 
     def _ensure_loaded(self) -> None:
         if self._model is not None:
             return
-        from mlx_vlm import load
+        errors: list[BaseException] = []
+        looks_like_mlx_model = self.model_id.startswith("mlx-community/")
+        loaders = (
+            (self._load_mlx_backend, self._load_transformers_backend)
+            if looks_like_mlx_model
+            else (self._load_transformers_backend, self._load_mlx_backend)
+        )
+        for loader in loaders:
+            try:
+                loader()
+                return
+            except Exception as exc:  # pragma: no cover - depends on local ML stack
+                errors.append(exc)
 
-        logger.info("Loading VLM: %s", self.model_id)
-        self._model, self._processor = load(self.model_id)
+        raise RuntimeError(
+            "Could not load any VLM backend for this platform. "
+            "Apple Silicon prefers MLX; Windows/Linux fall back to transformers. "
+            f"Tried model `{self.model_id}` and got: "
+            + " | ".join(f"{type(err).__name__}: {err}" for err in errors)
+        ) from errors[-1]
 
     def describe(self, image_path: Path, vocab_hint: str | None = None) -> DescribeOutput:
         """Generate an English caption and tags from a file path.
@@ -152,16 +205,25 @@ class Describer:
     ) -> DescribeOutput:
         """Generate an English caption and tags from an already-loaded PIL RGB Image."""
         self._ensure_loaded()
-        assert self._model is not None
-        assert self._processor is not None
-
-        from mlx_vlm import generate
-        from mlx_vlm.prompt_utils import apply_chat_template
 
         if vocab_hint:
             user_text = self.user_prompt_with_vocab.format(vocab=vocab_hint)
         else:
             user_text = self.user_prompt_no_vocab
+
+        img = _resize_for_vlm(pil_image, max_side=self.max_side)
+        if self._backend_name == "mlx":
+            return self._describe_image_mlx(img, user_text)
+        if self._backend_name == "transformers":
+            return self._describe_image_transformers(img, user_text)
+        raise RuntimeError("VLM backend was not initialized correctly")
+
+    def _describe_image_mlx(self, pil_image: Image.Image, user_text: str) -> DescribeOutput:
+        assert self._model is not None
+        assert self._processor is not None
+
+        from mlx_vlm import generate
+        from mlx_vlm.prompt_utils import apply_chat_template
 
         # Use mlx_vlm's family-aware helper: it inserts the image token and
         # picks the right template for gemma3 / qwen / pixtral / llama-vision /
@@ -174,13 +236,11 @@ class Describer:
         ]
         formatted = apply_chat_template(self._processor, self._model.config, messages, num_images=1)
 
-        img = _resize_for_vlm(pil_image, max_side=self.max_side)
-
         output = generate(
             self._model,
             self._processor,
             formatted,
-            image=[img],
+            image=[pil_image],
             max_tokens=self.max_tokens,
             temperature=0.0,
             repetition_penalty=1.2,
@@ -189,6 +249,60 @@ class Describer:
 
         text = output.text if hasattr(output, "text") else str(output)
         return _parse_vlm_response(text)
+
+    def _describe_image_transformers(self, pil_image: Image.Image, user_text: str) -> DescribeOutput:
+        assert self._model is not None
+
+        generation_config = self._model.model.generation_config.__class__.from_dict(  # type: ignore[attr-defined]
+            self._model.model.generation_config.to_dict()  # type: ignore[attr-defined]
+        )
+        generation_config.max_new_tokens = self.max_tokens
+        generation_config.max_length = None
+
+        messages = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": self.system_prompt}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": pil_image},
+                    {"type": "text", "text": user_text},
+                ],
+            },
+        ]
+        output = self._model(
+            text=messages,
+            generation_config=generation_config,
+            return_full_text=False,
+        )
+        return _parse_vlm_response(_extract_transformers_text(output))
+
+
+def _extract_transformers_text(output: object) -> str:
+    """Extract generated text from transformers image-text-to-text pipeline output."""
+    if isinstance(output, list) and output:
+        output = output[0]
+    if isinstance(output, dict):
+        generated = output.get("generated_text", output)
+    else:
+        generated = output
+
+    if isinstance(generated, list) and generated:
+        generated = generated[-1]
+    if isinstance(generated, dict):
+        content = generated.get("content", generated)
+    else:
+        content = generated
+
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text_parts.append(str(item.get("text", "")))
+        return "\n".join(part for part in text_parts if part).strip()
+    return str(content).strip()
 
 
 def _parse_vlm_response(text: str) -> DescribeOutput:
@@ -233,7 +347,7 @@ def _parse_vlm_response(text: str) -> DescribeOutput:
             has_people=has_people,
             has_animals=has_animals,
         )
-    except json.JSONDecodeError, AttributeError:
+    except (json.JSONDecodeError, AttributeError, TypeError):
         pass
 
     # Line-based fallback: first line is caption, rest are tags.

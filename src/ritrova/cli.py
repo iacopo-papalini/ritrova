@@ -33,6 +33,7 @@ def cli(ctx: click.Context, db: str, photos_dir: str | None, verbose: bool) -> N
         level=logging.DEBUG if verbose else logging.WARNING,
         format="%(name)s %(levelname)s: %(message)s",
     )
+    logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = db
     ctx.obj["photos_dir"] = photos_dir
@@ -722,8 +723,8 @@ def describe_eval(
 @click.option(
     "--device",
     default="cpu",
-    type=click.Choice(["cpu", "mps"]),
-    help="Torch device. Use 'mps' to run the translator on Apple Silicon GPU.",
+    type=click.Choice(["cpu", "cuda", "mps"]),
+    help="Torch device for translation benchmarking.",
 )
 @click.pass_context
 def translate_bench(
@@ -763,14 +764,10 @@ def translate_bench(
 
     t_obj = Translator(model_id=translator_id)
     t_obj._ensure_loaded()  # noqa: SLF001 — explicit warm-up so load time isn't counted.
-    if device == "mps":
-        # Move the already-loaded seq2seq onto Metal. Inputs are also moved
-        # in _translate_text below. MarianMT uses only standard transformer
-        # ops, all supported on MPS.
-        t_obj._translation_model = t_obj._translation_model.to("mps")  # noqa: SLF001
-        t_obj._device = "mps"  # noqa: SLF001 — read inside _translate_text
-    else:
-        t_obj._device = "cpu"  # noqa: SLF001
+    if device != "cpu":
+        # Move the already-loaded seq2seq onto the requested accelerator.
+        t_obj._translation_model = t_obj._translation_model.to(device)  # noqa: SLF001
+    t_obj._device = device  # noqa: SLF001 — read inside _translate_text
 
     # Patch the generation kwargs to the bench values. _translate_text's
     # current hard-coded kwargs are the shipped defaults; for bench we

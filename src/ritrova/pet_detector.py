@@ -38,7 +38,10 @@ class PetDetector:
         self.processor = AutoProcessor.from_pretrained(siglip_model, backend="pil")  # type: ignore[no-untyped-call]
         self.siglip = AutoModel.from_pretrained(siglip_model)
         self.siglip.eval()
-        if torch.backends.mps.is_available():
+        if torch.cuda.is_available():
+            self.siglip = self.siglip.to("cuda")
+            self.device = "cuda"
+        elif torch.backends.mps.is_available():
             self.siglip = self.siglip.to("mps")
             self.device = "mps"
         else:
