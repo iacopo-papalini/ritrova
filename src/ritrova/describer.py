@@ -10,6 +10,7 @@ pipeline function orchestrates both.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import platform
@@ -34,7 +35,8 @@ DEFAULT_VLM_MODEL_MLX = "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
 # A/B (seed 2024, high-complexity) 3B systematically lost scene context
 # ("softball dugout" → "sports venue"; "inflatable bee costume" →
 # "person in costume"), which hurts a searchable archive. See ADR-010.
-DEFAULT_VLM_MODEL_TRANSFORMERS = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ"
+DEFAULT_VLM_MODEL_TRANSFORMERS_AWQ = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ"
+DEFAULT_VLM_MODEL_TRANSFORMERS_FALLBACK = "Qwen/Qwen2.5-VL-3B-Instruct"
 DEFAULT_TRANSLATOR_MODEL = "Helsinki-NLP/opus-mt-tc-big-en-it"
 MAX_TAGS = 15
 
@@ -43,8 +45,21 @@ def _prefers_mlx_backend() -> bool:
     return platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
 
 
+def _has_autoawq_runtime() -> bool:
+    return importlib.util.find_spec("awq") is not None
+
+
+def _default_transformers_vlm_model() -> str:
+    # AWQ-quantized 7B keeps the same base model as the Mac (~6 GB on CUDA and
+    # fits an 8 GB card). When the AWQ runtime is unavailable, fall back to
+    # the portable 3B transformers model so `uv run` remains installable.
+    if _has_autoawq_runtime():
+        return DEFAULT_VLM_MODEL_TRANSFORMERS_AWQ
+    return DEFAULT_VLM_MODEL_TRANSFORMERS_FALLBACK
+
+
 DEFAULT_VLM_MODEL = (
-    DEFAULT_VLM_MODEL_MLX if _prefers_mlx_backend() else DEFAULT_VLM_MODEL_TRANSFORMERS
+    DEFAULT_VLM_MODEL_MLX if _prefers_mlx_backend() else _default_transformers_vlm_model()
 )
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -365,7 +380,7 @@ def _parse_vlm_response(text: str) -> DescribeOutput:
             has_people=has_people,
             has_animals=has_animals,
         )
-    except json.JSONDecodeError, AttributeError, TypeError:
+    except (json.JSONDecodeError, AttributeError, TypeError):
         pass
 
     # Line-based fallback: first line is caption, rest are tags.

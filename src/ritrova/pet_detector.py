@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torchvision
 from PIL import Image, ImageFile, ImageOps
 from ultralytics import YOLO  # type: ignore[attr-defined]
 
@@ -28,6 +29,7 @@ class PetDetector:
     ):
         # YOLO for detection
         self.yolo = YOLO(yolo_model)
+        self.yolo_device = self._choose_yolo_device()
 
         # SigLIP for embeddings
         from transformers import AutoModel, AutoProcessor
@@ -47,6 +49,20 @@ class PetDetector:
         else:
             self.device = "cpu"
 
+    def _choose_yolo_device(self) -> str:
+        """Pick the safest YOLO runtime device for this environment."""
+        if torch.cuda.is_available() and not torchvision.__version__.endswith("+cpu"):
+            return "cuda:0"
+        if torch.backends.mps.is_available():
+            return "mps"
+        if torch.cuda.is_available():
+            logger.warning(
+                "CUDA torch detected but torchvision is CPU-only (%s); "
+                "running YOLO pet detection on CPU to avoid CUDA NMS failures.",
+                torchvision.__version__,
+            )
+        return "cpu"
+
     def detect(self, image_path: Path) -> DetectionResult:
         """Detect pets from a file path (opens the file).
 
@@ -65,7 +81,12 @@ class PetDetector:
         """Detect dogs and cats from an already-loaded PIL RGB Image."""
         w_img, h_img = pil_image.size
 
-        results = self.yolo(pil_image, verbose=False, classes=[COCO_CAT, COCO_DOG])
+        results = self.yolo(
+            pil_image,
+            verbose=False,
+            classes=[COCO_CAT, COCO_DOG],
+            device=self.yolo_device,
+        )
 
         pets: list[Detection] = []
         for result in results:

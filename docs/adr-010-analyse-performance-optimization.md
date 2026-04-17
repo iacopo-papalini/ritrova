@@ -77,6 +77,18 @@ Phase B A/B details: on a 20-photo high-complexity sample (seed 2024), captions 
 
 Phase D outcome: **rejected as a speed optimisation** — both variants miss or hurt. The trimmed 74-word prompt shortens captions (avg 8.5 vs 16.6 words), losing detail ("red tracksuit on a wooden ladder" → "one person dancing"), for a −10.5% total. The middle 101-word prompt that restored the RIGHT example *added* detail ("red plates, drinks in white cups and bottles" vs "table with food and drinks") but produced longer captions (24.9 words), so generation + translation cost rose, net +6% slower. The old prompt is the best accuracy/speed point; shorter prompts do not monotonically speed things up because they reshape output length. Keep the current prompt as default; the middle variant is a *quality* upgrade option to consider if captioning detail becomes more important than 6% throughput.
 
+### Cross-platform spot check (2026-04-17)
+
+- Apple Silicon reference in this ADR remains ~2.5s/source on an M1 Max with 48GB for the full `analyse` pipeline.
+- A later ad-hoc user measurement on a MacBook Pro M5 with 48GB reported roughly **~2s/image**, which is consistent with the Apple Silicon expectation and materially faster than the Windows fallback path below.
+- On an Intel Windows desktop with an NVIDIA RTX 3060 Ti, `ritrova analyse --sample 50 --sample-seed 7 --scan-type tune-smoke --profile` measured **34.368s/source** on photos and **34.648s/source** on one video.
+- The Windows photo breakdown was:
+  - `Qwen/Qwen2.5-VL-3B-Instruct`: **33.359s** (97.1%)
+  - `Helsinki-NLP/opus-mt-tc-big-en-it`: 0.539s
+  - `arcface`: 0.348s
+  - `siglip`: 0.037s
+- Conclusion: the large Mac/Windows gap is not the overall pipeline architecture. It is almost entirely the non-MLX Windows VLM backend (`transformers`) rather than face detection, pet detection, translation, or persistence.
+
 ### 2b. Smaller/faster VLM model
 
 The current model is Qwen2.5-VL-7B-4bit. Options:
