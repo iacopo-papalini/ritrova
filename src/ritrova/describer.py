@@ -28,7 +28,13 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 logger = logging.getLogger(__name__)
 
 DEFAULT_VLM_MODEL_MLX = "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
-DEFAULT_VLM_MODEL_TRANSFORMERS = "Qwen/Qwen2.5-VL-3B-Instruct"
+# AWQ-quantized 7B keeps the same base model as the Mac (~6 GB on CUDA —
+# fits an 8 GB card with room for image-encoder activations). The earlier
+# default of the 3B fp16 variant was a quality regression — on a 20-photo
+# A/B (seed 2024, high-complexity) 3B systematically lost scene context
+# ("softball dugout" → "sports venue"; "inflatable bee costume" →
+# "person in costume"), which hurts a searchable archive. See ADR-010.
+DEFAULT_VLM_MODEL_TRANSFORMERS = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ"
 DEFAULT_TRANSLATOR_MODEL = "Helsinki-NLP/opus-mt-tc-big-en-it"
 MAX_TAGS = 15
 
@@ -37,7 +43,9 @@ def _prefers_mlx_backend() -> bool:
     return platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
 
 
-DEFAULT_VLM_MODEL = DEFAULT_VLM_MODEL_MLX if _prefers_mlx_backend() else DEFAULT_VLM_MODEL_TRANSFORMERS
+DEFAULT_VLM_MODEL = (
+    DEFAULT_VLM_MODEL_MLX if _prefers_mlx_backend() else DEFAULT_VLM_MODEL_TRANSFORMERS
+)
 
 DEFAULT_SYSTEM_PROMPT = (
     "You catalog photos.\n\n"
@@ -130,8 +138,10 @@ class Describer:
         # on a 20-photo high-complexity A/B (ADR-010 §2a Phase B).
         self.max_tokens = max_tokens
         self.max_side = max_side
-        self._model = None
-        self._processor = None
+        # Untyped because the backend can be either an mlx-vlm model or a
+        # transformers pipeline — both concrete types drag in heavy imports.
+        self._model: Any = None
+        self._processor: Any = None
         self._backend_name: str | None = None
 
     def _load_mlx_backend(self) -> None:
@@ -151,11 +161,16 @@ class Describer:
             device = "mps"
         else:
             device = -1
+        # sdpa attention ships with PyTorch ≥2.1 and gives a ~30% speed-up
+        # over the default eager attention on Qwen2.5-VL with no quality
+        # change. flash_attention_2 would be faster still but requires a
+        # separate install, so stick with sdpa.
         self._model = pipeline(
             task="image-text-to-text",
             model=self.model_id,
             device=device,
             dtype="auto",
+            model_kwargs={"attn_implementation": "sdpa"},
         )
         self._processor = None
         self._backend_name = "transformers"
@@ -165,11 +180,18 @@ class Describer:
             return
         errors: list[BaseException] = []
         looks_like_mlx_model = self.model_id.startswith("mlx-community/")
-        loaders = (
-            (self._load_mlx_backend, self._load_transformers_backend)
-            if looks_like_mlx_model
-            else (self._load_transformers_backend, self._load_mlx_backend)
-        )
+        # On non-Apple-Silicon platforms mlx-vlm is not installed (see
+        # pyproject.toml). Skip the MLX branch entirely so import failures
+        # don't pollute error messages, and transformers is the only path.
+        loaders: tuple[Any, ...]
+        if _prefers_mlx_backend():
+            loaders = (
+                (self._load_mlx_backend, self._load_transformers_backend)
+                if looks_like_mlx_model
+                else (self._load_transformers_backend, self._load_mlx_backend)
+            )
+        else:
+            loaders = (self._load_transformers_backend,)
         for loader in loaders:
             try:
                 loader()
@@ -250,11 +272,13 @@ class Describer:
         text = output.text if hasattr(output, "text") else str(output)
         return _parse_vlm_response(text)
 
-    def _describe_image_transformers(self, pil_image: Image.Image, user_text: str) -> DescribeOutput:
+    def _describe_image_transformers(
+        self, pil_image: Image.Image, user_text: str
+    ) -> DescribeOutput:
         assert self._model is not None
 
-        generation_config = self._model.model.generation_config.__class__.from_dict(  # type: ignore[attr-defined]
-            self._model.model.generation_config.to_dict()  # type: ignore[attr-defined]
+        generation_config = self._model.model.generation_config.__class__.from_dict(
+            self._model.model.generation_config.to_dict()
         )
         generation_config.max_new_tokens = self.max_tokens
         generation_config.max_length = None
@@ -284,17 +308,11 @@ def _extract_transformers_text(output: object) -> str:
     """Extract generated text from transformers image-text-to-text pipeline output."""
     if isinstance(output, list) and output:
         output = output[0]
-    if isinstance(output, dict):
-        generated = output.get("generated_text", output)
-    else:
-        generated = output
+    generated = output.get("generated_text", output) if isinstance(output, dict) else output
 
     if isinstance(generated, list) and generated:
         generated = generated[-1]
-    if isinstance(generated, dict):
-        content = generated.get("content", generated)
-    else:
-        content = generated
+    content = generated.get("content", generated) if isinstance(generated, dict) else generated
 
     if isinstance(content, list):
         text_parts: list[str] = []
@@ -347,7 +365,7 @@ def _parse_vlm_response(text: str) -> DescribeOutput:
             has_people=has_people,
             has_animals=has_animals,
         )
-    except (json.JSONDecodeError, AttributeError, TypeError):
+    except json.JSONDecodeError, AttributeError, TypeError:
         pass
 
     # Line-based fallback: first line is caption, rest are tags.
