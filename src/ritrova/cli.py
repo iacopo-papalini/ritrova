@@ -285,7 +285,28 @@ def analyse(
     # Shared counters protected by a lock
     lock = threading.Lock()
     counters = {"processed": 0, "errors": 0, "findings": 0, "done": 0}
-    step_totals: dict[str, float] = {}
+
+    # Profile buckets split by source_type. Each entry accumulates:
+    #   steps (dict of step_name -> seconds)
+    #   exif  (EXIF extraction time, photos only)
+    #   io    (frame load inside pipeline: PIL.open / cv2 VideoCapture)
+    #   persist (DB write time)
+    #   total (end-to-end _process_one wall time)
+    #   n     (number of sources in this bucket)
+    def _empty_bucket() -> dict[str, object]:
+        return {
+            "steps": {},
+            "exif": 0.0,
+            "io": 0.0,
+            "persist": 0.0,
+            "total": 0.0,
+            "n": 0,
+        }
+
+    profile_buckets: dict[str, dict[str, object]] = {
+        "photo": _empty_bucket(),
+        "video": _empty_bucket(),
+    }
     t_start = time.monotonic()
     total = len(candidates)
 
@@ -298,15 +319,24 @@ def analyse(
 
         per_source_times: dict[str, float] | None = {} if profile else None
         t_source_start = time.monotonic() if profile else 0.0
+        t_exif = 0.0
+        t_pipeline = 0.0
+        t_persist = 0.0
 
         try:
             initial = SourceAnalysis(source_path=stored, source_type=source_type)
             if source_type == "photo":
+                if profile:
+                    t0 = time.monotonic()
                 initial.taken_at = get_exif_date(source_path)
                 gps = get_exif_gps(source_path)
                 if gps:
                     initial.latitude, initial.longitude = gps
+                if profile:
+                    t_exif = time.monotonic() - t0
 
+            if profile:
+                t0 = time.monotonic()
             result = pipeline.analyse_source(
                 source_path,
                 source_type=source_type,
@@ -314,6 +344,8 @@ def analyse(
                 initial_state=initial,
                 step_times=per_source_times,
             )
+            if profile:
+                t_pipeline = time.monotonic() - t0
         except OSError:
             with lock:
                 counters["errors"] += 1
@@ -324,6 +356,8 @@ def analyse(
 
         # Persistence is serialised by the DB lock
         if persister is not None and (n_findings > 0 or result.caption):
+            if profile:
+                t0 = time.monotonic()
             if force:
                 existing = db.conn.execute(
                     "SELECT sc.id FROM scans sc JOIN sources s ON s.id = sc.source_id "
@@ -333,18 +367,28 @@ def analyse(
                 if existing:
                     db.delete_scan(existing[0])
             persister.persist(result, strategy_id=strategy_id, scan_type=scan_type)
+            if profile:
+                t_persist = time.monotonic() - t0
 
         with lock:
             counters["processed"] += 1
             counters["findings"] += n_findings
             counters["done"] += 1
             if per_source_times is not None:
+                bucket = profile_buckets[source_type]
+                step_sum = 0.0
+                bsteps: dict[str, float] = bucket["steps"]  # type: ignore[assignment]
                 for name, elapsed in per_source_times.items():
-                    step_totals[name] = step_totals.get(name, 0.0) + elapsed
-                total_key = "__source_wall__"
-                step_totals[total_key] = (
-                    step_totals.get(total_key, 0.0) + time.monotonic() - t_source_start
-                )
+                    bsteps[name] = bsteps.get(name, 0.0) + elapsed
+                    step_sum += elapsed
+                # I/O time inside the pipeline = pipeline wall minus step work.
+                # Captures PIL.open + EXIF-transpose + RGB convert for photos,
+                # and cv2 VideoCapture frame decoding for videos.
+                bucket["io"] = bucket["io"] + max(t_pipeline - step_sum, 0.0)  # type: ignore[operator]
+                bucket["exif"] = bucket["exif"] + t_exif  # type: ignore[operator]
+                bucket["persist"] = bucket["persist"] + t_persist  # type: ignore[operator]
+                bucket["total"] = bucket["total"] + time.monotonic() - t_source_start  # type: ignore[operator]
+                bucket["n"] = int(bucket["n"]) + 1  # type: ignore[operator]
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
@@ -377,20 +421,39 @@ def analyse(
     )
 
     if profile and counters["processed"] > 0:
-        n = counters["processed"]
-        total_wall = step_totals.pop("__source_wall__", 0.0)
-        step_sum = sum(step_totals.values())
-        overhead = max(total_wall - step_sum, 0.0)
-        # Sort steps by total time descending so bottlenecks are top-of-list.
-        ordered = sorted(step_totals.items(), key=lambda kv: kv[1], reverse=True)
-        denom = total_wall if total_wall > 0 else step_sum if step_sum > 0 else 1.0
-        name_w = max((len(k) for k in step_totals), default=10)
-        print("Step timings (avg per source, summed across workers):")
-        for name, total_t in ordered:
-            pct = 100 * total_t / denom
-            print(f"  {name:<{name_w}}  {total_t / n:6.3f}s  ({pct:5.1f}%)")
-        print(f"  {'overhead':<{name_w}}  {overhead / n:6.3f}s  ({100 * overhead / denom:5.1f}%)")
-        print(f"  {'total':<{name_w}}  {total_wall / n:6.3f}s")
+        for bucket_name, bucket in profile_buckets.items():
+            n = int(bucket["n"])
+            if n == 0:
+                continue
+            steps: dict[str, float] = bucket["steps"]  # type: ignore[assignment]
+            io = float(bucket["io"])  # type: ignore[arg-type]
+            exif = float(bucket["exif"])  # type: ignore[arg-type]
+            persist = float(bucket["persist"])  # type: ignore[arg-type]
+            total_wall = float(bucket["total"])  # type: ignore[arg-type]
+
+            # Name rows in display order: exif → frame I/O → each step → persist
+            rows: list[tuple[str, float]] = []
+            if exif > 0:
+                rows.append(("exif", exif))
+            if io > 0:
+                rows.append(("frame I/O", io))
+            # Steps sorted by total descending so bottlenecks are obvious.
+            rows.extend(sorted(steps.items(), key=lambda kv: kv[1], reverse=True))
+            if persist > 0:
+                rows.append(("persist", persist))
+            accounted = sum(v for _, v in rows)
+            overhead = max(total_wall - accounted, 0.0)
+            if overhead > 0:
+                rows.append(("overhead", overhead))
+
+            denom = total_wall if total_wall > 0 else accounted if accounted > 0 else 1.0
+            name_w = max(len(k) for k, _ in rows)
+            print()
+            print(f"=== {bucket_name.upper()}S ({n} sources, avg per source) ===")
+            for name, total_t in rows:
+                pct = 100 * total_t / denom
+                print(f"  {name:<{name_w}}  {total_t / n:7.3f}s  ({pct:5.1f}%)")
+            print(f"  {'TOTAL':<{name_w}}  {total_wall / n:7.3f}s")
 
     db.close()
 
