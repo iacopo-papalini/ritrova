@@ -119,6 +119,34 @@ Common-but-useless tags the VLM keeps producing — "maglione", "pantaloni", "og
 
 **Composability:** the three tag-cleanup tools stack naturally — normalize first (FEAT-24: keep signal), kill second (FEAT-25: remove explicitly-useless concepts), prune last (FEAT-22: drop the residual long tail).
 
+### FEAT-26: LLM caption polish sweep
+**Reported:** 2026-04-17 | **Priority:** Medium
+MarianMT (`opus-mt-tc-big-en-it`) was trained on pre-2020 OPUS/EuroParl data, so it mishandles modern English constructs the VLM emits — most visibly the singular *they* / *their*, which gets rendered as plural Italian *loro* instead of the correct *sue* / *sua* / definite article. Observed in the wild: *"Un bambino su un seggiolone mangia il cibo dalle **loro** mani"* — every Italian speaker parses it instantly but it reads as broken. Class of errors is: pronoun-agreement, gender-agreement on fixed-gender nouns, literal-translation idioms, occasional wrong verb form.
+Fix the corpus in a one-shot post-processing sweep rather than swapping the translator mid-archive. New CLI `ritrova captions polish [--backend mlx|anthropic] [--model <id>] [--dry-run --sample N]`. Reads every row from `descriptions`, sends `(caption, tags)` through a grammar-only LLM prompt ("fix Italian grammar/agreement only; preserve every fact; do not add or remove content"), UPDATEs the caption, keeps the original in a new `caption_original` column for auditing/undo.
+
+**Backend comparison** (32K captions, ~100 tokens each round-trip):
+
+| Backend | Model | Cost | Wall time | Italian quality |
+|---|---|---|---|---|
+| Local MLX (recommended default) | `Qwen2.5-7B-Instruct-4bit` via **mlx-lm** (not mlx-vlm — cleaner batching) | $0 | ~2.5 h batched @ 8 | catches ~80–85% of errors |
+| Anthropic API | `claude-haiku-4-5` | ~$3–5 | 30–60 min | ~95% |
+| Anthropic API | `claude-sonnet-4-6` | ~$15–25 | 30–60 min | 99%+ |
+
+**Batching:** sort captions by length, batch-8 on mlx-lm, `temperature=0`. Correctness at temperature=0 is unchanged by batching (causal+padding masks isolate sequences; only sub-0.1% tied-token flips from FP non-associativity).
+
+**Safety rails:**
+- `--dry-run --sample 100` is the only way to invoke the first time — surface the rewrites in a diff-style report. Don't wire the no-dry-run path until the dry-run output has been eyeballed.
+- Strict system prompt + 2–3-shot examples to stop the polisher from adding content or preamble ("Ecco la frase corretta:").
+- Length-ratio sanity check per caption: if the polished caption is <0.7× or >1.4× the original word count, skip and flag (indicates hallucination or truncation).
+- Every UPDATE is FEAT-5 undoable — restore from `caption_original`.
+- **Idempotent**: re-running on already-polished captions should be a near-noop at `temperature=0`.
+
+**When:** only after the full re-index finishes — otherwise we polish rows that will be overwritten.
+
+**Relationship to FEAT-24 / FEAT-22 / FEAT-25:** orthogonal — captions here, tags there. The tag-cleanup trio touches `descriptions.tags`; this one touches `descriptions.caption`. Can run in either order.
+
+**Upstream fix (not this feature):** swapping MarianMT for NLLB-200 or an LLM-based translator is the right long-term move, tracked separately under ADR-010 §2f. FEAT-26 is the one-shot patch for the current 32K corpus.
+
 ### FEAT-23: Periodic rare-tag trim during analyse (mid-loop)
 **Reported:** 2026-04-17 | **Priority:** Low
 Companion to FEAT-22 for the case where we re-enable VLM vocab hints (see `describer.DEFAULT_USER_PROMPT_WITH_VOCAB` / `CaptionStep(vocab_hint=...)`, currently unused in the new `analyse` pipeline). With vocab hints on, every captioned source contributes its tags to the prompt fed to later sources — and singleton junk from the first 10% of the archive pollutes the prompt for the remaining 90%. Fix: every N sources, recount frequencies and strip tags whose running count is clearly noise, using a **scaled threshold** (e.g. `min_count = max(2, 0.002 * processed_count)`) so the filter is lax early and stricter later. Keep a separate `--no-vocab-hint` escape hatch. Out of scope until FEAT-7 (search UI) shows that vocab-hint-driven consistency actually improves retrieval quality enough to re-enable the feature.
