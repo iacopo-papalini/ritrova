@@ -2,7 +2,7 @@
 
 ## Context
 
-The `analyse` pipeline processes sources at **0.4/s** (2.5s per source) on an M1 Max with 48GB. At 32K sources that's ~22 hours for the full archive. The pipeline runs 4 steps sequentially per source: face detection (ArcFace/CoreML), pet detection (YOLO+SigLIP/MPS), VLM captioning (Qwen2.5-VL-7B-4bit/MLX), and translation (NLLB-600M/CPU).
+The `analyse` pipeline processes sources at **0.4/s** (2.5s per source) on an Apple M5 Pro (18-core, 48 GB). At 32K sources that's ~22 hours for the full archive. The pipeline runs 4 steps sequentially per source: face detection (ArcFace/CoreML), pet detection (YOLO+SigLIP/MPS), VLM captioning (Qwen2.5-VL-7B-4bit/MLX), and translation (NLLB-600M/CPU).
 
 Multi-threading failed — Metal doesn't support concurrent GPU submissions. The bottleneck is sequential model inference on a single GPU.
 
@@ -79,8 +79,8 @@ Phase D outcome: **rejected as a speed optimisation** — both variants miss or 
 
 ### Cross-platform spot check (2026-04-17)
 
-- Apple Silicon reference in this ADR remains ~2.5s/source on an M1 Max with 48GB for the full `analyse` pipeline.
-- A later ad-hoc user measurement on a MacBook Pro M5 with 48GB reported roughly **~2s/image**, which is consistent with the Apple Silicon expectation and materially faster than the Windows fallback path below.
+- Apple Silicon reference for this ADR is the user's MacBook Pro with Apple M5 Pro (18-core, 48 GB): ~2.5s/source at baseline, ~2.0s/source after Phase A+B tuning, for the full `analyse` pipeline.
+- (Earlier drafts of this ADR misattributed the hardware as "M1 Max" — it was always the same M5 Pro machine; measurements are unchanged.)
 - On an Intel Windows desktop with an NVIDIA RTX 3060 Ti, `ritrova analyse --sample 50 --sample-seed 7 --scan-type tune-smoke --profile` measured **34.368s/source** on photos and **34.648s/source** on one video.
 - The Windows photo breakdown was:
   - `Qwen/Qwen2.5-VL-3B-Instruct`: **33.359s** (97.1%)
