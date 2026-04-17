@@ -87,7 +87,9 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
 @click.option("--dry-run", is_flag=True, help="Run pipeline but don't persist to DB")
 @click.option("--sample", default=0, type=int, help="Process only N random sources (0 = all)")
 @click.option("--interval", default=2.0, help="Seconds between sampled video frames")
-@click.option("--workers", "-j", default=2, help="Number of parallel workers (default 2, GPU-safe)")
+@click.option(
+    "--workers", "-j", default=1, help="Number of parallel workers (default 1; GPU serialised)"
+)
 @click.option(
     "--scan-dir",
     default=None,
