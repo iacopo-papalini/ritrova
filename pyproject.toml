@@ -83,6 +83,8 @@ ignore = ["E501", "UP047"]
 "src/ritrova/cli.py" = ["T20"]
 "src/ritrova/scanner.py" = ["T20"]
 "src/ritrova/scan_pipeline.py" = ["T20"]
+# Investigation scripts are CLI-style ad-hoc runners; print() is the point.
+"scripts/investigations/*.py" = ["T20"]
 
 [tool.mypy]
 python_version = "3.14"

@@ -17,23 +17,33 @@ logger = logging.getLogger(__name__)
 
 MIN_FACE_SIZE = 50  # pixels — smaller faces are unrecognizable
 
-# Quality thresholds at the reference size (50x50 = 2500 px²).
-# For larger faces, thresholds scale down proportionally to area — a 200x200
-# face needs 1/16th the sharpness score of a 50x50 face to pass. This avoids
-# rejecting large clear faces where smooth skin = low edge density.
+# Sharpness threshold at the reference size (50x50 = 2500 px²). For larger
+# faces, the threshold scales down proportionally to area — a 200x200 face
+# needs 1/16th the Laplacian variance of a 50x50 face to pass, so large
+# smooth-skinned faces aren't rejected for having low texture.
+#
+# The edge-density filter that used to live here was removed after it caused
+# legitimate faces in dim scenes (aquarium interiors, low-light rooms) to
+# be rejected: cv2.Canny(50, 150) returns zero edges when the scene-wide
+# gradient never crosses 50/255, even on clear portraits. The Laplacian
+# sharpness filter alone handles motion blur as intended.
+# See scripts/investigations/aquarium_face_loss.py for the diagnosis.
 _REF_AREA = 2500.0  # 50x50
 _BASE_SHARPNESS = 30.0  # Laplacian variance at reference size
-_BASE_EDGE_DENSITY = 0.02  # Canny edge ratio at reference size
 
 
 class FaceDetector:
     def __init__(self, det_size: int = 640):
-        from insightface.app import FaceAnalysis
         import onnxruntime as ort
+        from insightface.app import FaceAnalysis
 
         providers = [
             provider
-            for provider in ("CUDAExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider")
+            for provider in (
+                "CUDAExecutionProvider",
+                "CoreMLExecutionProvider",
+                "CPUExecutionProvider",
+            )
             if provider in ort.get_available_providers()
         ]
         self.app = FaceAnalysis(
@@ -87,9 +97,6 @@ class FaceDetector:
             scale = _REF_AREA / max(area, _REF_AREA)
             crop_gray = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
             if cv2.Laplacian(crop_gray, cv2.CV_64F).var() < _BASE_SHARPNESS * scale:
-                continue
-            edges = cv2.Canny(crop_gray, 50, 150)
-            if (edges > 0).mean() < _BASE_EDGE_DENSITY * scale:
                 continue
 
             faces.append(
