@@ -99,10 +99,10 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
 )
 @click.option(
     "--interval",
-    default=5.0,
-    help="Seconds between sampled video frames. Higher = faster (fewer frames "
-    "to decode + detect) but wider windows to miss brief subject appearances. "
-    "Default 5s based on drill-down showing arcface at 37% of video wall time.",
+    default=2.0,
+    help="Seconds between sampled video frames. Higher = faster but misses "
+    "brief subject appearances. Default 2s matches the legacy scan-videos "
+    "behaviour — 5s was found to lose faces on short clips.",
 )
 @click.option(
     "--workers", "-j", default=1, help="Number of parallel workers (default 1; GPU serialised)"

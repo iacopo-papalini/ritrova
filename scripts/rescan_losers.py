@@ -90,7 +90,13 @@ def main() -> None:
     parser.add_argument(
         "--sample", type=int, default=0, help="Process only first N targets (0 = all)."
     )
-    parser.add_argument("--interval", type=float, default=5.0, help="Seconds between video frames.")
+    parser.add_argument(
+        "--type",
+        choices=("photo", "video", "all"),
+        default="all",
+        help="Restrict targets to one source type (default: all).",
+    )
+    parser.add_argument("--interval", type=float, default=2.0, help="Seconds between video frames.")
     args = parser.parse_args()
 
     load_dotenv()
@@ -102,6 +108,10 @@ def main() -> None:
     db = FaceDB(db_path, base_dir=photos_dir)
     targets = find_losers(db)
     print(f"Targets (legacy found faces, subjects found zero): {len(targets)}")
+
+    if args.type != "all":
+        targets = [t for t in targets if t[2] == args.type]
+        print(f"Filtered to type={args.type!r}: {len(targets)} targets.")
 
     if args.sample > 0:
         targets = targets[: args.sample]

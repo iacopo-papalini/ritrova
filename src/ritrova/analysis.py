@@ -117,7 +117,7 @@ def photo_frames(source_path: Path) -> Iterator[FrameRef]:
     )
 
 
-def video_frames(source_path: Path, interval_sec: float = 5.0) -> Iterator[FrameRef]:
+def video_frames(source_path: Path, interval_sec: float = 2.0) -> Iterator[FrameRef]:
     """Yield one ``FrameRef`` per sampled frame from a video.
 
     Samples every ``interval_sec`` seconds.  Each yielded frame is an RGB
