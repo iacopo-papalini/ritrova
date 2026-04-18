@@ -2,6 +2,61 @@
 
 ## Open
 
+### FEAT-27: Circles of people/pets for view filtering
+**Reported:** 2026-04-18 | **Priority:** Medium
+A subject (named person or pet) can belong to zero, one, or several **circles** — user-defined labelled groups like `family`, `close-friends`, `acquaintances`, `parenti lontani`, `colleagues`, `strangers`. Circles are filters applied to any view that lists photos or subjects: "exclude members of *acquaintances* and *strangers*", or conversely "only show *family*". Primary use case is **exclusion** — sweeping acquaintances + strangers out of year/together/photo views to keep the archive feeling like a family album without having to delete anything.
+
+**Schema (new tables, minimal):**
+```sql
+CREATE TABLE circles (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL UNIQUE,   -- UI label
+  description TEXT,                   -- optional freeform note
+  created_at  TEXT NOT NULL
+);
+CREATE TABLE subject_circles (
+  subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  circle_id  INTEGER NOT NULL REFERENCES circles(id)  ON DELETE CASCADE,
+  added_at   TEXT NOT NULL,
+  PRIMARY KEY (subject_id, circle_id)
+);
+CREATE INDEX idx_subject_circles_circle ON subject_circles(circle_id);
+```
+Many-to-many by design: a subject can be in several circles at once (e.g. `family` + `everyday`), and a circle spans both humans and pets.
+
+**UI surface:**
+- New `/circles` page: list circles, counts of members, create / rename / delete.
+- Subject detail pages (person/pet): a chip row showing current circles, add/remove inline (typeahead like the subject-assign picker).
+- View filters: every listing page (year, together, subjects, clusters, photo) gains a compact "circles" dropdown with **include** and **exclude** multi-selects. Exclude wins over include when both are set on the same circle.
+- Bulk action on subject list: "add selected to circle…" / "remove from circle…".
+
+**CLI peers:**
+- `ritrova circles list` / `create <name>` / `rename <old> <new>` / `delete <name>`.
+- `ritrova circles add <circle> <subject…>` / `remove <circle> <subject…>`.
+- `ritrova circles members <circle>`.
+
+**Exclusion semantics in views:**
+A photo is "hidden" by an `exclude=acquaintances` filter if **every named subject** on it is in `acquaintances` — otherwise it stays visible. A photo of a family member + an acquaintance stays visible (the family member is the reason you want the photo). Unnamed / unclustered findings don't count — they can't be "in a circle" until they're named. This avoids losing random strangers-in-the-background photos just because one circle-tagged person happens to be in them.
+
+**Relationship to existing features:**
+- Subjects table (named people/pets) is the membership source — circles reference it, don't duplicate it.
+- FEAT-5 undo: every circle membership change (add / remove / delete-circle) goes through the existing `UndoPayload` ABC. Deleting a circle captures its members in the payload so undo restores both the circle row and its memberships.
+- FEAT-7 (generic search): once circles exist, they become another metadata axis — `circle:family -circle:acquaintances` as search syntax.
+- Together view / year view: both gain the include/exclude filter naturally.
+
+**MVP scope (first PR):**
+1. Migration: create the two tables.
+2. `DB` mixin: circle CRUD + add/remove membership, with `UndoPayload` integrations.
+3. `/circles` page: create, rename, delete circles.
+4. Subject detail: list circles of subject + add/remove.
+5. One view filter wired up end-to-end (e.g. Subjects page `?exclude=acquaintances`).
+6. CLI subcommands above.
+
+**Phase 2:**
+- Filter surface expanded to Year / Together / Photo / Cluster pages.
+- Bulk-add UI on Subjects list.
+- Search syntax integration (deferred to FEAT-7).
+
 ### FEAT-20: Together — filter by source type (photos / videos / either)
 **Reported:** 2026-04-13 | **Closed:** 2026-04-15
 **Shipped:**
