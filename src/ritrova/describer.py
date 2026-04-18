@@ -1,16 +1,16 @@
-"""VLM-powered scene description and tagging for photos (FEAT-8).
+"""VLM-powered scene description and tagging for photos (FEAT-8, opt-in).
 
-Two-stage pipeline:
+Two-stage pipeline, activated by ``ritrova analyse --caption``:
 1. ``Describer`` — VLM inference via mlx-vlm, generates English captions + tags.
 2. ``Translator`` — text-only translation (en→it) via MarianMT, converts to Italian.
 
-Each stage is independently configurable and testable. The ``describe_sources``
-pipeline function orchestrates both.
+Apple Silicon only. The MLX backend is the only supported VLM runtime;
+a non-Apple-Silicon platform raises a clear error at load time. See
+ADR-011 for the retirement of the transformers/CUDA Windows backend.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import platform
@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import torch
 from PIL import Image, ImageFile, ImageOps
 
 from .db import FaceDB
@@ -28,15 +27,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_VLM_MODEL_MLX = "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
-# AWQ-quantized 7B keeps the same base model as the Mac (~6 GB on CUDA —
-# fits an 8 GB card with room for image-encoder activations). The earlier
-# default of the 3B fp16 variant was a quality regression — on a 20-photo
-# A/B (seed 2024, high-complexity) 3B systematically lost scene context
-# ("softball dugout" → "sports venue"; "inflatable bee costume" →
-# "person in costume"), which hurts a searchable archive. See ADR-010.
-DEFAULT_VLM_MODEL_TRANSFORMERS_AWQ = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ"
-DEFAULT_VLM_MODEL_TRANSFORMERS_FALLBACK = "Qwen/Qwen2.5-VL-3B-Instruct"
+DEFAULT_VLM_MODEL = "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
 DEFAULT_TRANSLATOR_MODEL = "Helsinki-NLP/opus-mt-tc-big-en-it"
 MAX_TAGS = 15
 
@@ -44,23 +35,6 @@ MAX_TAGS = 15
 def _prefers_mlx_backend() -> bool:
     return platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
 
-
-def _has_autoawq_runtime() -> bool:
-    return importlib.util.find_spec("awq") is not None
-
-
-def _default_transformers_vlm_model() -> str:
-    # AWQ-quantized 7B keeps the same base model as the Mac (~6 GB on CUDA and
-    # fits an 8 GB card). When the AWQ runtime is unavailable, fall back to
-    # the portable 3B transformers model so `uv run` remains installable.
-    if _has_autoawq_runtime():
-        return DEFAULT_VLM_MODEL_TRANSFORMERS_AWQ
-    return DEFAULT_VLM_MODEL_TRANSFORMERS_FALLBACK
-
-
-DEFAULT_VLM_MODEL = (
-    DEFAULT_VLM_MODEL_MLX if _prefers_mlx_backend() else _default_transformers_vlm_model()
-)
 
 DEFAULT_SYSTEM_PROMPT = (
     "You catalog photos.\n\n"
@@ -153,73 +127,28 @@ class Describer:
         # on a 20-photo high-complexity A/B (ADR-010 §2a Phase B).
         self.max_tokens = max_tokens
         self.max_side = max_side
-        # Untyped because the backend can be either an mlx-vlm model or a
-        # transformers pipeline — both concrete types drag in heavy imports.
+        # Untyped because mlx-vlm's model/processor types would drag the
+        # heavy MLX import into this module's import-time surface.
         self._model: Any = None
         self._processor: Any = None
-        self._backend_name: str | None = None
-
-    def _load_mlx_backend(self) -> None:
-        from mlx_vlm import load
-
-        logger.info("Loading VLM via MLX: %s", self.model_id)
-        self._model, self._processor = load(self.model_id)
-        self._backend_name = "mlx"
-
-    def _load_transformers_backend(self) -> None:
-        from transformers import pipeline
-
-        logger.info("Loading VLM via transformers: %s", self.model_id)
-        if torch.cuda.is_available():
-            device: str | int = 0
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            device = "mps"
-        else:
-            device = -1
-        # sdpa attention ships with PyTorch ≥2.1 and gives a ~30% speed-up
-        # over the default eager attention on Qwen2.5-VL with no quality
-        # change. flash_attention_2 would be faster still but requires a
-        # separate install, so stick with sdpa.
-        self._model = pipeline(
-            task="image-text-to-text",
-            model=self.model_id,
-            device=device,
-            dtype="auto",
-            model_kwargs={"attn_implementation": "sdpa"},
-        )
-        self._processor = None
-        self._backend_name = "transformers"
 
     def _ensure_loaded(self) -> None:
         if self._model is not None:
             return
-        errors: list[BaseException] = []
-        looks_like_mlx_model = self.model_id.startswith("mlx-community/")
-        # On non-Apple-Silicon platforms mlx-vlm is not installed (see
-        # pyproject.toml). Skip the MLX branch entirely so import failures
-        # don't pollute error messages, and transformers is the only path.
-        loaders: tuple[Any, ...]
-        if _prefers_mlx_backend():
-            loaders = (
-                (self._load_mlx_backend, self._load_transformers_backend)
-                if looks_like_mlx_model
-                else (self._load_transformers_backend, self._load_mlx_backend)
+        if not _prefers_mlx_backend():
+            raise RuntimeError(
+                "VLM captioning requires Apple Silicon (MLX backend). "
+                "The transformers/CUDA backend was retired in ADR-011; "
+                "see docs/adr-011-retire-vlm-default.md for the rationale."
             )
-        else:
-            loaders = (self._load_transformers_backend,)
-        for loader in loaders:
-            try:
-                loader()
-                return
-            except Exception as exc:  # pragma: no cover - depends on local ML stack
-                errors.append(exc)
-
-        raise RuntimeError(
-            "Could not load any VLM backend for this platform. "
-            "Apple Silicon prefers MLX; Windows/Linux fall back to transformers. "
-            f"Tried model `{self.model_id}` and got: "
-            + " | ".join(f"{type(err).__name__}: {err}" for err in errors)
-        ) from errors[-1]
+        try:
+            from mlx_vlm import load
+        except ImportError as exc:
+            raise RuntimeError(
+                "mlx-vlm is not installed. Install the `caption` extras: `uv sync --extra caption`."
+            ) from exc
+        logger.info("Loading VLM via MLX: %s", self.model_id)
+        self._model, self._processor = load(self.model_id)
 
     def describe(self, image_path: Path, vocab_hint: str | None = None) -> DescribeOutput:
         """Generate an English caption and tags from a file path.
@@ -249,24 +178,14 @@ class Describer:
             user_text = self.user_prompt_no_vocab
 
         img = _resize_for_vlm(pil_image, max_side=self.max_side)
-        if self._backend_name == "mlx":
-            return self._describe_image_mlx(img, user_text)
-        if self._backend_name == "transformers":
-            return self._describe_image_transformers(img, user_text)
-        raise RuntimeError("VLM backend was not initialized correctly")
-
-    def _describe_image_mlx(self, pil_image: Image.Image, user_text: str) -> DescribeOutput:
         assert self._model is not None
         assert self._processor is not None
 
         from mlx_vlm import generate
         from mlx_vlm.prompt_utils import apply_chat_template
 
-        # Use mlx_vlm's family-aware helper: it inserts the image token and
-        # picks the right template for gemma3 / qwen / pixtral / llama-vision /
-        # anything else mlx_vlm understands. The HF processor's own
-        # apply_chat_template does not work for models (e.g. gemma-3) that
-        # ship without a chat template in their processor config.
+        # mlx_vlm's family-aware helper inserts the image token and picks
+        # the right template for qwen / gemma3 / pixtral / llama-vision.
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_text},
@@ -277,7 +196,7 @@ class Describer:
             self._model,
             self._processor,
             formatted,
-            image=[pil_image],
+            image=[img],
             max_tokens=self.max_tokens,
             temperature=0.0,
             repetition_penalty=1.2,
@@ -286,56 +205,6 @@ class Describer:
 
         text = output.text if hasattr(output, "text") else str(output)
         return _parse_vlm_response(text)
-
-    def _describe_image_transformers(
-        self, pil_image: Image.Image, user_text: str
-    ) -> DescribeOutput:
-        assert self._model is not None
-
-        generation_config = self._model.model.generation_config.__class__.from_dict(
-            self._model.model.generation_config.to_dict()
-        )
-        generation_config.max_new_tokens = self.max_tokens
-        generation_config.max_length = None
-
-        messages = [
-            {
-                "role": "system",
-                "content": [{"type": "text", "text": self.system_prompt}],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": pil_image},
-                    {"type": "text", "text": user_text},
-                ],
-            },
-        ]
-        output = self._model(
-            text=messages,
-            generation_config=generation_config,
-            return_full_text=False,
-        )
-        return _parse_vlm_response(_extract_transformers_text(output))
-
-
-def _extract_transformers_text(output: object) -> str:
-    """Extract generated text from transformers image-text-to-text pipeline output."""
-    if isinstance(output, list) and output:
-        output = output[0]
-    generated = output.get("generated_text", output) if isinstance(output, dict) else output
-
-    if isinstance(generated, list) and generated:
-        generated = generated[-1]
-    content = generated.get("content", generated) if isinstance(generated, dict) else generated
-
-    if isinstance(content, list):
-        text_parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                text_parts.append(str(item.get("text", "")))
-        return "\n".join(part for part in text_parts if part).strip()
-    return str(content).strip()
 
 
 def _parse_vlm_response(text: str) -> DescribeOutput:
@@ -380,7 +249,7 @@ def _parse_vlm_response(text: str) -> DescribeOutput:
             has_people=has_people,
             has_animals=has_animals,
         )
-    except (json.JSONDecodeError, AttributeError, TypeError):
+    except json.JSONDecodeError, AttributeError, TypeError:
         pass
 
     # Line-based fallback: first line is caption, rest are tags.

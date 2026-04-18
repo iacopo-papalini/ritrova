@@ -18,23 +18,31 @@ cp .env.example .env
 # Edit .env: set PHOTOS_DIR to your photos root directory
 ```
 
+### VLM captioning (optional, Apple Silicon only)
+
+The default `ritrova analyse` pipeline runs **face + pet detection only**. VLM-based captioning and Italian tagging are opt-in via `--caption`:
+
+```bash
+uv sync --extra caption                 # install MLX VLM + tokenizer extras
+uv run ritrova analyse --caption        # enable captioning for this run
+```
+
+Requires Apple Silicon (MLX backend). The transformers/CUDA VLM path was retired — see `docs/adr-011-retire-vlm-default.md` for the rationale (face recall regression + Italian translation quality).
+
 ### Windows + Nvidia notes
 
-- `uv sync` skips `mlx-vlm` on Windows, because MLX does not publish Windows wheels there.
-- Apple Silicon defaults to the MLX backend for image captioning.
-- Windows and Linux fall back to a `transformers` VLM backend for image captioning.
 - On Windows, `uv sync` pulls `torch` and `torchvision` from the official PyTorch CUDA 12.8 wheel index.
-- If you want GPU acceleration for face detection on Windows, the project installs `onnxruntime-gpu` so InsightFace can use `CUDAExecutionProvider`.
-- Pet embedding and the transformers VLM prefer CUDA automatically when a CUDA-enabled PyTorch build is installed.
+- `onnxruntime-gpu` is installed so InsightFace face detection can use `CUDAExecutionProvider`.
+- Pet embedding (SigLIP) uses CUDA automatically when the CUDA PyTorch build is available.
+- VLM captioning is **not** available on Windows; the `[caption]` extra only installs on Apple Silicon.
 
 Reference Windows test machine (2026-04-17):
 - OS: Windows 11 Home 64-bit, build `26200`
 - CPU: Intel Core i5-12600KF (`10` cores / `16` threads)
 - RAM: `32 GB` (`2 x 16 GB` Crucial DDR4-3200)
 - GPU: NVIDIA GeForce RTX 3060 Ti (`8 GB` VRAM, driver `591.86`, CUDA `13.1`)
-- Motherboard: MSI PRO H610M-G DDR4 (`MS-7D46`)
 
-The first run of `scan` downloads the InsightFace `buffalo_l` model (~300 MB) to `~/.insightface/models/`. The first run of `scan-pets` downloads YOLO and SigLIP models.
+The first run of `analyse` downloads the InsightFace `buffalo_l` model (~300 MB) to `~/.insightface/models/`, plus YOLO and SigLIP weights via HuggingFace cache.
 
 ## Configuration
 

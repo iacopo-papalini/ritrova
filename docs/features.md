@@ -64,63 +64,32 @@ const ok = await confirmDialog({ title, message, confirmLabel, cancelLabel, dang
 **Reported:** 2026-04-10 | **Priority:** Medium
 Unified search across names, paths, dates, tags. Filter by date range, person, location. Currently name-only.
 
-### FEAT-8: Photo scene descriptions and tags via computer vision
-**Reported:** 2026-04-10 | **Priority:** Medium
-Vision-language model (BLIP-2, LLaVA) for captions/tags ("people at a table", "christmas tree"). Apple Silicon GPU. New DB tables, `ritrova describe` CLI. Enables FEAT-7 content search.
+### FEAT-8: Photo scene descriptions and tags via computer vision — **deferred (retired from default)**
+**Reported:** 2026-04-10 | **Retired from default:** 2026-04-18 | **Priority:** Low
+Vision-language model captioning and tagging is now opt-in via `ritrova analyse --caption`. The default pipeline is subject detection only. See ADR-011 for the rationale: the Qwen2.5-VL-7B + MarianMT en→it pipeline introduced a ~10% face-recall regression on real photos (clear close-ups of babies and aquarium scenes), produced Italian translations with systematic grammar errors (singular-they → plural "loro"), and cost ~2 s/source in throughput. Revisit when a better Italian-native VLM or integrated VLM-with-translation model exists for Apple Silicon.
 
-### FEAT-21: Caption in face-hover tooltip
-**Reported:** 2026-04-17 | **Priority:** Medium
-On hover of a face thumbnail, show the source photo's VLM caption next to the file path — turns the existing tooltip from a path-only anchor into a quick scene preview ("family dinner in the garden, 2018"). Makes the caption data (already stored in `descriptions.caption`) actually useful in the UI without adding navigation. Scope: add `db.get_descriptions_batch(source_ids)` helper (avoid N+1), extend the cluster_detail endpoint to pass a `face_tooltips` dict of `"path\ncaption"`, rename the template binding. Tooltip falls back to path-only when a source has no caption yet. Not shown: tags (kept for the search UI, not the hover). Audit all face-card render sites for consistency.
+### FEAT-21: Caption in face-hover tooltip — **withdrawn**
+**Reported:** 2026-04-17 | **Withdrawn:** 2026-04-18
+Moot after ADR-011 retired captions from the default pipeline. The `descriptions.caption` data it was going to surface is no longer populated by default.
 
-### FEAT-22: Prune rare tags from the descriptions table
-**Reported:** 2026-04-17 | **Priority:** Medium
-VLM-generated tags are free-form, so a full-archive re-index produces a long tail of singletons and near-singletons (spelling variants, one-off objects, model hallucinations). A tag that appears <N times cannot contribute to set-based retrieval and just clogs tag autocomplete + UI. Ship as a **separate, manually-invoked command** (`ritrova tags prune --min-count N [--dry-run]`), *not* folded into the duplicate-findings `prune` — running this mid-re-index would delete tags whose count would have crossed the threshold later, and it's destructive without a backup. The separation forces explicit intent: "I know the archive is stable, cleaning up now."
-Default **N=10** (deliberately high — truly useful tags like "spiaggia" or "gatto" appear in hundreds of sources on a 32K-source archive, so a cut at 10 removes the long tail without losing meaningful retrieval).
-Implementation: (a) count tag frequencies across `descriptions.tags` JSON, (b) strip below-threshold tags from every description row, (c) report tags removed + sources touched. Idempotent after convergence; re-runnable after each full re-index. Warns if any scans are still in progress.
+### FEAT-22: Prune rare tags — **withdrawn**
+**Reported:** 2026-04-17 | **Withdrawn:** 2026-04-18
+Moot after ADR-011: the default pipeline no longer produces tags. Revisit if/when captions get re-enabled.
 
-### FEAT-24: LLM-proposed tag normalization with per-rule review
-**Reported:** 2026-04-17 | **Priority:** Medium
-Simple pruning throws information away — `micio(1)` just vanishes even though it points at the same concept as `gatto(243)`. Richer approach: feed the tag vocabulary + counts to a text LLM, get a mapping of synonyms / diminutives / plural variants to their canonical form (`micio, gattino → gatto`; `mare` and `spiaggia` stay distinct), and apply the merges so the photos keep their retrieval value under the canonical name.
+### FEAT-24: LLM-proposed tag normalization — **withdrawn**
+**Reported:** 2026-04-17 | **Withdrawn:** 2026-04-18
+Moot after ADR-011 (no default-pipeline tags to normalize). Revisit if captions get re-enabled.
 
-**Workflow mirrors subject-cluster merge (FEAT-5 / subject-merge):**
-1. `ritrova tags plan` generates proposals via the LLM and stores them in a new `tag_merge_plans` + `tag_merge_rules` table. Rules carry `(id, plan_id, from_tag, to_tag, status, applied_at, undone_at)`. No writes to `descriptions.tags` yet.
-2. Web UI surfaces pending plans: list of rules, counts affected, a per-rule **apply** / **reject** action and a per-rule **undo** once applied. Same pattern the subject-cluster UI uses today.
-3. Apply rewrites `descriptions.tags` atomically for that rule (replacing `from_tag` with `to_tag` everywhere, deduping the per-source tag set if both were present). Undo restores `from_tag` on every source touched — sources are recorded on the rule row.
-4. CLI peers for headless use: `ritrova tags apply <rule-id>` / `ritrova tags undo <rule-id>` / `ritrova tags plan-show <plan-id>`.
+### FEAT-25: Kill-list for uninformative tags — **withdrawn**
+**Reported:** 2026-04-17 | **Withdrawn:** 2026-04-18
+Moot after ADR-011 (no default-pipeline tags). Keep as a reference design if captions are re-enabled.
 
-**Safety rails:**
-- LLM prompt rules: only merge when the tags refer to the **same concept**; never merge into a hypernym (labrador ≠ cane); canonical = most frequent member.
-- Dry plan by default — nothing mutates the description table until the user explicitly applies a rule.
-- Plan stays in the DB so sessions can resume; user doesn't have to accept everything in one sitting.
-- Every rule undoable individually (FEAT-5 infrastructure reused).
+### FEAT-26: LLM caption polish sweep — **withdrawn**
+**Reported:** 2026-04-17 | **Withdrawn:** 2026-04-18
+Moot after ADR-011 (no captions to polish). Keep as reference design for when captions are revisited.
 
-**LLM choice deferred** — dedicated session to pick between a small text model on MLX (Qwen2.5-3B / Llama 3.2), embedding-based clustering, or hybrid. Record that decision in ADR-011 when it happens.
+<details><summary>Original proposal (for archaeology)</summary>
 
-**Relationship to FEAT-22:** FEAT-22 (simple threshold prune) stays as a composable mop-up: normalise first (keep signal), prune the residual long tail second.
-
-### FEAT-25: Kill-list for uninformative tags
-**Reported:** 2026-04-17 | **Priority:** Medium
-Common-but-useless tags the VLM keeps producing — "maglione", "pantaloni", "oggetto", "superficie", "sfondo". They're frequent enough to survive FEAT-22's threshold prune, and not synonyms of anything so FEAT-24's merge planner won't touch them. Only the user can decide "this tag adds no retrieval value in *my* archive." Ship a **persistent blocklist** so the call is made once and stays made.
-
-**Schema:** new `tag_blocklist(tag TEXT PRIMARY KEY, killed_at TEXT, killed_by TEXT)`. Trivial table; FK nothing.
-
-**Write path:** `_parse_vlm_response` (or CaptionStep.analyse right after) strips any tag present in the blocklist before the result is saved. The next re-index therefore self-heals — killed tags never come back without an explicit un-kill.
-
-**User surface:**
-- Web UI — anywhere a tag is rendered (tag chips, search autocomplete, photo detail), a compact ⨉ button on the tag fires `POST /api/tags/{tag}/kill`. Toast with Undo (FEAT-5 integration) holds a `KillTagPayload` that restores the tag to every source that had it and removes the blocklist row.
-- CLI peers: `ritrova tags kill <tag>` / `ritrova tags unkill <tag>` / `ritrova tags blocklist` (list). Non-interactive; dry-run supported.
-
-**What "kill" does:**
-1. Insert into `tag_blocklist`.
-2. Strip `tag` from every `descriptions.tags` JSON set it appears in (batch update).
-3. Record the source IDs touched on the undo payload so restore is exact.
-
-**Safety:** killing is single-tag and reversible, so no plan/apply dance needed (unlike FEAT-24). The user's decision is local to one tag at a time.
-
-**Composability:** the three tag-cleanup tools stack naturally — normalize first (FEAT-24: keep signal), kill second (FEAT-25: remove explicitly-useless concepts), prune last (FEAT-22: drop the residual long tail).
-
-### FEAT-26: LLM caption polish sweep
-**Reported:** 2026-04-17 | **Priority:** Medium
 MarianMT (`opus-mt-tc-big-en-it`) was trained on pre-2020 OPUS/EuroParl data, so it mishandles modern English constructs the VLM emits — most visibly the singular *they* / *their*, which gets rendered as plural Italian *loro* instead of the correct *sue* / *sua* / definite article. Observed in the wild: *"Un bambino su un seggiolone mangia il cibo dalle **loro** mani"* — every Italian speaker parses it instantly but it reads as broken. Class of errors is: pronoun-agreement, gender-agreement on fixed-gender nouns, literal-translation idioms, occasional wrong verb form.
 Fix the corpus in a one-shot post-processing sweep rather than swapping the translator mid-archive. New CLI `ritrova captions polish [--backend mlx|anthropic] [--model <id>] [--dry-run --sample N]`. Reads every row from `descriptions`, sends `(caption, tags)` through a grammar-only LLM prompt ("fix Italian grammar/agreement only; preserve every fact; do not add or remove content"), UPDATEs the caption, keeps the original in a new `caption_original` column for auditing/undo.
 
@@ -147,9 +116,11 @@ Fix the corpus in a one-shot post-processing sweep rather than swapping the tran
 
 **Upstream fix (not this feature):** swapping MarianMT for NLLB-200 or an LLM-based translator is the right long-term move, tracked separately under ADR-010 §2f. FEAT-26 is the one-shot patch for the current 32K corpus.
 
-### FEAT-23: Periodic rare-tag trim during analyse (mid-loop)
-**Reported:** 2026-04-17 | **Priority:** Low
-Companion to FEAT-22 for the case where we re-enable VLM vocab hints (see `describer.DEFAULT_USER_PROMPT_WITH_VOCAB` / `CaptionStep(vocab_hint=...)`, currently unused in the new `analyse` pipeline). With vocab hints on, every captioned source contributes its tags to the prompt fed to later sources — and singleton junk from the first 10% of the archive pollutes the prompt for the remaining 90%. Fix: every N sources, recount frequencies and strip tags whose running count is clearly noise, using a **scaled threshold** (e.g. `min_count = max(2, 0.002 * processed_count)`) so the filter is lax early and stricter later. Keep a separate `--no-vocab-hint` escape hatch. Out of scope until FEAT-7 (search UI) shows that vocab-hint-driven consistency actually improves retrieval quality enough to re-enable the feature.
+</details>
+
+### FEAT-23: Periodic rare-tag trim during analyse (mid-loop) — **withdrawn**
+**Reported:** 2026-04-17 | **Withdrawn:** 2026-04-18
+Moot after ADR-011 (no default-pipeline tags). Revisit together with FEAT-22 if captions are re-enabled.
 
 ### FEAT-9: Trigger background tasks from web UI
 **Reported:** 2026-04-10 | **Priority:** Medium

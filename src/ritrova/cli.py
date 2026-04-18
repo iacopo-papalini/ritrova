@@ -51,9 +51,7 @@ def _require_photos_dir(ctx: click.Context) -> str:
 @click.pass_context
 def scan(ctx: click.Context, min_confidence: float) -> None:
     """Scan photos for human faces. Legacy — delegates to analyse."""
-    ctx.invoke(
-        analyse, no_pets=True, no_caption=True, no_videos=True, min_face_confidence=min_confidence
-    )
+    ctx.invoke(analyse, no_pets=True, no_videos=True, min_face_confidence=min_confidence)
 
 
 @cli.command()
@@ -61,29 +59,35 @@ def scan(ctx: click.Context, min_confidence: float) -> None:
 @click.pass_context
 def scan_pets(ctx: click.Context, min_confidence: float) -> None:
     """Scan photos for pets. Legacy — delegates to analyse."""
-    ctx.invoke(
-        analyse, no_faces=True, no_caption=True, no_videos=True, min_pet_confidence=min_confidence
-    )
+    ctx.invoke(analyse, no_faces=True, no_videos=True, min_pet_confidence=min_confidence)
 
 
 @cli.command()
 @click.option("--no-faces", is_flag=True, help="Skip human face detection")
 @click.option("--no-pets", is_flag=True, help="Skip pet detection")
-@click.option("--no-caption", is_flag=True, help="Skip VLM captioning + translation")
+@click.option(
+    "--caption",
+    is_flag=True,
+    default=False,
+    help="Opt-in: run VLM captioning + Italian translation after subject detection. "
+    "Requires `uv sync --extra caption` and Apple Silicon (MLX backend). Off by default.",
+)
 @click.option("--no-videos", is_flag=True, help="Skip video files (photos only)")
 @click.option("--min-face-confidence", default=0.65, help="Min confidence for face detection")
 @click.option("--min-pet-confidence", default=0.7, help="Min confidence for pet detection")
 @click.option(
     "--vlm-model",
     default=None,
-    help=f"VLM model ID (default: {DEFAULT_VLM_MODEL})",
+    help=f"VLM model ID (only with --caption; default: {DEFAULT_VLM_MODEL})",
 )
 @click.option(
     "--translator-model",
     default=None,
-    help=f"Translation model ID (default: {DEFAULT_TRANSLATOR_MODEL})",
+    help=f"Translation model ID (only with --caption; default: {DEFAULT_TRANSLATOR_MODEL})",
 )
-@click.option("--no-translate", is_flag=True, help="Skip translation (English output)")
+@click.option(
+    "--no-translate", is_flag=True, help="With --caption: keep English output (no translation)"
+)
 @click.option("--force", is_flag=True, help="Re-analyse already-scanned sources")
 @click.option("--dry-run", is_flag=True, help="Run pipeline but don't persist to DB")
 @click.option("--sample", default=0, type=int, help="Process only N random sources (0 = all)")
@@ -116,9 +120,10 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
 )
 @click.option(
     "--scan-type",
-    default="composite",
+    default=None,
     help="Scan type label used to de-dup and to tag stored scans. "
-    "Use a distinct label (e.g. composite-vlm-3b) to let experiment runs coexist.",
+    "Defaults to 'subjects' (or 'subjects+captions' with --caption). "
+    "Override to let experiment runs coexist alongside the production data.",
 )
 @click.option(
     "--max-tokens",
@@ -139,7 +144,7 @@ def analyse(
     ctx: click.Context,
     no_faces: bool,
     no_pets: bool,
-    no_caption: bool,
+    caption: bool,
     no_videos: bool,
     min_face_confidence: float,
     min_pet_confidence: float,
@@ -154,7 +159,7 @@ def analyse(
     workers: int,
     scan_dir: str | None,
     profile: bool,
-    scan_type: str,
+    scan_type: str | None,
     max_tokens: int,
     vlm_max_side: int,
 ) -> None:
@@ -199,18 +204,31 @@ def analyse(
 
     builder = AnalysisPipelineBuilder()
 
-    # Captioning runs first so face/pet detection can read has_people /
-    # has_animals and skip on sources where the VLM sees no subjects.
-    # Validated on 500 sources: every skipped detection was an ArcFace /
-    # YOLO false positive on statues, dolls, illustrations, or misframed
-    # video stills — prefilter improves precision as well as throughput.
-    # ``--no-caption`` is the only way to disable this behavior.
-    caption_enabled = not no_caption
+    # Default scan_type derives from the pipeline composition. See ADR-011 +
+    # the `scan_types` catalog table for the taxonomy.
+    effective_scan_type = scan_type or ("subjects+captions" if caption else "subjects")
 
+    # --caption (opt-in) adds the VLM captioning + translation steps before
+    # detection, and lets the detection steps skip on sources the VLM said
+    # have no subjects. Without --caption, the pipeline is just face + pet
+    # detection + dedup — equivalent in intent to the legacy human+pet
+    # scans, unified under `subjects`. See ADR-011 for why VLM retired.
     translator_obj = None
-    if caption_enabled:
-        from .describer import Describer, Translator
+    if caption:
+        from .describer import _prefers_mlx_backend
 
+        if not _prefers_mlx_backend():
+            raise click.ClickException(
+                "--caption requires Apple Silicon (MLX backend). "
+                "The transformers/CUDA path was retired in ADR-011; "
+                "see docs/adr-011-retire-vlm-default.md."
+            )
+        try:
+            from .describer import Describer, Translator
+        except ImportError as exc:
+            raise click.ClickException(
+                "--caption requires optional dependencies. Install with:\n  uv sync --extra caption"
+            ) from exc
         vlm_id = vlm_model or DEFAULT_VLM_MODEL
         trans_id = translator_model or DEFAULT_TRANSLATOR_MODEL
         print(f"Loading VLM: {vlm_id}")
@@ -228,7 +246,7 @@ def analyse(
             FaceDetectionStep(
                 FaceDetector(),
                 min_face_confidence,
-                prefilter_enabled=caption_enabled,
+                prefilter_enabled=caption,
             )
         )
 
@@ -240,7 +258,7 @@ def analyse(
             PetDetectionStep(
                 PetDetector(),
                 min_pet_confidence,
-                prefilter_enabled=caption_enabled,
+                prefilter_enabled=caption,
             )
         )
 
@@ -256,14 +274,14 @@ def analyse(
     candidates: list[tuple[Path, str]] = []  # (path, source_type)
     for img_path in find_images(Path(discovery_dir)):
         stored = db.to_relative(str(img_path.resolve()))
-        if not force and db.is_scanned(stored, scan_type):
+        if not force and db.is_scanned(stored, effective_scan_type):
             continue
         candidates.append((img_path, "photo"))
 
     if not no_videos:
         for vid_path in find_videos(Path(discovery_dir)):
             stored = db.to_relative(str(vid_path.resolve()))
-            if not force and db.is_scanned(stored, scan_type):
+            if not force and db.is_scanned(stored, effective_scan_type):
                 continue
             candidates.append((vid_path, "video"))
 
@@ -274,7 +292,8 @@ def analyse(
         candidates = rng.sample(candidates, sample)
 
     print(f"Database: {ctx.obj['db_path']}")
-    print(f"Pipeline: {pipeline.strategy_id}")
+    print(f"scan_type: {effective_scan_type}")
+    print(f"Pipeline:  {pipeline.strategy_id}")
     n_photos = sum(1 for _, t in candidates if t == "photo")
     n_videos = sum(1 for _, t in candidates if t == "video")
     print(
@@ -366,11 +385,11 @@ def analyse(
                 existing = db.conn.execute(
                     "SELECT sc.id FROM scans sc JOIN sources s ON s.id = sc.source_id "
                     "WHERE s.file_path = ? AND sc.scan_type = ?",
-                    (stored, scan_type),
+                    (stored, effective_scan_type),
                 ).fetchone()
                 if existing:
                     db.delete_scan(existing[0])
-            persister.persist(result, strategy_id=strategy_id, scan_type=scan_type)
+            persister.persist(result, strategy_id=strategy_id, scan_type=effective_scan_type)
             if profile:
                 t_persist = time.monotonic() - t0
 
