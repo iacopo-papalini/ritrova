@@ -261,70 +261,13 @@ class TestDescriberParsing(TestCase):
         assert out.caption == "Test"
         assert out.tags == {"a", "b"}
 
-    # ── Prefilter booleans (ADR-010 step 2a) ─────────────────────────
-
-    def test_parse_reads_subject_booleans(self) -> None:
+    def test_parse_ignores_legacy_subject_booleans(self) -> None:
+        """DescribeOutput no longer has has_people / has_animals — parser must
+        tolerate models that still emit them in old JSON outputs."""
         text = '{"caption": "A cat", "tags": ["cat"], "has_people": false, "has_animals": true}'
         out = _parse_vlm_response(text)
-        assert out.has_people is False
-        assert out.has_animals is True
-
-    def test_parse_subject_booleans_default_true_when_missing(self) -> None:
-        """Accuracy-first: unknown fields fail open so detection still runs."""
-        text = '{"caption": "A scene", "tags": []}'
-        out = _parse_vlm_response(text)
-        assert out.has_people is True
-        assert out.has_animals is True
-
-    def test_parse_subject_booleans_default_true_on_line_format(self) -> None:
-        """Line-based replies never supply the booleans — default to True."""
-        text = "A photo.\nthing\nstuff"
-        out = _parse_vlm_response(text)
-        assert out.has_people is True
-        assert out.has_animals is True
-
-    def test_parse_subject_booleans_accept_string_false(self) -> None:
-        """Some VLMs emit string 'false' instead of JSON boolean — treat as false."""
-        text = (
-            '{"caption": "Empty room", "tags": ["room"], '
-            '"has_people": "false", "has_animals": "no"}'
-        )
-        out = _parse_vlm_response(text)
-        assert out.has_people is False
-        assert out.has_animals is False
-
-    def test_parse_subject_booleans_unrecognised_value_is_true(self) -> None:
-        """Anything we can't interpret as a clear 'false' stays True (fail-open)."""
-        text = '{"caption": "Maybe", "tags": ["thing"], "has_people": "maybe", "has_animals": null}'
-        out = _parse_vlm_response(text)
-        assert out.has_people is True
-        assert out.has_animals is True
-
-    def test_parse_caption_mentions_override_false_booleans(self) -> None:
-        """Qwen sometimes emits has_animals=false while describing a cat.
-
-        The caption/tag keywords force the boolean back to true so detection
-        is not skipped.
-        """
-        text = (
-            '{"caption": "A person sitting with a cat on their lap.", '
-            '"tags": ["person", "cat", "tablet"], '
-            '"has_people": false, "has_animals": false}'
-        )
-        out = _parse_vlm_response(text)
-        assert out.has_people is True  # caption mentions "person"
-        assert out.has_animals is True  # tags include "cat"
-
-    def test_parse_booleans_stay_false_when_nothing_mentioned(self) -> None:
-        """Override only fires when keywords appear — empty scenes stay false."""
-        text = (
-            '{"caption": "A snowy mountain ridge under clear skies.", '
-            '"tags": ["mountain", "snow", "sky"], '
-            '"has_people": false, "has_animals": false}'
-        )
-        out = _parse_vlm_response(text)
-        assert out.has_people is False
-        assert out.has_animals is False
+        assert out.caption == "A cat"
+        assert out.tags == {"cat"}
 
 
 class TestDescriberKwargs(TestCase):

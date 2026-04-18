@@ -26,34 +26,17 @@ _inference_lock = threading.Lock()
 
 
 class FaceDetectionStep(AnalysisStep):
-    """Detect human faces in a frame using ArcFace.
+    """Detect human faces in a frame using ArcFace. Runs unconditionally."""
 
-    When ``prefilter_enabled`` is True, detection is skipped ONLY on frame 0
-    when the caption step has already set ``state.has_people`` to False.
-    ``state.has_people`` reflects the VLM's judgment of frame 0 only, so
-    applying the skip to later video frames would miss people that walk into
-    frame after the opening. The default is False so prefilter stays off
-    unless an upstream opts in — see ADR-010.
-    """
-
-    def __init__(
-        self,
-        detector: FaceDetector,
-        min_confidence: float = 0.65,
-        *,
-        prefilter_enabled: bool = False,
-    ) -> None:
+    def __init__(self, detector: FaceDetector, min_confidence: float = 0.65) -> None:
         self._detector = detector
         self._min_confidence = min_confidence
-        self._prefilter_enabled = prefilter_enabled
 
     @property
     def name(self) -> str:
         return "arcface"
 
     def analyse(self, frame: FrameRef, state: SourceAnalysis) -> SourceAnalysis:
-        if self._prefilter_enabled and frame.frame_number == 0 and not state.has_people:
-            return state
         with _inference_lock:
             result = self._detector.detect_image(frame.image)
         for d in result.detections:
@@ -71,32 +54,17 @@ class FaceDetectionStep(AnalysisStep):
 
 
 class PetDetectionStep(AnalysisStep):
-    """Detect dogs and cats in a frame using YOLO + SigLIP.
+    """Detect dogs and cats in a frame using YOLO + SigLIP. Runs unconditionally."""
 
-    When ``prefilter_enabled`` is True, detection is skipped ONLY on frame 0
-    when ``state.has_animals`` was set False by the caption step. Later
-    video frames always run detection: the VLM only saw frame 0, so a pet
-    appearing mid-video would otherwise be missed.
-    """
-
-    def __init__(
-        self,
-        detector: PetDetector,
-        min_confidence: float = 0.5,
-        *,
-        prefilter_enabled: bool = False,
-    ) -> None:
+    def __init__(self, detector: PetDetector, min_confidence: float = 0.5) -> None:
         self._detector = detector
         self._min_confidence = min_confidence
-        self._prefilter_enabled = prefilter_enabled
 
     @property
     def name(self) -> str:
         return "siglip"
 
     def analyse(self, frame: FrameRef, state: SourceAnalysis) -> SourceAnalysis:
-        if self._prefilter_enabled and frame.frame_number == 0 and not state.has_animals:
-            return state
         with _inference_lock:
             result = self._detector.detect_image(frame.image)
         for d in result.detections:
@@ -138,8 +106,6 @@ class CaptionStep(AnalysisStep):
         if not output.caption:
             return state
 
-        state.has_people = output.has_people
-        state.has_animals = output.has_animals
         state.caption = output.caption
         state.tags = output.tags
         return state

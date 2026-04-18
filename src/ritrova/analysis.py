@@ -67,11 +67,6 @@ class SourceAnalysis:
     findings: list[AnalysisFinding] = field(default_factory=list)
     caption: str = ""
     tags: set[str] = field(default_factory=set)
-    # Caption pre-filter flags. Default True so that, when the caption step
-    # never ran or parsing failed, every detection step still runs — accuracy
-    # trumps the speedup and missed findings cannot be recovered later.
-    has_people: bool = True
-    has_animals: bool = True
     # Video frame cache: frame_number → PIL Image for frames that produced findings.
     # The persister saves these as JPEGs and stores the path as frame_path.
     # Empty for photo sources (frame 0 = the source file itself).

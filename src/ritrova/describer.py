@@ -48,21 +48,11 @@ DEFAULT_SYSTEM_PROMPT = (
     "Rules for tags:\n"
     "- 3 to 10 single-word English nouns for visible things.\n"
     "- No adjectives, no verbs, no guesses.\n\n"
-    "Rules for has_people / has_animals:\n"
-    "- has_people: true if ANY human face, head, or identifiable person "
-    "(even partial, even blurry) is visible. Only false when there are "
-    "clearly no people at all.\n"
-    "- has_animals: true if ANY dog, cat, or other pet is visible (even "
-    "partial, even peripheral). Only false when there are no animals.\n"
-    "- When in doubt, answer true. False positives cost nothing; false "
-    "negatives cause people and pets to be missed.\n\n"
     "Reply with a single JSON object, no prose, no markdown fences:\n"
-    '{"caption": "...", "tags": ["...", "..."], '
-    '"has_people": true, "has_animals": false}\n\n'
+    '{"caption": "...", "tags": ["...", "..."]}\n\n'
     "Example:\n"
     '{"caption": "A dog sits on a beach at sunset.", '
-    '"tags": ["dog", "beach", "sunset", "sand", "water"], '
-    '"has_people": false, "has_animals": true}'
+    '"tags": ["dog", "beach", "sunset", "sand", "water"]}'
 )
 
 DEFAULT_USER_PROMPT_WITH_VOCAB = (
@@ -76,16 +66,10 @@ DEFAULT_USER_PROMPT_NO_VOCAB = "Describe this image."
 
 @dataclass
 class DescribeOutput:
-    """VLM output for one image.
-
-    ``has_people`` / ``has_animals`` default to True so that unparsable or
-    absent fields fail open — detection still runs and nothing is missed.
-    """
+    """VLM output for one image."""
 
     caption: str
     tags: set[str]
-    has_people: bool = True
-    has_animals: bool = True
 
 
 def _resize_for_vlm(img: Image.Image, max_side: int = 1024) -> Image.Image:
@@ -208,14 +192,11 @@ class Describer:
 
 
 def _parse_vlm_response(text: str) -> DescribeOutput:
-    """Extract caption, tags and subject booleans from the VLM response.
+    """Extract caption and tags from the VLM response.
 
     Supports two formats:
-    1. JSON: ``{"caption": "...", "tags": [...], "has_people": bool,
-       "has_animals": bool}`` (with optional fences).
+    1. JSON: ``{"caption": "...", "tags": [...]}`` (with optional fences).
     2. Line-based fallback: first line is caption, subsequent lines are tags.
-       In line-mode ``has_people`` / ``has_animals`` are left at the fail-open
-       default (True), so no detection is ever skipped by a mis-parse.
 
     Tags are lowercased and capped at MAX_TAGS.
     """
@@ -235,25 +216,11 @@ def _parse_vlm_response(text: str) -> DescribeOutput:
                 json_tags.add(tag)
             if len(json_tags) >= MAX_TAGS:
                 break
-        has_people = _coerce_bool_fail_open(data.get("has_people"))
-        has_animals = _coerce_bool_fail_open(data.get("has_animals"))
-        # Override: if the VLM contradicts itself (caption mentions a cat
-        # yet has_animals=false), trust the caption. Accuracy-first.
-        if not has_people and _text_mentions(_PEOPLE_KEYWORDS, caption, json_tags):
-            has_people = True
-        if not has_animals and _text_mentions(_ANIMAL_KEYWORDS, caption, json_tags):
-            has_animals = True
-        return DescribeOutput(
-            caption=caption,
-            tags=json_tags,
-            has_people=has_people,
-            has_animals=has_animals,
-        )
+        return DescribeOutput(caption=caption, tags=json_tags)
     except json.JSONDecodeError, AttributeError, TypeError:
         pass
 
     # Line-based fallback: first line is caption, rest are tags.
-    # Booleans stay at fail-open defaults.
     lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
     if not lines:
         return DescribeOutput(caption="", tags=set())
@@ -266,72 +233,6 @@ def _parse_vlm_response(text: str) -> DescribeOutput:
         if len(line_tags) >= MAX_TAGS:
             break
     return DescribeOutput(caption=caption, tags=line_tags)
-
-
-def _coerce_bool_fail_open(value: Any) -> bool:
-    """Return False ONLY when the VLM explicitly said false; True otherwise.
-
-    Anything unparseable, missing, or ambiguous defaults to True so detection
-    still runs. Accepts real booleans and the common string forms.
-    """
-    if isinstance(value, bool):
-        return value
-    return not (isinstance(value, str) and value.strip().lower() in {"false", "no", "0"})
-
-
-# Qwen2.5-VL sometimes describes a subject in the caption / tags yet emits
-# the opposite boolean in the same JSON (observed: "A person sitting with a
-# cat on their lap" with has_animals=false). Treat the boolean as advisory
-# and force-true whenever the caption or tags mention a relevant noun.
-# English only — the describer runs before translation.
-_PEOPLE_KEYWORDS = frozenset(
-    {
-        "person",
-        "people",
-        "man",
-        "men",
-        "woman",
-        "women",
-        "boy",
-        "girl",
-        "child",
-        "children",
-        "kid",
-        "kids",
-        "baby",
-        "infant",
-        "adult",
-        "human",
-        "face",
-        "crowd",
-    }
-)
-_ANIMAL_KEYWORDS = frozenset(
-    {
-        "cat",
-        "cats",
-        "kitten",
-        "kittens",
-        "feline",
-        "dog",
-        "dogs",
-        "puppy",
-        "puppies",
-        "canine",
-        "pet",
-        "pets",
-        "animal",
-        "animals",
-    }
-)
-
-
-def _text_mentions(keywords: frozenset[str], caption: str, tags: set[str]) -> bool:
-    """True if any keyword appears as a whole word in caption or as a tag."""
-    if any(t.lower() in keywords for t in tags):
-        return True
-    tokens = re.findall(r"[a-zA-Z]+", caption.lower())
-    return any(tok in keywords for tok in tokens)
 
 
 # ── Stage 2: Translation ────────────────────────────────────────────

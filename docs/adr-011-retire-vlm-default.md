@@ -99,6 +99,16 @@ The `_load_transformers_backend`, `_describe_image_transformers`, `_extract_tran
 - `mlx-vlm`, `sentencepiece`, `sacremoses`, `autoawq` from core dependencies.
 - FEAT-21, FEAT-22, FEAT-23, FEAT-24, FEAT-25, FEAT-26 — all marked withdrawn in `docs/features.md`.
 
+**2026-04-18 follow-up — prefilter fully removed.** Even with the VLM behind `--caption`, the has_people / has_animals booleans and their keyword-override logic were a liability: they existed to *skip detection*, which is exactly what produced the recall regressions documented above. Removed entirely:
+
+- `DescribeOutput.has_people` / `has_animals` fields, deleted.
+- `_coerce_bool_fail_open`, `_PEOPLE_KEYWORDS`, `_ANIMAL_KEYWORDS`, `_text_mentions` helpers, deleted.
+- `FaceDetectionStep` / `PetDetectionStep` `prefilter_enabled` parameter, deleted. Detection now runs unconditionally on every frame.
+- `SourceAnalysis.has_people` / `has_animals` fields, deleted.
+- The `Rules for has_people / has_animals` section of the VLM system prompt, deleted.
+
+With `--caption` on, the VLM still produces captions and tags; it no longer controls what detection runs. Simpler, no recall trap.
+
 **Revisit when:**
 
 - A better Italian-native VLM ships on Apple Silicon (e.g. Qwen3-VL-IT, Gemma-3-VL-IT).

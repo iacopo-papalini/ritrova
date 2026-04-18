@@ -208,11 +208,11 @@ def analyse(
     # the `scan_types` catalog table for the taxonomy.
     effective_scan_type = scan_type or ("subjects+captions" if caption else "subjects")
 
-    # --caption (opt-in) adds the VLM captioning + translation steps before
-    # detection, and lets the detection steps skip on sources the VLM said
-    # have no subjects. Without --caption, the pipeline is just face + pet
-    # detection + dedup — equivalent in intent to the legacy human+pet
-    # scans, unified under `subjects`. See ADR-011 for why VLM retired.
+    # --caption (opt-in) adds VLM captioning + translation steps. Face/pet
+    # detection always runs unconditionally — the VLM subject-prefilter was
+    # removed after it caused real face-recall losses on clear portraits.
+    # Without --caption, the pipeline is just face + pet + dedup, unified
+    # under scan_type `subjects`. See ADR-011 for the full rationale.
     translator_obj = None
     if caption:
         from .describer import _prefers_mlx_backend
@@ -242,25 +242,13 @@ def analyse(
         from .detector import FaceDetector
 
         print("Loading face detection model...")
-        builder.add_step(
-            FaceDetectionStep(
-                FaceDetector(),
-                min_face_confidence,
-                prefilter_enabled=caption,
-            )
-        )
+        builder.add_step(FaceDetectionStep(FaceDetector(), min_face_confidence))
 
     if not no_pets:
         from .pet_detector import PetDetector
 
         print("Loading pet detection models...")
-        builder.add_step(
-            PetDetectionStep(
-                PetDetector(),
-                min_pet_confidence,
-                prefilter_enabled=caption,
-            )
-        )
+        builder.add_step(PetDetectionStep(PetDetector(), min_pet_confidence))
 
     # Translation is CPU-only and parse of VLM output is English; we run it
     # after detection so the profile records it as a distinct step.
