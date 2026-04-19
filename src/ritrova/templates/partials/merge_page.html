@@ -4,7 +4,7 @@
 {% endfor %}
 {% if offset + suggestions|length < total %}
 <div hx-get="/api/merge-suggestions-html?min_sim={{ min_sim }}&offset={{ offset + suggestions|length }}&limit={{ limit }}&species={{ species }}"
-     hx-trigger="revealed"
+     hx-trigger="intersect once"
      hx-swap="outerHTML"
      class="flex justify-center py-8">
   <div class="flex items-center gap-2 text-gallery-muted text-sm">
