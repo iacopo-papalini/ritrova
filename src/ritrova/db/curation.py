@@ -43,6 +43,18 @@ class CurationMixin(_DBAccessor):
         self.conn.commit()
 
     @_locked
+    def unassign_findings(self, finding_ids: list[int]) -> None:
+        """Remove subject assignments from multiple findings in one statement."""
+        if not finding_ids:
+            return
+        placeholders = ",".join("?" * len(finding_ids))
+        self.conn.execute(
+            f"UPDATE findings SET person_id = NULL WHERE id IN ({placeholders})",
+            tuple(finding_ids),
+        )
+        self.conn.commit()
+
+    @_locked
     def exclude_findings(self, finding_ids: list[int], cluster_id: int) -> None:
         """Remove findings from a cluster (set cluster_id to NULL)."""
         placeholders = ",".join("?" * len(finding_ids))

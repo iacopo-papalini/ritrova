@@ -1,0 +1,15 @@
+{# One face tile in a subject's face grid.
+   Required context: face (has .id).
+   Parent must supply faceSelection() scope (selected, toggle).
+   - Container click  -> toggle selection
+   - Image click      -> preview whole picture in the lightbox #}
+<div class="group relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150"
+     data-finding-id="{{ face.id }}"
+     @click="toggle({{ face.id }})"
+     :class="selected.has({{ face.id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'">
+  <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
+       loading="lazy"
+       alt="face"
+       @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
+       class="aspect-square w-full object-cover">
+</div>
