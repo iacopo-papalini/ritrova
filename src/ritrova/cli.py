@@ -843,9 +843,9 @@ def scan_videos(ctx: click.Context, min_confidence: float, interval: float) -> N
 
 
 SPECIES_THRESHOLDS = {
-    "human": 0.45,  # ArcFace 512-dim: well-separated
-    "dog": 0.20,  # SigLIP 768-dim: much denser, needs tighter threshold
-    "cat": 0.20,
+    "human": 0.50,  # ArcFace 512-dim. Bumped from 0.45 — no intruders observed at 0.45
+    "dog": 0.23,  # SigLIP 768-dim: much denser, needs tighter threshold. Bumped from 0.20
+    "cat": 0.23,
 }
 
 
@@ -857,10 +857,24 @@ SPECIES_THRESHOLDS = {
     help="Override cosine distance threshold (default: per-species)",
 )
 @click.option("--min-size", default=2, help="Minimum faces per cluster")
+@click.option(
+    "--auto-merge-threshold",
+    default=70.0,
+    type=float,
+    help=(
+        "Similarity % above which cluster pairs are auto-merged after clustering. "
+        "Loops to convergence. Set to 100 (or higher) to disable."
+    ),
+)
 @click.pass_context
-def cluster(ctx: click.Context, threshold: float | None, min_size: int) -> None:
+def cluster(
+    ctx: click.Context,
+    threshold: float | None,
+    min_size: int,
+    auto_merge_threshold: float,
+) -> None:
     """Cluster all detected faces by embedding similarity (humans + pets)."""
-    from .cluster import cluster_faces
+    from .cluster import auto_merge_clusters, cluster_faces
     from .db import FaceDB
 
     db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
@@ -874,6 +888,31 @@ def cluster(ctx: click.Context, threshold: float | None, min_size: int) -> None:
         print(f"  Noise (outliers): {result['noise']}")
         if result.get("largest_cluster"):
             print(f"  Largest cluster:  {result['largest_cluster']} faces")
+
+    if auto_merge_threshold < 100.0:
+        # Per-kind (person, pet) rather than per-species: pet auto-merge spans
+        # dog + cat because they share the SigLIP embedding space.
+        for kind in ("person", "pet"):
+            print(f"\n── auto-merge {kind} (≥ {auto_merge_threshold:.0f}%) ──")
+            total_merged = 0
+            total_moved = 0
+            iteration = 0
+            max_iterations = 20  # safety cap — convergence is typically 1-3 passes
+            while iteration < max_iterations:
+                result = auto_merge_clusters(
+                    db, min_similarity=auto_merge_threshold / 100, kind=kind
+                )
+                iteration += 1
+                print(
+                    f"  pass {iteration}: merged {result['merged']} pairs, "
+                    f"moved {result['faces_moved']} faces, "
+                    f"{result['remaining_clusters']} clusters remain"
+                )
+                if result["merged"] == 0:
+                    break
+                total_merged += result["merged"]
+                total_moved += result["faces_moved"]
+            print(f"  total: {total_merged} merges, {total_moved} faces moved")
 
     db.close()
 

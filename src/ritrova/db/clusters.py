@@ -40,27 +40,38 @@ class ClusterMixin(_DBAccessor):
 
     @_locked
     def get_unnamed_clusters(self, species: str = "human") -> list[dict[str, Any]]:
-        """Clusters with no subject assigned, ordered by size."""
+        """Clusters with no subject assigned, ordered by total face area (biggest first).
+
+        Ranking by ``SUM(bbox_w * bbox_h)`` instead of raw face count surfaces
+        the clusters that are most visually substantial — lots of faces *and*
+        big faces — so curation starts where it has the most leverage.
+        Sample faces are returned biggest-first so the thumbnail preview shows
+        the cluster's largest crops.
+        """
         clause, params = self.species_filter(species)
         rows = self.conn.execute(
             f"""
             SELECT cluster_id, COUNT(*) as face_count,
-                   GROUP_CONCAT(id) as finding_ids
+                   SUM(CAST(bbox_w AS INTEGER) * CAST(bbox_h AS INTEGER)) as total_area,
+                   GROUP_CONCAT(id || ':' || (bbox_w * bbox_h)) as finding_area_pairs
             FROM findings
             WHERE cluster_id IS NOT NULL AND person_id IS NULL AND {clause}
             GROUP BY cluster_id
             HAVING COUNT(*) >= 2
-            ORDER BY face_count DESC
+            ORDER BY total_area DESC
         """,
             params,
         ).fetchall()
         result = []
         for row in rows:
-            finding_ids = [int(x) for x in row["finding_ids"].split(",")]
+            pairs = [p.split(":") for p in row["finding_area_pairs"].split(",")]
+            pairs.sort(key=lambda p: int(p[1]), reverse=True)
+            finding_ids = [int(p[0]) for p in pairs]
             result.append(
                 {
                     "cluster_id": row["cluster_id"],
                     "face_count": row["face_count"],
+                    "total_area": int(row["total_area"] or 0),
                     "sample_face_ids": finding_ids[:12],
                 }
             )
