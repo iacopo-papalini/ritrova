@@ -189,6 +189,10 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         findings = db.get_source_findings(photo_id)
         subjects = db.get_subjects()
         findings_data = []
+        # Some older source rows were written with width/height=0 because the
+        # original scan couldn't read dimensions. Skip overlay math rather
+        # than 500-ing the page; thumbnails and the face grid still render.
+        have_dims = source.width > 0 and source.height > 0
         for finding in findings:
             subject_name = None
             if finding.person_id:
@@ -197,10 +201,10 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             findings_data.append(
                 {
                     "id": finding.id,
-                    "bbox_x_pct": finding.bbox_x / source.width * 100,
-                    "bbox_y_pct": finding.bbox_y / source.height * 100,
-                    "bbox_w_pct": finding.bbox_w / source.width * 100,
-                    "bbox_h_pct": finding.bbox_h / source.height * 100,
+                    "bbox_x_pct": (finding.bbox_x / source.width * 100) if have_dims else None,
+                    "bbox_y_pct": (finding.bbox_y / source.height * 100) if have_dims else None,
+                    "bbox_w_pct": (finding.bbox_w / source.width * 100) if have_dims else None,
+                    "bbox_h_pct": (finding.bbox_h / source.height * 100) if have_dims else None,
                     "person_id": finding.person_id,
                     "person_name": subject_name,
                     "confidence": finding.confidence,

@@ -54,7 +54,7 @@
            alt="photo"
            class="max-h-[70vh] w-auto rounded-xl shadow-lg">
 
-      {% for face in findings_data %}
+      {% for face in findings_data %}{% if face.bbox_x_pct is not none %}
       <a href="#face-{{ face.id }}"
          class="absolute border-2 rounded-sm transition-all duration-200
                 {% if face.person_name %}border-gallery-accent/70 hover:border-gallery-accent
@@ -70,7 +70,7 @@
           ({{ '%.0f'|format(face.confidence * 100) }}%)
         </span>
       </a>
-      {% endfor %}
+      {% endif %}{% endfor %}
     </div>
   </div>
 
