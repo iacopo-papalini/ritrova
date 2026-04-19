@@ -158,45 +158,6 @@ class CirclesMixin(_DBAccessor):
         return [(int(r[0]), r[1], r[2]) for r in rows]
 
     @_locked
-    def find_stranger_bucket(self, circle_id: int, species: str) -> int | None:
-        """Return the subject_id in `circle_id` with the most findings of `species`.
-
-        Used by the "I don't know this {cat|dog|person}" action to route
-        marks into an existing catch-all subject (e.g. `cani a caso`,
-        `gatti a caso`) rather than creating yet another `Stranger #N`.
-        The user designates a bucket simply by adding the subject to the
-        Strangers circle — no new config required. Returns ``None`` when no
-        matching subject exists (caller then falls back to creating one).
-        """
-        row = self.conn.execute(
-            """
-            SELECT sc.subject_id, COUNT(f.id) AS n
-            FROM subject_circles sc
-            JOIN findings f ON f.person_id = sc.subject_id
-            WHERE sc.circle_id = ? AND f.species = ?
-            GROUP BY sc.subject_id
-            ORDER BY n DESC
-            LIMIT 1
-            """,
-            (circle_id, species),
-        ).fetchone()
-        return int(row[0]) if row else None
-
-    def get_stranger_subject_ids(self) -> set[int]:
-        """Subjects in the Strangers circle.
-
-        These are catch-all buckets (``cani a caso``, ``Stranger #N``) whose
-        embedding centroid averages wildly different faces and therefore
-        isn't a reliable anchor for similarity-based suggestions or
-        auto-assign. Consumers filter these out before computing or using
-        subject centroids.
-        """
-        strangers = self.get_circle_by_name("Strangers")
-        if strangers is None:
-            return set()
-        return self.subjects_in_any_circle([strangers.id])
-
-    @_locked
     def subjects_in_any_circle(self, circle_ids: list[int]) -> set[int]:
         """Return the set of subject_ids in any of the given circles.
 

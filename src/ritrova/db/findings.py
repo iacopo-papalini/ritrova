@@ -1,4 +1,13 @@
-"""Finding CRUD and embedding query mixin."""
+"""Finding CRUD and embedding query mixin.
+
+Apr 2026 refactor: curation state (subject assignment + exclusion) and
+cluster membership now live on `finding_assignment` and `cluster_findings`.
+All read queries LEFT JOIN both side tables and alias their columns back
+to the Finding dataclass's existing field names (`person_id`,
+`cluster_id`) plus the new `exclusion_reason`. The old denormalized
+columns on `findings` are still present at this commit but are no longer
+read — Commit D drops them.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +15,50 @@ import numpy as np
 
 from ._base import _DBAccessor, _locked
 from .models import Finding
+
+# SELECT list that projects a Finding-shaped row by joining in the
+# curation/cluster state. Use with `_FINDING_FROM` so the LEFT JOINs line
+# up. Any query that needs to filter on subject/exclusion/cluster can add
+# predicates on `fa.*` / `cf.*` directly.
+_FINDING_COLUMNS = (
+    "f.id, f.source_id, f.bbox_x, f.bbox_y, f.bbox_w, f.bbox_h, "
+    "f.embedding, f.confidence, f.detected_at, f.species, "
+    "f.frame_path, f.embedding_dim, f.scan_id, f.frame_number, "
+    "fa.subject_id AS person_id, "
+    "fa.exclusion_reason AS exclusion_reason, "
+    "cf.cluster_id AS cluster_id"
+)
+_FINDING_FROM = (
+    "FROM findings f "
+    "LEFT JOIN finding_assignment fa ON fa.finding_id = f.id "
+    "LEFT JOIN cluster_findings cf ON cf.finding_id = f.id"
+)
+
+
+def _row_to_finding(row: object) -> Finding | None:
+    """Build a Finding from a row produced by a `SELECT _FINDING_COLUMNS`."""
+    emb_bytes = row["embedding"]  # type: ignore[index]
+    if emb_bytes is None:
+        return None
+    return Finding(
+        id=row["id"],  # type: ignore[index]
+        source_id=row["source_id"],  # type: ignore[index]
+        bbox_x=row["bbox_x"],  # type: ignore[index]
+        bbox_y=row["bbox_y"],  # type: ignore[index]
+        bbox_w=row["bbox_w"],  # type: ignore[index]
+        bbox_h=row["bbox_h"],  # type: ignore[index]
+        embedding=np.frombuffer(emb_bytes, dtype=np.float32),
+        person_id=row["person_id"],  # type: ignore[index]
+        cluster_id=row["cluster_id"],  # type: ignore[index]
+        confidence=row["confidence"],  # type: ignore[index]
+        detected_at=row["detected_at"],  # type: ignore[index]
+        species=row["species"],  # type: ignore[index]
+        frame_path=row["frame_path"],  # type: ignore[index]
+        embedding_dim=row["embedding_dim"],  # type: ignore[index]
+        scan_id=row["scan_id"],  # type: ignore[index]
+        frame_number=row["frame_number"],  # type: ignore[index]
+        exclusion_reason=row["exclusion_reason"],  # type: ignore[index]
+    )
 
 
 class FindingMixin(_DBAccessor):
@@ -51,26 +104,21 @@ class FindingMixin(_DBAccessor):
 
     @_locked
     def get_finding(self, finding_id: int) -> Finding | None:
-        row = self.conn.execute("SELECT * FROM findings WHERE id = ?", (finding_id,)).fetchone()
-        if not row or row["embedding"] is None:
+        row = self.conn.execute(
+            f"SELECT {_FINDING_COLUMNS} {_FINDING_FROM} WHERE f.id = ?",
+            (finding_id,),
+        ).fetchone()
+        if not row:
             return None
-        d = dict(row)
-        d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-        return Finding(**d)
+        return _row_to_finding(row)
 
     @_locked
     def get_source_findings(self, source_id: int) -> list[Finding]:
         rows = self.conn.execute(
-            "SELECT * FROM findings WHERE source_id = ?", (source_id,)
+            f"SELECT {_FINDING_COLUMNS} {_FINDING_FROM} WHERE f.source_id = ?",
+            (source_id,),
         ).fetchall()
-        result = []
-        for row in rows:
-            if row["embedding"] is None:
-                continue
-            d = dict(row)
-            d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-            result.append(Finding(**d))
-        return result
+        return [f for f in (_row_to_finding(r) for r in rows) if f is not None]
 
     @_locked
     def get_finding_count(self) -> int:
@@ -81,13 +129,17 @@ class FindingMixin(_DBAccessor):
     def get_all_embeddings(
         self, species: str = "human", embedding_dim: int | None = None
     ) -> list[tuple[int, np.ndarray]]:
-        """Return all (finding_id, embedding) pairs for clustering, excluding dismissed."""
+        """Return all (finding_id, embedding) pairs for clustering.
+
+        Excludes excluded findings (stranger OR not_a_face) — they shouldn't
+        feed the clustering algorithm.
+        """
         clause, params = self.species_filter(species)
         dim_clause, dim_params = self._dim_filter(embedding_dim)
         rows = self.conn.execute(
-            f"SELECT id, embedding FROM findings "
+            f"SELECT f.id, f.embedding {_FINDING_FROM} "
             f"WHERE {clause} AND {dim_clause} "
-            f"AND id NOT IN (SELECT finding_id FROM dismissed_findings)",
+            f"AND fa.exclusion_reason IS NULL",
             (*params, *dim_params),
         ).fetchall()
         return [(row[0], np.frombuffer(row[1], dtype=np.float32)) for row in rows]
@@ -96,13 +148,13 @@ class FindingMixin(_DBAccessor):
     def get_unassigned_embeddings(
         self, species: str = "human", embedding_dim: int | None = None
     ) -> list[tuple[int, np.ndarray]]:
-        """Return (finding_id, embedding) for unassigned, non-dismissed findings only."""
+        """(finding_id, embedding) for findings with no subject assignment
+        and no exclusion — i.e. the findings still in the curation queue."""
         clause, params = self.species_filter(species)
         dim_clause, dim_params = self._dim_filter(embedding_dim)
         rows = self.conn.execute(
-            f"SELECT id, embedding FROM findings "
-            f"WHERE person_id IS NULL AND {clause} AND {dim_clause} "
-            f"AND id NOT IN (SELECT finding_id FROM dismissed_findings)",
+            f"SELECT f.id, f.embedding {_FINDING_FROM} "
+            f"WHERE fa.finding_id IS NULL AND {clause} AND {dim_clause}",
             (*params, *dim_params),
         ).fetchall()
         return [(row[0], np.frombuffer(row[1], dtype=np.float32)) for row in rows]
@@ -111,13 +163,13 @@ class FindingMixin(_DBAccessor):
     def get_unclustered_embeddings(
         self, species: str = "human", embedding_dim: int | None = None
     ) -> list[tuple[int, np.ndarray]]:
-        """Return (finding_id, embedding) for unclustered, unassigned, non-dismissed findings."""
+        """(finding_id, embedding) for uncurated, unclustered findings."""
         clause, params = self.species_filter(species)
         dim_clause, dim_params = self._dim_filter(embedding_dim)
         rows = self.conn.execute(
-            f"SELECT id, embedding FROM findings "
-            f"WHERE person_id IS NULL AND cluster_id IS NULL AND {clause} AND {dim_clause} "
-            f"AND id NOT IN (SELECT finding_id FROM dismissed_findings)",
+            f"SELECT f.id, f.embedding {_FINDING_FROM} "
+            f"WHERE fa.finding_id IS NULL AND cf.finding_id IS NULL "
+            f"AND {clause} AND {dim_clause}",
             (*params, *dim_params),
         ).fetchall()
         return [(r[0], np.frombuffer(r[1], dtype=np.float32)) for r in rows]
@@ -132,9 +184,8 @@ class FindingMixin(_DBAccessor):
         """
         clause, params = self.species_filter(species)
         row = self.conn.execute(
-            f"SELECT 1 FROM findings "
-            f"WHERE person_id IS NULL AND cluster_id IS NULL AND {clause} "
-            f"AND id NOT IN (SELECT finding_id FROM dismissed_findings) "
+            f"SELECT 1 {_FINDING_FROM} "
+            f"WHERE fa.finding_id IS NULL AND cf.finding_id IS NULL AND {clause} "
             f"LIMIT 1",
             params,
         ).fetchone()

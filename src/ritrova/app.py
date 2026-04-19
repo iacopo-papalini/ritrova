@@ -40,6 +40,7 @@ from .undo import (
     RecreateCirclePayload,
     RemoveSubjectFromCirclePayload,
     RestoreClusterPayload,
+    RestoreFromStrangerPayload,
     RestorePersonIdsPayload,
     ResurrectSubjectPayload,
     SubjectSnapshot,
@@ -208,6 +209,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                     "person_id": finding.person_id,
                     "person_name": subject_name,
                     "confidence": finding.confidence,
+                    "is_stranger": finding.exclusion_reason == "stranger",
                 }
             )
         species = findings[0].species if findings else "human"
@@ -384,7 +386,9 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     @app.get("/api/clusters/{cluster_id}/faces")
     def cluster_faces_api(cluster_id: int, offset: int = 0, limit: int = 200) -> JSONResponse:
         rows = db.query(
-            "SELECT id, source_id FROM findings WHERE cluster_id = ? LIMIT ? OFFSET ?",
+            "SELECT f.id, f.source_id FROM findings f "
+            "JOIN cluster_findings cf ON cf.finding_id = f.id "
+            "WHERE cf.cluster_id = ? LIMIT ? OFFSET ?",
             (cluster_id, limit, offset),
         )
         return JSONResponse([{"id": r[0], "source_id": r[1]} for r in rows])
@@ -394,7 +398,9 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         request: Request, cluster_id: int, offset: int = 0, limit: int = 200
     ) -> HTMLResponse:
         rows = db.query(
-            "SELECT id, source_id FROM findings WHERE cluster_id = ? LIMIT ? OFFSET ?",
+            "SELECT f.id, f.source_id FROM findings f "
+            "JOIN cluster_findings cf ON cf.finding_id = f.id "
+            "WHERE cf.cluster_id = ? LIMIT ? OFFSET ?",
             (cluster_id, limit, offset),
         )
         faces = [{"id": r[0], "source_id": r[1]} for r in rows]
@@ -413,7 +419,9 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     @app.get("/api/subjects/{subject_id}/findings")
     def subject_faces_api(subject_id: int, offset: int = 0, limit: int = 200) -> JSONResponse:
         rows = db.query(
-            "SELECT id, source_id FROM findings WHERE person_id = ? LIMIT ? OFFSET ?",
+            "SELECT f.id, f.source_id FROM findings f "
+            "JOIN finding_assignment fa ON fa.finding_id = f.id "
+            "WHERE fa.subject_id = ? LIMIT ? OFFSET ?",
             (subject_id, limit, offset),
         )
         return JSONResponse([{"id": r[0], "source_id": r[1]} for r in rows])
@@ -641,58 +649,33 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
 
     @app.post("/api/clusters/{cluster_id}/mark-stranger")
     def mark_cluster_stranger(cluster_id: int) -> RedirectResponse:
-        """File a cluster into the user's Strangers bucket.
+        """Flag every uncurated finding in a cluster as a stranger.
 
-        If the Strangers circle already holds a subject whose findings are
-        mostly this cluster's species (e.g. a user-created ``cani a caso``
-        for dog clusters), route the cluster into that subject — no new
-        ``Stranger #N`` gets born. Otherwise create ``Stranger #N`` and
-        enroll it in the Strangers circle, same as before.
+        Writes `exclusion_reason='stranger'` on each uncurated finding and
+        drops their cluster_findings rows (strangers don't re-cluster).
+        No subject is created; the findings stay visible on their source
+        photos but are hidden from clustering, merge-suggestions, auto-
+        assign, and the curation queue. Reversible from the photo page by
+        assigning a name (which overwrites the exclusion row).
         """
         findings = db.get_cluster_findings(cluster_id, limit=1)
         species = findings[0].species if findings else "human"
-        subject_kind = _subject_kind_for_species(species)
-        strangers = db.get_circle_by_name("Strangers")
+        kind = _kind_for_species(species)
 
+        # Only touch findings that don't already carry a curation row.
         pending_ids = db.get_unassigned_cluster_finding_ids(cluster_id)
-        bucket_id = (
-            db.find_stranger_bucket(strangers.id, species) if strangers is not None else None
-        )
-        if bucket_id is not None:
-            # Reuse existing catch-all subject; don't create or tag again.
-            db.assign_cluster_to_subject(cluster_id, bucket_id)
-            bucket = db.get_subject(bucket_id)
-            bucket_name = bucket.name if bucket else f"subject #{bucket_id}"
-            undo_store.put(
-                description=_describe_cluster_assign(bucket_name, len(pending_ids)),
-                payload=RestorePersonIdsPayload(
-                    snapshots=[
-                        FindingPersonSnapshot(finding_id=fid, person_id=None) for fid in pending_ids
-                    ]
-                ),
-            )
-            return RedirectResponse(_next_similar_cluster(bucket_id, cluster_id), status_code=303)
+        if not pending_ids:
+            return RedirectResponse(f"/{kind}/clusters", status_code=303)
 
-        # Fall back: mint a new `Stranger #N` for this kind.
-        row = db.conn.execute(
-            """
-            SELECT COALESCE(
-              MAX(CAST(SUBSTR(name, 11) AS INTEGER)), 0
-            ) FROM subjects
-            WHERE kind = ? AND name LIKE 'Stranger #%'
-            """,
-            (subject_kind,),
-        ).fetchone()
-        name = f"Stranger #{int(row[0] or 0) + 1}"
-        subject_id = db.create_subject(name, kind=subject_kind)
-        db.assign_cluster_to_subject(cluster_id, subject_id)
-        if strangers is not None:
-            db.add_subject_to_circle(subject_id, strangers.id)
+        db.set_exclusions(pending_ids, "stranger")
+        db.remove_cluster_memberships(pending_ids)
+        noun = "face" if len(pending_ids) == 1 else "faces"
+        message = f"Marked {len(pending_ids)} {noun} as stranger"
         undo_store.put(
-            description=_describe_cluster_name(name, len(pending_ids)),
-            payload=DeleteSubjectPayload(subject_id=subject_id),
+            description=message,
+            payload=RestoreFromStrangerPayload(cluster_id=cluster_id, finding_ids=pending_ids),
         )
-        return RedirectResponse(_next_similar_cluster(subject_id, cluster_id), status_code=303)
+        return RedirectResponse(f"/{kind}/clusters", status_code=303)
 
     @app.post("/api/clusters/{cluster_id}/assign", response_model=None)
     def assign_cluster_to_existing(
@@ -1261,30 +1244,14 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         )
 
     @app.get("/{kind}", response_class=HTMLResponse)
-    def subjects_page(
-        request: Request, kind: KindType, hide_strangers: bool = True
-    ) -> HTMLResponse:
+    def subjects_page(request: Request, kind: KindType) -> HTMLResponse:
         species = _species_for_kind(kind)
         subject_kind = _subject_kind_for_species(species)
         subjects = db.get_subjects_by_kind(subject_kind)
-        excluded_count = 0
-        if hide_strangers:
-            strangers = db.get_circle_by_name("Strangers")
-            if strangers is not None:
-                excluded_ids = db.subjects_in_any_circle([strangers.id])
-                before = len(subjects)
-                subjects = [s for s in subjects if s.id not in excluded_ids]
-                excluded_count = before - len(subjects)
         avatars = db.get_random_avatars([s.id for s in subjects])
         return templates.TemplateResponse(
             name="subjects.html",
-            context={
-                "subjects": subjects,
-                "kind": kind,
-                "avatars": avatars,
-                "hide_strangers": hide_strangers,
-                "excluded_count": excluded_count,
-            },
+            context={"subjects": subjects, "kind": kind, "avatars": avatars},
             request=request,
         )
 

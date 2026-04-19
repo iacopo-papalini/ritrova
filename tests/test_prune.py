@@ -35,16 +35,12 @@ class TestPruneDuplicateFindings(TestCase):
             scan_id=scan_id,
             species=species,
         )
-        # Get the last inserted finding
         row = self.db.conn.execute("SELECT id FROM findings ORDER BY id DESC LIMIT 1").fetchone()
         fid = row[0]
         if person_id is not None:
-            self.db.conn.execute("UPDATE findings SET person_id = ? WHERE id = ?", (person_id, fid))
+            self.db.set_subject(fid, person_id)
         if cluster_id is not None:
-            self.db.conn.execute(
-                "UPDATE findings SET cluster_id = ? WHERE id = ?", (cluster_id, fid)
-            )
-        self.db.conn.commit()
+            self.db.set_cluster_memberships({fid: cluster_id})
         return fid
 
     def test_no_duplicates_returns_zero(self) -> None:
@@ -116,10 +112,10 @@ class TestPruneDuplicateFindings(TestCase):
             [(src2, (10, 10, 50, 50), _emb(), 0.95)],
             scan_id=scan2,
         )
-        self.db.conn.execute(
-            "UPDATE findings SET person_id = ? WHERE source_id = ?", (subject_id, src2)
-        )
-        self.db.conn.commit()
+        fid = self.db.conn.execute(
+            "SELECT id FROM findings WHERE source_id = ?", (src2,)
+        ).fetchone()[0]
+        self.db.set_subject(fid, subject_id)
 
         report = self.db.prune_duplicate_findings()
         assert report.total == 0

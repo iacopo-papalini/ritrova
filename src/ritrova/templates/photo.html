@@ -108,7 +108,14 @@
         </div>
 
         {% else %}
-        {# ── Unassigned face ───────────────────────────────── #}
+        {# ── Unassigned face (may be flagged as stranger) ───── #}
+        {% if face.is_stranger %}
+        <div class="mb-2 inline-flex items-center gap-1.5 rounded-full bg-gallery-muted/10 px-2 py-0.5 text-xs text-gallery-muted"
+             title="Flagged as a stranger. Picking a name below will un-flag it.">
+          <span class="h-1.5 w-1.5 rounded-full bg-gallery-muted"></span>
+          Stranger
+        </div>
+        {% endif %}
         <div x-data="subjectPicker({
                onSelect(subject) {
                  const fd = new FormData();

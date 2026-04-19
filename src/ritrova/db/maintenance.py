@@ -37,19 +37,16 @@ class MaintenanceMixin(_DBAccessor):
                 "WHERE s.id IS NULL"
             ).fetchall()
         ]
-        dismissed_no_finding = [
-            r[0]
-            for r in self.conn.execute(
-                "SELECT df.finding_id FROM dismissed_findings df "
-                "LEFT JOIN findings f ON df.finding_id = f.id "
-                "WHERE f.id IS NULL"
-            ).fetchall()
-        ]
+        # Apr 2026 refactor: dismissed_findings is gone (merged into
+        # finding_assignment.exclusion_reason). The FK cascade on
+        # finding_assignment.finding_id → findings.id makes orphans
+        # structurally impossible, but we still report the field for
+        # backwards compatibility with callers that pickle OrphanReport.
         return OrphanReport(
             findings_missing_source=findings_no_source,
             findings_missing_scan=findings_no_scan,
             scans_missing_source=scans_no_source,
-            dismissed_missing_finding=dismissed_no_finding,
+            dismissed_missing_finding=[],
         )
 
     @_locked
@@ -71,7 +68,7 @@ class MaintenanceMixin(_DBAccessor):
         _chunked_delete("findings", "id", report.findings_missing_source)
         _chunked_delete("findings", "id", report.findings_missing_scan)
         _chunked_delete("scans", "id", report.scans_missing_source)
-        _chunked_delete("dismissed_findings", "finding_id", report.dismissed_missing_finding)
+        # dismissed_missing_finding is always empty post-refactor; skipping.
         self.conn.commit()
 
     @_locked
@@ -82,20 +79,29 @@ class MaintenanceMixin(_DBAccessor):
             "total_findings": self._count(f"SELECT COUNT(*) FROM findings WHERE {clause}", params),
             "total_subjects": self._count("SELECT COUNT(*) FROM subjects"),
             "named_findings": self._count(
-                f"SELECT COUNT(*) FROM findings WHERE person_id IS NOT NULL AND {clause}",
+                f"SELECT COUNT(*) FROM findings f "
+                f"JOIN finding_assignment fa ON fa.finding_id = f.id "
+                f"WHERE fa.subject_id IS NOT NULL AND {clause}",
                 params,
             ),
             "unnamed_clusters": self._count(
-                f"SELECT COUNT(DISTINCT cluster_id) FROM findings "
-                f"WHERE cluster_id IS NOT NULL AND person_id IS NULL AND {clause}",
+                f"SELECT COUNT(DISTINCT cf.cluster_id) FROM cluster_findings cf "
+                f"JOIN findings f ON f.id = cf.finding_id "
+                f"LEFT JOIN finding_assignment fa ON fa.finding_id = f.id "
+                f"WHERE fa.finding_id IS NULL AND {clause}",
                 params,
             ),
             "unclustered_findings": self._count(
-                f"SELECT COUNT(*) FROM findings WHERE cluster_id IS NULL AND {clause} "
-                f"AND id NOT IN (SELECT finding_id FROM dismissed_findings)",
+                f"SELECT COUNT(*) FROM findings f "
+                f"LEFT JOIN cluster_findings cf ON cf.finding_id = f.id "
+                f"LEFT JOIN finding_assignment fa ON fa.finding_id = f.id "
+                f"WHERE cf.finding_id IS NULL AND {clause} "
+                f"AND (fa.exclusion_reason IS NULL OR fa.exclusion_reason <> 'not_a_face')",
                 params,
             ),
-            "dismissed_findings": self._count("SELECT COUNT(*) FROM dismissed_findings"),
+            "dismissed_findings": self._count(
+                "SELECT COUNT(*) FROM finding_assignment WHERE exclusion_reason = 'not_a_face'"
+            ),
         }
 
     @_locked
@@ -132,7 +138,12 @@ class MaintenanceMixin(_DBAccessor):
                 }
             )
 
-        unnamed = self.conn.execute("SELECT * FROM findings WHERE person_id IS NULL").fetchall()
+        unnamed = self.conn.execute(
+            "SELECT f.*, cf.cluster_id AS cluster_id_v FROM findings f "
+            "LEFT JOIN finding_assignment fa ON fa.finding_id = f.id "
+            "LEFT JOIN cluster_findings cf ON cf.finding_id = f.id "
+            "WHERE fa.subject_id IS NULL"
+        ).fetchall()
         for row in unnamed:
             source = self.get_source(row["source_id"])
             if source:
@@ -145,7 +156,7 @@ class MaintenanceMixin(_DBAccessor):
                             row["bbox_w"],
                             row["bbox_h"],
                         ],
-                        "cluster_id": row["cluster_id"],
+                        "cluster_id": row["cluster_id_v"],
                     }
                 )
 

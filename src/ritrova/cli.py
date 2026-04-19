@@ -975,12 +975,12 @@ def cleanup(
 
     db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
 
-    # Find unassigned, non-dismissed faces
+    # Find uncurated faces (no assignment row at all, excluded included).
     rows = db.query(
         "SELECT f.id, f.source_id, f.bbox_x, f.bbox_y, f.bbox_w, f.bbox_h "
         "FROM findings f "
-        "WHERE f.person_id IS NULL "
-        "AND f.id NOT IN (SELECT finding_id FROM dismissed_findings)"
+        "LEFT JOIN finding_assignment fa ON fa.finding_id = f.id "
+        "WHERE fa.finding_id IS NULL"
     )
     total = len(rows)
     print(f"Checking {total} unassigned faces...")
@@ -1171,7 +1171,9 @@ def scans_prune(
 
     n_findings = sum(t["finding_count"] for t in targets)
     n_assigned = db.query(
-        f"SELECT COUNT(*) FROM findings WHERE person_id IS NOT NULL AND scan_id IN "  # noqa: S608
+        f"SELECT COUNT(*) FROM findings f "  # noqa: S608
+        f"JOIN finding_assignment fa ON fa.finding_id = f.id "
+        f"WHERE fa.subject_id IS NOT NULL AND f.scan_id IN "
         f"({','.join(str(t['id']) for t in targets)})"
     )[0][0]
 
@@ -1236,7 +1238,9 @@ def rescan(ctx: click.Context, source: str, scan_type: str, yes: bool) -> None:
 
     n_findings = sum(t["finding_count"] for t in existing)
     n_assigned = db.query(
-        f"SELECT COUNT(*) FROM findings WHERE person_id IS NOT NULL AND scan_id IN "  # noqa: S608
+        f"SELECT COUNT(*) FROM findings f "  # noqa: S608
+        f"JOIN finding_assignment fa ON fa.finding_id = f.id "
+        f"WHERE fa.subject_id IS NOT NULL AND f.scan_id IN "
         f"({','.join(str(t['id']) for t in existing)})"
     )[0][0]
     click.echo(

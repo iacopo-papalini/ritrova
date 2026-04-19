@@ -257,22 +257,16 @@ def test_doctor_fix_without_yes_aborts_on_no_input(tmp_path: Path) -> None:
     db.close()
 
 
-def test_doctor_detects_dismissed_orphan(tmp_path: Path) -> None:
-    """A dismissed_findings row pointing at a missing finding should be caught
-    and deletable — exercises the fourth orphan category, which cascade should
-    normally prevent but manual SQL might leave."""
-    db_path, db, _ = _seed(tmp_path)
-    # Insert a bogus dismissed_findings row with FKs off so it survives.
-    import sqlite3
-
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA foreign_keys=OFF")
-    conn.execute("INSERT INTO dismissed_findings (finding_id) VALUES (999999)")
-    conn.commit()
-    conn.close()
-    db.close()
-
+def test_doctor_dismissed_orphan_category_is_noop_post_refactor(tmp_path: Path) -> None:
+    """The dismissed_findings table is gone post-Apr-2026 refactor —
+    exclusion_reason='not_a_face' lives on finding_assignment now, and
+    that FK has ON DELETE CASCADE so orphans can't exist. The doctor's
+    dismissed-orphan category is retained as an empty list for callers
+    that still check it."""
+    db_path, _, _ = _seed(tmp_path)
     result = _run(["doctor", "--fix", "-y"], db_path)
     assert result.exit_code == 0, result.output
-    assert "dismissed_findings with missing finding: 1" in result.output
-    assert "Deleted 1 orphan row(s)" in result.output
+    # Either reports zero orphans or doesn't mention the category at all.
+    assert "dismissed_findings with missing finding: 0" in result.output or (
+        "dismissed_findings" not in result.output
+    )

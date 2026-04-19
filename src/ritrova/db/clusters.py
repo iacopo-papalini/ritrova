@@ -1,65 +1,69 @@
-"""Cluster query and mutation mixin."""
+"""Cluster query and mutation mixin.
+
+Apr 2026 refactor: cluster membership lives on `cluster_findings`, not
+`findings.cluster_id`. All writes delegate to AssignmentMixin
+(`set_cluster_memberships`, `remove_cluster_memberships`, `merge_cluster
+_memberships`). Reads JOIN cluster_findings.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
-
 from ._base import _DBAccessor, _locked
+from .findings import _FINDING_COLUMNS, _FINDING_FROM, _row_to_finding
 from .models import Finding
 
 
 class ClusterMixin(_DBAccessor):
-    @_locked
     def update_cluster_ids(self, finding_cluster_map: dict[int, int]) -> None:
-        """Update cluster_id for multiple findings."""
-        self.conn.executemany(
-            "UPDATE findings SET cluster_id = ? WHERE id = ?",
-            [(cid, fid) for fid, cid in finding_cluster_map.items()],
-        )
-        self.conn.commit()
+        """Bulk set cluster membership — thin alias over the AssignmentMixin
+        batch helper. Kept on ClusterMixin for call-site readability."""
+        self.set_cluster_memberships(finding_cluster_map)  # type: ignore[attr-defined]
 
-    @_locked
     def clear_clusters(self, species: str | None = None) -> None:
-        """Reset cluster assignments (preserves subject assignments)."""
+        """Reset cluster assignments. Subject assignments are in a separate
+        table and untouched."""
         if species is None:
-            self.conn.execute("UPDATE findings SET cluster_id = NULL")
+            self.conn.execute("DELETE FROM cluster_findings")
+            self.conn.commit()
         else:
-            clause, params = self.species_filter(species)
-            self.conn.execute(f"UPDATE findings SET cluster_id = NULL WHERE {clause}", params)
-        self.conn.commit()
+            self.clear_species_cluster_memberships(species)  # type: ignore[attr-defined]
 
     @_locked
     def get_cluster_ids(self) -> list[int]:
-        """All distinct non-null cluster IDs."""
+        """All distinct cluster IDs that currently hold any findings."""
         rows = self.conn.execute(
-            "SELECT DISTINCT cluster_id FROM findings WHERE cluster_id IS NOT NULL ORDER BY cluster_id"
+            "SELECT DISTINCT cluster_id FROM cluster_findings ORDER BY cluster_id"
         ).fetchall()
         return [row[0] for row in rows]
 
     @_locked
     def get_unnamed_clusters(self, species: str = "human") -> list[dict[str, Any]]:
-        """Clusters with no subject assigned, ordered by total face area (biggest first).
+        """Clusters where every finding is uncurated, ordered by total face
+        area (biggest first).
 
-        Ranking by ``SUM(bbox_w * bbox_h)`` instead of raw face count surfaces
-        the clusters that are most visually substantial — lots of faces *and*
-        big faces — so curation starts where it has the most leverage.
-        Sample faces are returned biggest-first so the thumbnail preview shows
-        the cluster's largest crops.
+        "Uncurated" = no finding_assignment row. Clusters containing even
+        one named or excluded finding are filtered out — the user is
+        mid-curation there or has already told us that blob is done.
+        Sample faces are returned biggest-first so the thumbnail preview
+        shows the cluster's largest crops.
         """
         clause, params = self.species_filter(species)
         rows = self.conn.execute(
             f"""
-            SELECT cluster_id, COUNT(*) as face_count,
-                   SUM(CAST(bbox_w AS INTEGER) * CAST(bbox_h AS INTEGER)) as total_area,
-                   GROUP_CONCAT(id || ':' || (bbox_w * bbox_h)) as finding_area_pairs
-            FROM findings
-            WHERE cluster_id IS NOT NULL AND person_id IS NULL AND {clause}
-            GROUP BY cluster_id
+            SELECT cf.cluster_id,
+                   COUNT(*) AS face_count,
+                   SUM(CAST(f.bbox_w AS INTEGER) * CAST(f.bbox_h AS INTEGER)) AS total_area,
+                   GROUP_CONCAT(f.id || ':' || (f.bbox_w * f.bbox_h)) AS finding_area_pairs
+            FROM cluster_findings cf
+            JOIN findings f ON f.id = cf.finding_id
+            LEFT JOIN finding_assignment fa ON fa.finding_id = f.id
+            WHERE fa.finding_id IS NULL AND {clause}
+            GROUP BY cf.cluster_id
             HAVING COUNT(*) >= 2
             ORDER BY total_area DESC
-        """,
+            """,
             params,
         ).fetchall()
         result = []
@@ -81,33 +85,29 @@ class ClusterMixin(_DBAccessor):
     def get_singleton_findings(
         self, species: str = "human", limit: int = 200, offset: int = 0
     ) -> list[Finding]:
-        """Findings in clusters of size 1 or unclustered, unassigned, not dismissed."""
+        """Findings that are uncurated and either unclustered or in a
+        size-1 cluster. The singletons page uses this to show
+        detector-false-positives and isolated faces that couldn't cluster."""
         clause, params = self.species_filter(species)
         rows = self.conn.execute(
             f"""
-            SELECT f.* FROM findings f
-            WHERE f.person_id IS NULL AND {clause}
-            AND f.id NOT IN (SELECT finding_id FROM dismissed_findings)
-            AND (
-                f.cluster_id IS NULL
-                OR f.cluster_id IN (
-                    SELECT cluster_id FROM findings
-                    WHERE cluster_id IS NOT NULL AND person_id IS NULL
-                    GROUP BY cluster_id HAVING COUNT(*) = 1
+            SELECT {_FINDING_COLUMNS}
+            {_FINDING_FROM}
+            WHERE fa.finding_id IS NULL AND {clause}
+              AND (
+                cf.finding_id IS NULL
+                OR cf.cluster_id IN (
+                    SELECT cf2.cluster_id FROM cluster_findings cf2
+                    LEFT JOIN finding_assignment fa2 ON fa2.finding_id = cf2.finding_id
+                    WHERE fa2.finding_id IS NULL
+                    GROUP BY cf2.cluster_id HAVING COUNT(*) = 1
                 )
-            )
+              )
             LIMIT ? OFFSET ?
-        """,
+            """,
             (*params, limit, offset),
         ).fetchall()
-        result = []
-        for row in rows:
-            if row["embedding"] is None:
-                continue
-            d = dict(row)
-            d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-            result.append(Finding(**d))
-        return result
+        return [f for f in (_row_to_finding(r) for r in rows) if f is not None]
 
     @_locked
     def get_singleton_count(self, species: str = "human") -> int:
@@ -115,17 +115,19 @@ class ClusterMixin(_DBAccessor):
         row = self.conn.execute(
             f"""
             SELECT COUNT(*) FROM findings f
-            WHERE f.person_id IS NULL AND {clause}
-            AND f.id NOT IN (SELECT finding_id FROM dismissed_findings)
-            AND (
-                f.cluster_id IS NULL
-                OR f.cluster_id IN (
-                    SELECT cluster_id FROM findings
-                    WHERE cluster_id IS NOT NULL AND person_id IS NULL
-                    GROUP BY cluster_id HAVING COUNT(*) = 1
+            LEFT JOIN finding_assignment fa ON fa.finding_id = f.id
+            LEFT JOIN cluster_findings cf ON cf.finding_id = f.id
+            WHERE fa.finding_id IS NULL AND {clause}
+              AND (
+                cf.finding_id IS NULL
+                OR cf.cluster_id IN (
+                    SELECT cf2.cluster_id FROM cluster_findings cf2
+                    LEFT JOIN finding_assignment fa2 ON fa2.finding_id = cf2.finding_id
+                    WHERE fa2.finding_id IS NULL
+                    GROUP BY cf2.cluster_id HAVING COUNT(*) = 1
                 )
-            )
-        """,
+              )
+            """,
             params,
         ).fetchone()
         return int(row[0]) if row else 0
@@ -133,7 +135,7 @@ class ClusterMixin(_DBAccessor):
     @_locked
     def get_cluster_finding_count(self, cluster_id: int) -> int:
         row = self.conn.execute(
-            "SELECT COUNT(*) FROM findings WHERE cluster_id = ?",
+            "SELECT COUNT(*) FROM cluster_findings WHERE cluster_id = ?",
             (cluster_id,),
         ).fetchone()
         return int(row[0]) if row else 0
@@ -141,29 +143,22 @@ class ClusterMixin(_DBAccessor):
     @_locked
     def get_cluster_findings(self, cluster_id: int, limit: int = 200) -> list[Finding]:
         rows = self.conn.execute(
-            "SELECT * FROM findings WHERE cluster_id = ? LIMIT ?",
+            f"""SELECT {_FINDING_COLUMNS}
+                {_FINDING_FROM}
+                WHERE cf.cluster_id = ?
+                LIMIT ?""",
             (cluster_id, limit),
         ).fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-            result.append(Finding(**d))
-        return result
+        return [f for f in (_row_to_finding(r) for r in rows) if f is not None]
 
     @_locked
     def get_cluster_finding_ids(self, cluster_id: int) -> list[int]:
-        """Return all finding IDs in a cluster."""
         rows = self.conn.execute(
-            "SELECT id FROM findings WHERE cluster_id = ?", (cluster_id,)
+            "SELECT finding_id FROM cluster_findings WHERE cluster_id = ?",
+            (cluster_id,),
         ).fetchall()
         return [r[0] for r in rows]
 
-    @_locked
     def merge_clusters(self, source_id: int, target_id: int) -> None:
         """Move all findings from source cluster to target cluster."""
-        self.conn.execute(
-            "UPDATE findings SET cluster_id = ? WHERE cluster_id = ?",
-            (target_id, source_id),
-        )
-        self.conn.commit()
+        self.merge_cluster_memberships(source_id, target_id)  # type: ignore[attr-defined]

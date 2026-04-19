@@ -155,9 +155,11 @@ class TestUndoEndpoints(TestCase):
         assert f2.cluster_id == 7
         assert f2.person_id is None
 
-        # dismissed_findings table emptied for those rows.
+        # Exclusion rows cleared for those findings (the 'not_a_face' row
+        # inserted by dismiss should be gone after undo).
         row = self.db.conn.execute(
-            "SELECT COUNT(*) FROM dismissed_findings WHERE finding_id IN (?, ?)",
+            "SELECT COUNT(*) FROM finding_assignment "
+            "WHERE finding_id IN (?, ?) AND exclusion_reason = 'not_a_face'",
             (fid1, fid2),
         ).fetchone()
         assert row[0] == 0
@@ -509,84 +511,10 @@ class TestUndoEndpoints(TestCase):
             assert f.person_id is None
             assert f.cluster_id == 42
 
-    # ── mark-stranger (FEAT-27) ────────────────
-
-    def test_mark_stranger_creates_subject_and_adds_to_strangers_circle(self) -> None:
-        """mark-stranger creates an auto-numbered subject and files it under 'Strangers'."""
-        _, fid1 = _add_finding(self.db, "/c1.jpg", seed=1)
-        _, fid2 = _add_finding(self.db, "/c2.jpg", seed=2)
-        self.db.update_cluster_ids({fid1: 99, fid2: 99})
-
-        resp = self.client.post("/api/clusters/99/mark-stranger", follow_redirects=False)
-        assert resp.status_code in (303, 307)
-
-        strangers = [s for s in self.db.get_subjects() if s.name.startswith("Stranger #")]
-        assert len(strangers) == 1
-        created = strangers[0]
-        assert created.name == "Stranger #1"
-        assert self.db.get_finding(fid1).person_id == created.id  # type: ignore[union-attr]
-
-        circles = self.db.get_subject_circles(created.id)
-        assert [c.name for c in circles] == ["Strangers"]
-
-    def test_mark_stranger_reuses_existing_bucket(self) -> None:
-        """Once a 'Stranger' subject exists in the circle, subsequent marks
-        route into it rather than minting #2, #3, ..."""
-        for i, cid in enumerate([10, 20, 30], start=1):
-            _, fid = _add_finding(self.db, f"/c{i}.jpg", seed=i)
-            _, fid2 = _add_finding(self.db, f"/c{i}b.jpg", seed=i + 100)
-            self.db.update_cluster_ids({fid: cid, fid2: cid})
-            self.client.post(f"/api/clusters/{cid}/mark-stranger", follow_redirects=False)
-
-        names = sorted(s.name for s in self.db.get_subjects() if s.name.startswith("Stranger #"))
-        assert names == ["Stranger #1"]
-        # All 6 findings routed into the single Stranger #1 subject.
-        subj = next(s for s in self.db.get_subjects() if s.name == "Stranger #1")
-        assert self.db.get_subject(subj.id).face_count == 6  # type: ignore[union-attr]
-
-    def test_mark_stranger_routes_to_user_bucket_by_species(self) -> None:
-        """A user-designated bucket ('cani a caso' in Strangers) absorbs
-        matching-species clusters without any 'Stranger #N' being created."""
-        strangers = self.db.get_circle_by_name("Strangers")
-        assert strangers is not None
-
-        # User pre-creates 'cani a caso' with a dog finding, then adds to Strangers.
-        bucket_id = self.db.create_subject("cani a caso", kind="pet")
-        dog_emb = _emb(seed=1, dim=768)
-        dog_src = self.db.add_source("/seed_dog.jpg", width=100, height=100)
-        add_findings(self.db, [(dog_src, (0, 0, 50, 50), dog_emb, 0.9)], species="dog")
-        seed_f = self.db.get_source_findings(dog_src)[0]
-        self.db.assign_finding_to_subject(seed_f.id, bucket_id)
-        self.db.add_subject_to_circle(bucket_id, strangers.id)
-
-        # A fresh dog cluster gets marked.
-        c_src = self.db.add_source("/cluster_dog.jpg", width=100, height=100)
-        add_findings(self.db, [(c_src, (0, 0, 50, 50), _emb(seed=2, dim=768), 0.9)], species="dog")
-        cluster_fid = self.db.get_source_findings(c_src)[0].id
-        self.db.update_cluster_ids({cluster_fid: 77})
-
-        self.client.post("/api/clusters/77/mark-stranger", follow_redirects=False)
-
-        # No Stranger #N minted; 'cani a caso' absorbed the cluster.
-        assert not any(s.name.startswith("Stranger #") for s in self.db.get_subjects())
-        assert self.db.get_finding(cluster_fid).person_id == bucket_id  # type: ignore[union-attr]
-
-    def test_subjects_page_hide_strangers_default_on(self) -> None:
-        """/people hides Strangers by default; ?hide_strangers=false shows them."""
-        alice = self.db.create_subject("Alice")
-        self.db.create_subject("Bob")
-        strangers = self.db.get_circle_by_name("Strangers")
-        assert strangers is not None
-        self.db.add_subject_to_circle(alice, strangers.id)
-
-        # Default: hidden
-        resp_default = self.client.get("/people")
-        assert resp_default.status_code == 200
-        assert "Alice" not in resp_default.text
-        assert "Bob" in resp_default.text
-        assert "1 stranger hidden" in resp_default.text
-
-        # Opt-out
-        resp_show = self.client.get("/people?hide_strangers=false")
-        assert resp_show.status_code == 200
-        assert "Alice" in resp_show.text and "Bob" in resp_show.text
+    # mark-stranger tests are deleted in this commit — the endpoint is being
+    # rewritten against the new finding_assignment.exclusion_reason='stranger'
+    # model in Commit C. New tests for that model will land then.
+    #
+    # test_subjects_page_hide_strangers_default_on is also gone: the
+    # hide-strangers pill itself goes away (subjects don't carry the stranger
+    # state anymore; findings do).

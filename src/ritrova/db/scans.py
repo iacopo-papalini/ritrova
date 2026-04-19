@@ -55,7 +55,9 @@ class ScanMixin(_DBAccessor):
             "SELECT COUNT(*) FROM findings WHERE scan_id = ?", (scan_id,)
         ).fetchone()[0]
         deleted_with_assignments = self.conn.execute(
-            "SELECT COUNT(*) FROM findings WHERE scan_id = ? AND person_id IS NOT NULL",
+            "SELECT COUNT(*) FROM findings f "
+            "JOIN finding_assignment fa ON fa.finding_id = f.id "
+            "WHERE f.scan_id = ? AND fa.subject_id IS NOT NULL",
             (scan_id,),
         ).fetchone()[0]
         self.conn.execute("DELETE FROM scans WHERE id = ?", (scan_id,))

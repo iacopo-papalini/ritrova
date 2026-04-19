@@ -28,8 +28,8 @@ class Finding:
     bbox_w: int
     bbox_h: int
     embedding: np.ndarray
-    person_id: int | None
-    cluster_id: int | None
+    person_id: int | None  # populated via LEFT JOIN finding_assignment.subject_id
+    cluster_id: int | None  # populated via LEFT JOIN cluster_findings.cluster_id
     confidence: float
     detected_at: str
     species: str = "human"
@@ -39,6 +39,10 @@ class Finding:
     # Real DB rows always have scan_id NOT NULL after the migration.
     scan_id: int = 0
     frame_number: int = 0
+    # Apr 2026 refactor: curation state lives on finding_assignment now.
+    # exclusion_reason is None when the finding is either uncurated or
+    # assigned to a subject; it's 'stranger' or 'not_a_face' when excluded.
+    exclusion_reason: str | None = None
 
 
 @dataclass

@@ -808,11 +808,6 @@ class TestCircles(TestCase):
     def _setup_db(self, db: FaceDB) -> None:
         self.db = db
 
-    def test_strangers_circle_autoseeded(self) -> None:
-        c = self.db.get_circle_by_name("Strangers")
-        assert c is not None
-        assert c.member_count == 0
-
     def test_create_circle_idempotent(self) -> None:
         cid1 = self.db.create_circle("family")
         cid2 = self.db.create_circle("family")
@@ -822,11 +817,11 @@ class TestCircles(TestCase):
         with pytest.raises(ValueError):
             self.db.create_circle("   ")
 
-    def test_list_circles_includes_strangers(self) -> None:
+    def test_list_circles_returns_user_created_only(self) -> None:
         self.db.create_circle("family")
         names = [c.name for c in self.db.list_circles()]
-        assert "Strangers" in names
-        assert "family" in names
+        # No auto-seeded circles — the user manages the set.
+        assert names == ["family"]
 
     def test_membership_add_remove_roundtrip(self) -> None:
         sid = self.db.create_subject("Alice")
@@ -861,20 +856,375 @@ class TestCircles(TestCase):
 
     def test_subjects_in_any_circle(self) -> None:
         fam = self.db.create_circle("family")
-        str_c = self.db.get_circle_by_name("Strangers").id
+        acq = self.db.create_circle("acquaintances")
         a, b, c = (
             self.db.create_subject("A"),
             self.db.create_subject("B"),
             self.db.create_subject("C"),
         )
         self.db.add_subject_to_circle(a, fam)
-        self.db.add_subject_to_circle(b, str_c)
-        assert self.db.subjects_in_any_circle([fam, str_c]) == {a, b}
+        self.db.add_subject_to_circle(b, acq)
+        assert self.db.subjects_in_any_circle([fam, acq]) == {a, b}
         assert self.db.subjects_in_any_circle([fam]) == {a}
         assert self.db.subjects_in_any_circle([]) == set()
-        assert c not in self.db.subjects_in_any_circle([fam, str_c])
+        assert c not in self.db.subjects_in_any_circle([fam, acq])
 
     def test_rename_circle(self) -> None:
         cid = self.db.create_circle("frineds")  # typo
         self.db.rename_circle(cid, "friends")
         assert self.db.get_circle(cid).name == "friends"
+
+
+def _build_pre_refactor_db(
+    path: Path,
+    *,
+    person_ids: dict[int, int] | None = None,
+    cluster_ids: dict[int, int] | None = None,
+    dismissed_ids: list[int] | None = None,
+    strangers_circle_member_ids: list[int] | None = None,
+) -> None:
+    """Build a DB with the pre-Apr-2026 schema (findings has person_id /
+    cluster_id columns; separate dismissed_findings table) plus the given
+    state. Opening it with FaceDB triggers the migration and drops the
+    old columns."""
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path TEXT UNIQUE NOT NULL,
+            type TEXT NOT NULL DEFAULT 'photo',
+            width INTEGER NOT NULL DEFAULT 0,
+            height INTEGER NOT NULL DEFAULT 0,
+            taken_at TEXT, latitude REAL, longitude REAL
+        );
+        CREATE TABLE scans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+            scan_type TEXT NOT NULL,
+            scanned_at TEXT NOT NULL DEFAULT '2024-01-01',
+            detection_strategy TEXT NOT NULL DEFAULT 'unknown',
+            UNIQUE (source_id, scan_type)
+        );
+        CREATE TABLE subjects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'person',
+            created_at TEXT NOT NULL DEFAULT '2024-01-01'
+        );
+        CREATE TABLE findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+            bbox_x INTEGER NOT NULL DEFAULT 0,
+            bbox_y INTEGER NOT NULL DEFAULT 0,
+            bbox_w INTEGER NOT NULL DEFAULT 0,
+            bbox_h INTEGER NOT NULL DEFAULT 0,
+            embedding BLOB NOT NULL,
+            person_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
+            cluster_id INTEGER,
+            confidence REAL NOT NULL DEFAULT 0.0,
+            species TEXT NOT NULL DEFAULT 'human',
+            detected_at TEXT NOT NULL DEFAULT '2024-01-01',
+            frame_path TEXT,
+            embedding_dim INTEGER NOT NULL DEFAULT 0,
+            scan_id INTEGER REFERENCES scans(id) ON DELETE CASCADE,
+            frame_number INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE dismissed_findings (
+            finding_id INTEGER PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE
+        );
+        CREATE TABLE circles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE subject_circles (
+            subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+            circle_id INTEGER NOT NULL REFERENCES circles(id) ON DELETE CASCADE,
+            added_at TEXT NOT NULL,
+            PRIMARY KEY (subject_id, circle_id)
+        );
+        CREATE UNIQUE INDEX idx_subjects_name_kind ON subjects(name, kind);
+        """
+    )
+    # Seed a minimal source + scan + findings so person_ids/cluster_ids have targets.
+    conn.execute("INSERT INTO sources (id, file_path) VALUES (1, '/migration-test.jpg')")
+    conn.execute("INSERT INTO scans (id, source_id, scan_type) VALUES (1, 1, 'subjects')")
+    emb = np.zeros(512, dtype=np.float32)
+    emb[0] = 1.0
+    # Collect all finding ids referenced by the seeds.
+    all_fids: set[int] = set()
+    if person_ids:
+        all_fids.update(person_ids.keys())
+    if cluster_ids:
+        all_fids.update(cluster_ids.keys())
+    if dismissed_ids:
+        all_fids.update(dismissed_ids)
+    for fid in sorted(all_fids):
+        conn.execute(
+            "INSERT INTO findings (id, source_id, embedding, scan_id) VALUES (?, 1, ?, 1)",
+            (fid, emb.tobytes()),
+        )
+    if person_ids:
+        # Create subjects referenced by person_ids
+        for subject_id in set(person_ids.values()):
+            conn.execute(
+                "INSERT INTO subjects (id, name, created_at) VALUES (?, ?, '2024-01-01')",
+                (subject_id, f"Subject {subject_id}"),
+            )
+        for fid, sid in person_ids.items():
+            conn.execute("UPDATE findings SET person_id = ? WHERE id = ?", (sid, fid))
+    if cluster_ids:
+        for fid, cid in cluster_ids.items():
+            conn.execute("UPDATE findings SET cluster_id = ? WHERE id = ?", (cid, fid))
+    if dismissed_ids:
+        for fid in dismissed_ids:
+            conn.execute("INSERT INTO dismissed_findings (finding_id) VALUES (?)", (fid,))
+    if strangers_circle_member_ids:
+        conn.execute(
+            "INSERT INTO circles (id, name, created_at) VALUES (1, 'Strangers', '2024-01-01')"
+        )
+        for sid in strangers_circle_member_ids:
+            conn.execute(
+                "INSERT INTO subject_circles (subject_id, circle_id, added_at) "
+                "VALUES (?, 1, '2024-01-01')",
+                (sid,),
+            )
+    conn.commit()
+    conn.close()
+
+
+class TestFindingAssignmentMigration(TestCase):
+    """Apr 2026 refactor: open a DB with the pre-refactor schema, verify
+    FaceDB's migration copies state into the new tables and drops the
+    obsolete columns + dismissed_findings table."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path: Path) -> None:
+        self.tmp_path = tmp_path
+
+    def test_clusters_migrated(self) -> None:
+        path = self.tmp_path / "old.db"
+        _build_pre_refactor_db(path, cluster_ids={10: 7, 11: 7})
+        db = FaceDB(path)
+        rows = db.conn.execute(
+            "SELECT finding_id, cluster_id FROM cluster_findings ORDER BY finding_id"
+        ).fetchall()
+        assert [(r[0], r[1]) for r in rows] == [(10, 7), (11, 7)]
+        db.close()
+
+    def test_named_subjects_migrated(self) -> None:
+        path = self.tmp_path / "old.db"
+        _build_pre_refactor_db(path, person_ids={10: 100})
+        db = FaceDB(path)
+        row = db.conn.execute(
+            "SELECT subject_id, exclusion_reason FROM finding_assignment WHERE finding_id = ?",
+            (10,),
+        ).fetchone()
+        assert (row[0], row[1]) == (100, None)
+        db.close()
+
+    def test_dismissed_findings_migrated(self) -> None:
+        path = self.tmp_path / "old.db"
+        _build_pre_refactor_db(path, dismissed_ids=[10])
+        db = FaceDB(path)
+        row = db.conn.execute(
+            "SELECT subject_id, exclusion_reason FROM finding_assignment WHERE finding_id = ?",
+            (10,),
+        ).fetchone()
+        assert (row[0], row[1]) == (None, "not_a_face")
+        db.close()
+
+    def test_strangers_dissolved_to_exclusion_reason(self) -> None:
+        path = self.tmp_path / "old.db"
+        _build_pre_refactor_db(
+            path,
+            person_ids={10: 100},
+            strangers_circle_member_ids=[100],
+        )
+        db = FaceDB(path)
+        assert db.get_subject(100) is None
+        assert db.get_circle_by_name("Strangers") is None
+        row = db.conn.execute(
+            "SELECT subject_id, exclusion_reason FROM finding_assignment WHERE finding_id = ?",
+            (10,),
+        ).fetchone()
+        assert (row[0], row[1]) == (None, "stranger")
+        db.close()
+
+    def test_migration_is_idempotent(self) -> None:
+        """Reopening a migrated DB doesn't duplicate rows."""
+        path = self.tmp_path / "old.db"
+        _build_pre_refactor_db(path, person_ids={10: 100}, cluster_ids={10: 7})
+        db1 = FaceDB(path)
+        db1.close()
+        db2 = FaceDB(path)
+        assert db2.conn.execute("SELECT COUNT(*) FROM finding_assignment").fetchone()[0] == 1
+        assert db2.conn.execute("SELECT COUNT(*) FROM cluster_findings").fetchone()[0] == 1
+        db2.close()
+
+    def test_old_columns_dropped_after_migration(self) -> None:
+        """After opening, findings.person_id / cluster_id and
+        dismissed_findings are gone."""
+        path = self.tmp_path / "old.db"
+        _build_pre_refactor_db(path, person_ids={10: 100})
+        db = FaceDB(path)
+        cols = {r[1] for r in db.conn.execute("PRAGMA table_info(findings)").fetchall()}
+        assert "person_id" not in cols
+        assert "cluster_id" not in cols
+        row = db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='dismissed_findings'"
+        ).fetchone()
+        assert row is None
+        db.close()
+
+
+class TestFindingAssignmentConstraints(TestCase):
+    """XOR CHECK + enum CHECK on finding_assignment."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, db: FaceDB) -> None:
+        self.db = db
+
+    def test_check_constraint_blocks_both_null(self) -> None:
+        _, fid = _add_source_with_finding(self.db, path="/a.jpg")
+        with pytest.raises(sqlite3.IntegrityError):
+            self.db.conn.execute(
+                "INSERT INTO finding_assignment(finding_id, subject_id, exclusion_reason, curated_at) "
+                "VALUES (?, NULL, NULL, '2026-04-19')",
+                (fid,),
+            )
+
+    def test_check_constraint_blocks_both_set(self) -> None:
+        _, fid = _add_source_with_finding(self.db, path="/a.jpg")
+        sid = self.db.create_subject("Alice")
+        with pytest.raises(sqlite3.IntegrityError):
+            self.db.conn.execute(
+                "INSERT INTO finding_assignment(finding_id, subject_id, exclusion_reason, curated_at) "
+                "VALUES (?, ?, 'stranger', '2026-04-19')",
+                (fid, sid),
+            )
+
+    def test_check_constraint_blocks_bad_reason(self) -> None:
+        _, fid = _add_source_with_finding(self.db, path="/a.jpg")
+        with pytest.raises(sqlite3.IntegrityError):
+            self.db.conn.execute(
+                "INSERT INTO finding_assignment(finding_id, subject_id, exclusion_reason, curated_at) "
+                "VALUES (?, NULL, 'bogus', '2026-04-19')",
+                (fid,),
+            )
+
+
+class TestAssignmentMixin(TestCase):
+    """New helpers for reading/writing finding_assignment and cluster_findings
+    (the target API after the Apr 2026 refactor; existing call sites still
+    use the old denormalized columns — they'll be switched in Commit C)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, db: FaceDB) -> None:
+        self.db = db
+
+    # finding_assignment
+
+    def test_set_subject_then_get_curation(self) -> None:
+        _, fid = _add_source_with_finding(self.db)
+        sid = self.db.create_subject("Alice")
+        self.db.set_subject(fid, sid)
+        assert self.db.get_curation(fid) == (sid, None)
+
+    def test_set_exclusion_stranger(self) -> None:
+        _, fid = _add_source_with_finding(self.db)
+        self.db.set_exclusion(fid, "stranger")
+        assert self.db.get_curation(fid) == (None, "stranger")
+
+    def test_set_exclusion_rejects_bad_reason(self) -> None:
+        _, fid = _add_source_with_finding(self.db)
+        with pytest.raises(ValueError):
+            self.db.set_exclusion(fid, "bogus")
+
+    def test_set_subject_overwrites_exclusion(self) -> None:
+        """Picking a name on a previously-marked stranger implicitly unmarks."""
+        _, fid = _add_source_with_finding(self.db)
+        sid = self.db.create_subject("Alice")
+        self.db.set_exclusion(fid, "stranger")
+        self.db.set_subject(fid, sid)
+        assert self.db.get_curation(fid) == (sid, None)
+
+    def test_set_exclusion_overwrites_subject(self) -> None:
+        """Marking as stranger clears a prior assignment."""
+        _, fid = _add_source_with_finding(self.db)
+        sid = self.db.create_subject("Alice")
+        self.db.set_subject(fid, sid)
+        self.db.set_exclusion(fid, "stranger")
+        assert self.db.get_curation(fid) == (None, "stranger")
+
+    def test_get_curation_returns_none_when_uncurated(self) -> None:
+        _, fid = _add_source_with_finding(self.db)
+        assert self.db.get_curation(fid) is None
+
+    def test_clear_curation(self) -> None:
+        _, fid = _add_source_with_finding(self.db)
+        sid = self.db.create_subject("Alice")
+        self.db.set_subject(fid, sid)
+        self.db.clear_curation(fid)
+        assert self.db.get_curation(fid) is None
+
+    def test_clear_curations_batch(self) -> None:
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
+        self.db.set_exclusion(fid1, "stranger")
+        self.db.set_exclusion(fid2, "not_a_face")
+        self.db.clear_curations([fid1, fid2])
+        assert self.db.get_curation(fid1) is None
+        assert self.db.get_curation(fid2) is None
+
+    def test_set_exclusions_batch(self) -> None:
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
+        self.db.set_exclusions([fid1, fid2], "stranger")
+        assert self.db.get_curation(fid1) == (None, "stranger")
+        assert self.db.get_curation(fid2) == (None, "stranger")
+
+    # cluster_findings
+
+    def test_set_and_get_cluster_membership(self) -> None:
+        _, fid = _add_source_with_finding(self.db)
+        self.db.set_cluster_memberships({fid: 42})
+        assert self.db.get_cluster_membership(fid) == 42
+
+    def test_set_cluster_memberships_bulk(self) -> None:
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
+        self.db.set_cluster_memberships({fid1: 7, fid2: 9})
+        assert self.db.get_cluster_membership(fid1) == 7
+        assert self.db.get_cluster_membership(fid2) == 9
+
+    def test_remove_cluster_memberships(self) -> None:
+        _, fid = _add_source_with_finding(self.db)
+        self.db.set_cluster_memberships({fid: 42})
+        self.db.remove_cluster_memberships([fid])
+        assert self.db.get_cluster_membership(fid) is None
+
+    def test_clear_species_cluster_memberships(self) -> None:
+        """Clearing dogs leaves humans alone."""
+        _, human_fid = _add_source_with_finding(self.db, path="/h.jpg", species="human")
+        _, dog_fid = _add_source_with_finding(self.db, path="/d.jpg", species="dog")
+        self.db.set_cluster_memberships({human_fid: 1, dog_fid: 2})
+        self.db.clear_species_cluster_memberships("dog")
+        assert self.db.get_cluster_membership(human_fid) == 1
+        assert self.db.get_cluster_membership(dog_fid) is None
+
+    def test_merge_cluster_memberships(self) -> None:
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
+        self.db.set_cluster_memberships({fid1: 1, fid2: 1})
+        moved = self.db.merge_cluster_memberships(source_cluster=1, target_cluster=5)
+        assert moved == 2
+        assert self.db.get_cluster_membership(fid1) == 5
+        assert self.db.get_cluster_membership(fid2) == 5
+
+    def test_merge_same_cluster_is_noop(self) -> None:
+        _, fid = _add_source_with_finding(self.db)
+        self.db.set_cluster_memberships({fid: 1})
+        assert self.db.merge_cluster_memberships(1, 1) == 0

@@ -144,6 +144,19 @@ class ResurrectSubjectPayload(UndoPayload):
 
 
 @dataclass
+class RestoreFromStrangerPayload(UndoPayload):
+    """Undo mark-stranger: remove the 'stranger' exclusion rows and
+    restore each finding's prior cluster membership."""
+
+    cluster_id: int
+    finding_ids: list[int]
+
+    def undo(self, db: FaceDB) -> None:
+        db.clear_curations(self.finding_ids)
+        db.set_cluster_memberships({fid: self.cluster_id for fid in self.finding_ids})
+
+
+@dataclass
 class AddSubjectToCirclePayload(UndoPayload):
     """Undo a circle membership removal: re-add the subject."""
 

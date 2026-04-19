@@ -1,12 +1,18 @@
-"""Curation mutations and together-query mixin."""
+"""Curation mutations and together-query mixin.
+
+Apr 2026 refactor: dismissals + subject unassignments route through
+AssignmentMixin; no code here touches `findings.person_id` / `cluster_id`
+or the obsolete `dismissed_findings` table for reads (the old table still
+exists until Commit D but no new rows are written and existing ones were
+migrated).
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
-
 from ._base import _DBAccessor, _locked
+from .findings import _FINDING_COLUMNS, _row_to_finding
 from .models import Finding, Source
 
 
@@ -14,7 +20,7 @@ from .models import Finding, Source
 class PruneReport:
     """Result of a prune operation."""
 
-    by_subject: int  # duplicate (source_id, person_id) findings removed
+    by_subject: int  # duplicate (source_id, subject_id) findings removed
     by_cluster: int  # duplicate (source_id, cluster_id) findings removed
 
     @property
@@ -23,44 +29,36 @@ class PruneReport:
 
 
 class CurationMixin(_DBAccessor):
-    @_locked
     def dismiss_findings(self, finding_ids: list[int]) -> None:
-        """Mark findings as non-faces (statues, paintings, etc.)."""
-        self.conn.executemany(
-            "INSERT OR IGNORE INTO dismissed_findings (finding_id) VALUES (?)",
-            [(fid,) for fid in finding_ids],
-        )
-        self.conn.executemany(
-            "UPDATE findings SET cluster_id = NULL, person_id = NULL WHERE id = ?",
-            [(fid,) for fid in finding_ids],
-        )
-        self.conn.commit()
+        """Mark findings as non-faces (statues, paintings, etc.).
 
-    @_locked
+        Writes `exclusion_reason='not_a_face'` on each (overwriting any
+        prior assignment) and drops their cluster membership so the Merge
+        and curation UIs stop offering them.
+        """
+        if not finding_ids:
+            return
+        self.set_exclusions(finding_ids, "not_a_face")  # type: ignore[attr-defined]
+        self.remove_cluster_memberships(finding_ids)  # type: ignore[attr-defined]
+
     def unassign_finding(self, finding_id: int) -> None:
-        """Remove subject assignment from a finding."""
-        self.conn.execute("UPDATE findings SET person_id = NULL WHERE id = ?", (finding_id,))
-        self.conn.commit()
+        """Clear a finding's assignment — returns to 'uncurated'."""
+        self.clear_curation(finding_id)  # type: ignore[attr-defined]
 
-    @_locked
     def unassign_findings(self, finding_ids: list[int]) -> None:
-        """Remove subject assignments from multiple findings in one statement."""
+        """Batch variant of unassign_finding."""
+        self.clear_curations(finding_ids)  # type: ignore[attr-defined]
+
+    def exclude_findings(self, finding_ids: list[int], cluster_id: int) -> None:
+        """Remove findings from a cluster. ``cluster_id`` is kept in the
+        signature for clarity / validation; any findings not currently in
+        that cluster are left alone (no schema-level constraint to rely on,
+        so we filter explicitly)."""
         if not finding_ids:
             return
         placeholders = ",".join("?" * len(finding_ids))
         self.conn.execute(
-            f"UPDATE findings SET person_id = NULL WHERE id IN ({placeholders})",
-            tuple(finding_ids),
-        )
-        self.conn.commit()
-
-    @_locked
-    def exclude_findings(self, finding_ids: list[int], cluster_id: int) -> None:
-        """Remove findings from a cluster (set cluster_id to NULL)."""
-        placeholders = ",".join("?" * len(finding_ids))
-        self.conn.execute(
-            f"UPDATE findings SET cluster_id = NULL WHERE id IN ({placeholders}) "
-            f"AND cluster_id = ?",
+            f"DELETE FROM cluster_findings WHERE finding_id IN ({placeholders}) AND cluster_id = ?",
             (*finding_ids, cluster_id),
         )
         self.conn.commit()
@@ -73,18 +71,21 @@ class CurationMixin(_DBAccessor):
         n = len(subject_ids)
         if alone:
             return (
-                f"""SELECT source_id FROM findings
-                    WHERE person_id IS NOT NULL
-                    GROUP BY source_id
-                    HAVING COUNT(DISTINCT CASE WHEN person_id IN ({placeholders}) THEN person_id END) = ?
-                    AND COUNT(DISTINCT person_id) = ?""",
+                f"""SELECT f.source_id FROM findings f
+                    JOIN finding_assignment fa ON fa.finding_id = f.id
+                    WHERE fa.subject_id IS NOT NULL
+                    GROUP BY f.source_id
+                    HAVING COUNT(DISTINCT CASE WHEN fa.subject_id IN ({placeholders})
+                                               THEN fa.subject_id END) = ?
+                    AND COUNT(DISTINCT fa.subject_id) = ?""",
                 (*subject_ids, n, n),
             )
         return (
-            f"""SELECT source_id FROM findings
-                WHERE person_id IN ({placeholders})
-                GROUP BY source_id
-                HAVING COUNT(DISTINCT person_id) = ?""",
+            f"""SELECT f.source_id FROM findings f
+                JOIN finding_assignment fa ON fa.finding_id = f.id
+                WHERE fa.subject_id IN ({placeholders})
+                GROUP BY f.source_id
+                HAVING COUNT(DISTINCT fa.subject_id) = ?""",
             (*subject_ids, n),
         )
 
@@ -96,11 +97,7 @@ class CurationMixin(_DBAccessor):
         alone: bool = False,
         source_type: str | None = None,
     ) -> list[Source]:
-        """Find sources that contain ALL given subjects.
-
-        If alone=True, exclude sources that also contain other named subjects.
-        If source_type is given ("photo" / "video"), only return sources of that type.
-        """
+        """Find sources that contain ALL given subjects."""
         if not subject_ids:
             return []
         inner, params = self._together_query(subject_ids, alone)
@@ -151,7 +148,8 @@ class CurationMixin(_DBAccessor):
             """
             SELECT DISTINCT s.* FROM sources s
             JOIN findings f ON f.source_id = s.id
-            WHERE f.person_id = ?
+            JOIN finding_assignment fa ON fa.finding_id = f.id
+            WHERE fa.subject_id = ?
             ORDER BY s.file_path DESC
             """,
             (subject_id,),
@@ -162,13 +160,11 @@ class CurationMixin(_DBAccessor):
     def get_subject_sources_with_findings(
         self, subject_id: int, source_type: str
     ) -> list[tuple[Source, list[Finding]]]:
-        """Sources of a given type containing the subject, each paired with the subject's findings on it.
-
-        Used by the Videos tab on the subject detail page — groups findings by source so each video
-        card can show a thumbnail (from one of the findings) and a count of appearances.
-        """
+        """Sources of a given type containing the subject, paired with the
+        subject's findings on each source. Used by the Videos tab on the
+        subject detail page."""
         rows = self.conn.execute(
-            """
+            f"""
             SELECT
                 s.id        AS s_id,
                 s.file_path AS s_file_path,
@@ -178,23 +174,12 @@ class CurationMixin(_DBAccessor):
                 s.taken_at  AS s_taken_at,
                 s.latitude  AS s_latitude,
                 s.longitude AS s_longitude,
-                f.id            AS f_id,
-                f.bbox_x        AS f_bbox_x,
-                f.bbox_y        AS f_bbox_y,
-                f.bbox_w        AS f_bbox_w,
-                f.bbox_h        AS f_bbox_h,
-                f.embedding     AS f_embedding,
-                f.person_id     AS f_person_id,
-                f.cluster_id    AS f_cluster_id,
-                f.confidence    AS f_confidence,
-                f.detected_at   AS f_detected_at,
-                f.species       AS f_species,
-                f.frame_path    AS f_frame_path,
-                f.embedding_dim AS f_embedding_dim,
-                f.scan_id       AS f_scan_id
+                {_FINDING_COLUMNS}
             FROM sources s
             JOIN findings f ON f.source_id = s.id
-            WHERE f.person_id = ? AND s.type = ?
+            LEFT JOIN finding_assignment fa ON fa.finding_id = f.id
+            LEFT JOIN cluster_findings cf ON cf.finding_id = f.id
+            WHERE fa.subject_id = ? AND s.type = ?
             ORDER BY s.file_path DESC, f.id
             """,
             (subject_id, source_type),
@@ -202,7 +187,8 @@ class CurationMixin(_DBAccessor):
 
         grouped: dict[int, tuple[Source, list[Finding]]] = {}
         for row in rows:
-            if row["f_embedding"] is None:
+            finding = _row_to_finding(row)
+            if finding is None:
                 continue
             source_id = row["s_id"]
             if source_id not in grouped:
@@ -217,63 +203,50 @@ class CurationMixin(_DBAccessor):
                     longitude=row["s_longitude"],
                 )
                 grouped[source_id] = (source, [])
-
-            finding = Finding(
-                id=row["f_id"],
-                source_id=source_id,
-                bbox_x=row["f_bbox_x"],
-                bbox_y=row["f_bbox_y"],
-                bbox_w=row["f_bbox_w"],
-                bbox_h=row["f_bbox_h"],
-                embedding=np.frombuffer(row["f_embedding"], dtype=np.float32),
-                person_id=row["f_person_id"],
-                cluster_id=row["f_cluster_id"],
-                confidence=row["f_confidence"],
-                detected_at=row["f_detected_at"],
-                species=row["f_species"] or "human",
-                frame_path=row["f_frame_path"],
-                embedding_dim=row["f_embedding_dim"] or 0,
-                scan_id=row["f_scan_id"],
-            )
             grouped[source_id][1].append(finding)
 
         return list(grouped.values())
 
     @_locked
     def prune_duplicate_findings(self, *, dry_run: bool = False) -> PruneReport:
-        """Remove duplicate findings per (source_id, person_id) and (source_id, cluster_id).
-
-        For each group of duplicates, keeps the finding from the newest scan
-        (highest scan_id). Dismissed findings are excluded from pruning.
-
-        Returns a ``PruneReport`` with counts of removed findings.
+        """Remove duplicate findings per (source_id, subject_id) and per
+        (source_id, cluster_id). Keeps the finding from the newest scan
+        (highest scan_id). Dismissed / excluded findings are skipped.
         """
-        # Duplicates by assigned subject: same person on same source
+        # Duplicates by assigned subject: same person on same source.
+        # Join through finding_assignment; exclude excluded findings.
         subject_dupes = self.conn.execute(
             """
-            SELECT id FROM findings
-            WHERE person_id IS NOT NULL
-            AND id NOT IN (
-                SELECT MAX(id) FROM findings
-                WHERE person_id IS NOT NULL
-                GROUP BY source_id, person_id
+            WITH assigned AS (
+                SELECT f.id, f.source_id, fa.subject_id
+                FROM findings f
+                JOIN finding_assignment fa ON fa.finding_id = f.id
+                WHERE fa.subject_id IS NOT NULL
             )
-            AND id NOT IN (SELECT finding_id FROM dismissed_findings)
+            SELECT id FROM assigned
+            WHERE id NOT IN (
+                SELECT MAX(id) FROM assigned GROUP BY source_id, subject_id
+            )
             """
         ).fetchall()
         subject_ids = [r[0] for r in subject_dupes]
 
-        # Duplicates by cluster: same cluster on same source (unassigned only)
+        # Duplicates by cluster: same cluster on same source, and the
+        # finding has no subject assignment (if it did, the subject-level
+        # dedup above already handles it).
         cluster_dupes = self.conn.execute(
             """
-            SELECT id FROM findings
-            WHERE cluster_id IS NOT NULL AND person_id IS NULL
-            AND id NOT IN (
-                SELECT MAX(id) FROM findings
-                WHERE cluster_id IS NOT NULL AND person_id IS NULL
-                GROUP BY source_id, cluster_id
+            WITH clustered_uncurated AS (
+                SELECT f.id, f.source_id, cf.cluster_id
+                FROM findings f
+                JOIN cluster_findings cf ON cf.finding_id = f.id
+                LEFT JOIN finding_assignment fa ON fa.finding_id = f.id
+                WHERE fa.finding_id IS NULL
             )
-            AND id NOT IN (SELECT finding_id FROM dismissed_findings)
+            SELECT id FROM clustered_uncurated
+            WHERE id NOT IN (
+                SELECT MAX(id) FROM clustered_uncurated GROUP BY source_id, cluster_id
+            )
             """
         ).fetchall()
         cluster_ids = [r[0] for r in cluster_dupes]
