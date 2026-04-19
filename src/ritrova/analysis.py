@@ -215,10 +215,12 @@ class AnalysisPipeline:
                     t0 = time.monotonic()
                     state = step.analyse(frame, state)
                     step_times[step.name] = step_times.get(step.name, 0.0) + time.monotonic() - t0
-            # Cache the frame image if new findings were produced on a video frame
+            # Cache the frame image if new findings were produced on a video frame.
+            # Frame 0 is valid for videos (first sampled frame); photos use source_type
+            # to opt out so the source file itself is rendered directly.
             if (
                 len(state.findings) > findings_before
-                and frame.frame_number > 0
+                and state.source_type == "video"
                 and frame.frame_number not in state.frame_images
             ):
                 state.frame_images[frame.frame_number] = frame.image
