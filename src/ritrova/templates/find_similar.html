@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Find similar — {{ subject.name }}{% endblock %}
+{% block title %}Show similar — {{ subject.name }}{% endblock %}
 {% block content %}
 {# All face IDs for selectAll — tuples lack named attrs so we build the array manually #}
 <div x-data="faceSelection()" x-init="selectAll([{% for fid, _ in candidates %}{{ fid }}{% if not loop.last %},{% endif %}{% endfor %}])">
@@ -14,7 +14,7 @@
         </svg>
       </a>
       <h1 class="text-2xl font-bold font-display text-gallery-text">
-        Find similar &mdash; {{ subject.name }}
+        Show similar &mdash; {{ subject.name }}
       </h1>
     </div>
   </div>

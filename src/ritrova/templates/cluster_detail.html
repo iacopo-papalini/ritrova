@@ -64,6 +64,17 @@
 
     <div class="flex-1"></div>
 
+    <!-- Mark entire cluster as an unknown {species} -->
+    {% set species_label = 'cat' if species == 'cat' else 'dog' if species == 'dog' else 'pet' if kind == 'pets' else 'person' %}
+    <form method="post" action="/api/clusters/{{ cluster_id }}/mark-stranger" class="m-0">
+      <button type="submit"
+              class="rounded-lg border border-gallery-border px-4 py-2 text-sm font-medium text-gallery-muted
+                     transition-colors hover:border-gallery-accent hover:text-gallery-accent cursor-pointer"
+              title="Files the cluster into the first matching subject in the Strangers circle (e.g. 'cani a caso', 'gatti a caso'), or creates Stranger #N if no bucket exists">
+        I don't know this {{ species_label }}
+      </button>
+    </form>
+
     <!-- Dismiss entire cluster -->
     <button @click="(await confirmDialog({title: 'Dismiss entire cluster?', message: 'All {{ total }} faces in this cluster will be marked as non-faces. This is permanent.', confirmLabel: 'Dismiss cluster', danger: true})) &&
                       fetch('/api/clusters/{{ cluster_id }}/dismiss', { method: 'POST' })

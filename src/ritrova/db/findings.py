@@ -121,3 +121,21 @@ class FindingMixin(_DBAccessor):
             (*params, *dim_params),
         ).fetchall()
         return [(r[0], np.frombuffer(r[1], dtype=np.float32)) for r in rows]
+
+    @_locked
+    def has_unclustered_findings(self, species: str = "human") -> bool:
+        """Cheap existence check mirroring get_unclustered_embeddings's filter.
+
+        Used by the subject-detail view to decide whether to render the
+        "Show similar unclustered" link — full similarity scan is too slow
+        to run per page-render, but a zero/non-zero gate is one row away.
+        """
+        clause, params = self.species_filter(species)
+        row = self.conn.execute(
+            f"SELECT 1 FROM findings "
+            f"WHERE person_id IS NULL AND cluster_id IS NULL AND {clause} "
+            f"AND id NOT IN (SELECT finding_id FROM dismissed_findings) "
+            f"LIMIT 1",
+            params,
+        ).fetchone()
+        return row is not None

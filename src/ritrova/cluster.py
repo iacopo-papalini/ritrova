@@ -292,6 +292,8 @@ def auto_assign(
 
     logger.info("Computing centroids for %d subjects...", len(subjects))
     subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
+    excluded = db.get_stranger_subject_ids()
+    subject_centroids = [sc for sc in subject_centroids if sc[0] not in excluded]
 
     if not subject_centroids:
         logger.info("No subjects with matching kind.")
@@ -453,8 +455,11 @@ def rank_subjects_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, st
 
     subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
     subjects_by_kind = {s.id: s.face_count for s in db.get_subjects_by_kind(kind)}
+    excluded = db.get_stranger_subject_ids()
     results = []
     for sid, name, s_centroid in subject_centroids:
+        if sid in excluded:
+            continue
         sim = round(cosine_similarity(centroid, s_centroid) * 100, 1)
         results.append((sid, name, subjects_by_kind.get(sid, 0), sim))
 
@@ -509,8 +514,14 @@ def suggest_merges(
     species = FaceDB.KIND_TO_SPECIES[kind]
     dim = EMBEDDING_DIMS.get(kind, 512)
     groups: list[tuple[str, int, list[int], np.ndarray]] = []
+    # Strangers-circle subjects average wildly different faces — their
+    # centroid is meaningless, so exclude them from the merge-suggestion
+    # matrix. They still show up in the Circles page and the subject list.
+    excluded = db.get_stranger_subject_ids()
 
     for subject in db.get_subjects_by_kind(kind):
+        if subject.id in excluded:
+            continue
         findings = db.get_subject_findings(subject.id, limit=500)
         compatible = [f for f in findings if len(f.embedding) == dim]
         if not compatible:

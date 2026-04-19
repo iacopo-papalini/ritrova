@@ -801,3 +801,80 @@ class TestPathResolution(TestCase):
         assert db_no_base.resolve_path("photo.jpg") == Path("photo.jpg")
         assert db_no_base.to_relative("/abs/photo.jpg") == "/abs/photo.jpg"
         db_no_base.close()
+
+
+class TestCircles(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_db(self, db: FaceDB) -> None:
+        self.db = db
+
+    def test_strangers_circle_autoseeded(self) -> None:
+        c = self.db.get_circle_by_name("Strangers")
+        assert c is not None
+        assert c.member_count == 0
+
+    def test_create_circle_idempotent(self) -> None:
+        cid1 = self.db.create_circle("family")
+        cid2 = self.db.create_circle("family")
+        assert cid1 == cid2
+
+    def test_create_circle_rejects_blank(self) -> None:
+        with pytest.raises(ValueError):
+            self.db.create_circle("   ")
+
+    def test_list_circles_includes_strangers(self) -> None:
+        self.db.create_circle("family")
+        names = [c.name for c in self.db.list_circles()]
+        assert "Strangers" in names
+        assert "family" in names
+
+    def test_membership_add_remove_roundtrip(self) -> None:
+        sid = self.db.create_subject("Alice")
+        cid = self.db.create_circle("family", description="nuclear only")
+        assert self.db.add_subject_to_circle(sid, cid) is True
+        # second add is a no-op
+        assert self.db.add_subject_to_circle(sid, cid) is False
+        circles = self.db.get_subject_circles(sid)
+        assert [c.name for c in circles] == ["family"]
+        assert self.db.remove_subject_from_circle(sid, cid) is True
+        assert self.db.get_subject_circles(sid) == []
+
+    def test_member_count_reflects_state(self) -> None:
+        cid = self.db.create_circle("friends")
+        self.db.add_subject_to_circle(self.db.create_subject("A"), cid)
+        self.db.add_subject_to_circle(self.db.create_subject("B"), cid)
+        assert self.db.get_circle(cid).member_count == 2
+
+    def test_delete_subject_cascades_to_memberships(self) -> None:
+        sid = self.db.create_subject("Alice")
+        cid = self.db.create_circle("family")
+        self.db.add_subject_to_circle(sid, cid)
+        self.db.delete_subject(sid)
+        assert self.db.get_circle(cid).member_count == 0
+
+    def test_delete_circle_cascades_to_memberships(self) -> None:
+        sid = self.db.create_subject("Alice")
+        cid = self.db.create_circle("acquaintances")
+        self.db.add_subject_to_circle(sid, cid)
+        self.db.delete_circle(cid)
+        assert self.db.get_subject_circles(sid) == []
+
+    def test_subjects_in_any_circle(self) -> None:
+        fam = self.db.create_circle("family")
+        str_c = self.db.get_circle_by_name("Strangers").id
+        a, b, c = (
+            self.db.create_subject("A"),
+            self.db.create_subject("B"),
+            self.db.create_subject("C"),
+        )
+        self.db.add_subject_to_circle(a, fam)
+        self.db.add_subject_to_circle(b, str_c)
+        assert self.db.subjects_in_any_circle([fam, str_c]) == {a, b}
+        assert self.db.subjects_in_any_circle([fam]) == {a}
+        assert self.db.subjects_in_any_circle([]) == set()
+        assert c not in self.db.subjects_in_any_circle([fam, str_c])
+
+    def test_rename_circle(self) -> None:
+        cid = self.db.create_circle("frineds")  # typo
+        self.db.rename_circle(cid, "friends")
+        assert self.db.get_circle(cid).name == "friends"

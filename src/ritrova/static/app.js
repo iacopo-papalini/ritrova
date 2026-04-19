@@ -373,6 +373,74 @@ document.addEventListener('alpine:init', () => {
     }
   }));
 
+  // --------------- Alpine: circle picker (typeahead) ---------------
+  // Shape-matches subjectPicker so partials/circle_picker.html can mirror
+  // partials/subject_picker.html without a parallel keyboard-nav rewrite.
+  //
+  // Usage: x-data="circlePicker({ excludeIds: [...], onSelect(circle) { ... } })"
+  let _circlesCache = null;
+
+  Alpine.data('circlePicker', (opts = {}) => ({
+    query: '',
+    items: [],
+    open: false,
+    loading: true,
+    hi: -1,
+    excludeIds: new Set(opts.excludeIds || []),
+
+    async init() {
+      if (!_circlesCache) {
+        const r = await fetch('/api/circles/all');
+        const data = await r.json();
+        _circlesCache = data.circles;
+      }
+      this.items = _circlesCache.filter(c => !this.excludeIds.has(c.id));
+      this.loading = false;
+    },
+
+    get filtered() {
+      const q = this.query.toLowerCase().trim();
+      if (!q) return this.items.slice(0, 10);
+      return this.items.filter(c => c.name.toLowerCase().includes(q)).slice(0, 10);
+    },
+
+    get _totalSlots() { return this.filtered.length; },
+
+    onArrowDown() {
+      if (!this.open) { this.open = true; this.hi = 0; return; }
+      if (this._totalSlots === 0) return;
+      this.hi = (this.hi + 1) % this._totalSlots;
+      this._scrollToHighlighted();
+    },
+
+    onArrowUp() {
+      if (!this.open || this._totalSlots === 0) return;
+      this.hi = (this.hi - 1 + this._totalSlots) % this._totalSlots;
+      this._scrollToHighlighted();
+    },
+
+    onEnter() {
+      if (!this.open || this.hi < 0 || this.hi >= this.filtered.length) return;
+      this.pick(this.filtered[this.hi]);
+    },
+
+    _scrollToHighlighted() {
+      this.$nextTick(() => {
+        const el = this.$refs.dropdown?.querySelector('[data-hi="true"]');
+        if (el) el.scrollIntoView({ block: 'nearest' });
+      });
+    },
+
+    pick(circle) {
+      this.hi = -1;
+      this.query = circle.name;
+      this.open = false;
+      if (opts.onSelect) opts.onSelect.call(this, circle);
+    },
+
+    invalidateCache() { _circlesCache = null; }
+  }));
+
   // --------------- Alpine: lightbox store ---------------
   // The lightbox unit is an *item* — either a finding (video frame or photo
   // crop source) or a source. Callers can open a single item or a list; with

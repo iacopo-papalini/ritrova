@@ -38,12 +38,14 @@
       </button>
     </form>
 
-    {# Find similar #}
+    {# Show similar — only if there are unclustered findings of this species to scan #}
+    {% if has_unclustered %}
     <a href="/{{ kind }}/{{ subject.id }}/find-similar"
        class="rounded-lg bg-gallery-accent px-4 py-2 text-sm font-medium text-gallery-bg
               transition-colors hover:bg-gallery-accent/80">
-      Find similar unclustered
+      Show similar unclustered
     </a>
+    {% endif %}
 
     {# Merge into another person #}
     <div class="w-56" x-data="subjectPicker({
@@ -80,8 +82,43 @@
                         .then(r => { if (r.redirected) location.href = r.url; else location.href = '/{{ kind }}'; })"
             class="rounded-lg border border-gallery-danger/30 px-4 py-2 text-sm font-medium text-gallery-danger
                    transition-colors hover:bg-gallery-danger/10 cursor-pointer">
-      Delete person
+      Delete {{ 'pet' if kind == 'pets' else 'person' }}
     </button>
+  </div>
+
+  {# ── Circles membership (FEAT-27) ─────────────────────────── #}
+  {% set member_ids = subject_circles|map(attribute='id')|list %}
+  <div class="mb-6 flex flex-wrap items-start gap-2">
+    <span class="text-xs text-gallery-muted uppercase tracking-wide self-center">Circles:</span>
+
+    {% for c in subject_circles %}
+    <span class="group inline-flex items-center gap-1 rounded-full bg-gallery-accent/10 border border-gallery-accent/30
+                 px-3 py-1 text-xs text-gallery-accent">
+      <a href="/circles/{{ c.id }}" class="hover:underline">{{ c.name }}</a>
+      <button type="button" title="Remove from {{ c.name }}"
+              @click="fetch('/api/subjects/{{ subject.id }}/circles/{{ c.id }}/remove', { method: 'POST' })
+                        .then(r => r.json())
+                        .then(data => { if (data.ok) $el.closest('span').remove(); })"
+              class="opacity-60 hover:opacity-100">
+        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" clip-rule="evenodd"
+                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"/>
+        </svg>
+      </button>
+    </span>
+    {% endfor %}
+
+    {# Typeahead picker — same UI pattern as the subject picker #}
+    <div class="w-56"
+         x-data="circlePicker({
+           excludeIds: {{ member_ids|tojson }},
+           async onSelect(circle) {
+             const r = await fetch(`/api/subjects/{{ subject.id }}/circles/${circle.id}/add`, { method: 'POST' });
+             if ((await r.json()).ok) { this.invalidateCache(); location.reload(); }
+           }
+         })">
+      {% include "partials/circle_picker.html" %}
+    </div>
   </div>
 
   {# ── Tabs ─────────────────────────────────────────────────── #}

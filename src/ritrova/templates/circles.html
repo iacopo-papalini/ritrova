@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Circles{% endblock %}
+{% block content %}
+
+<div class="mb-6 flex items-baseline justify-between">
+  <h1 class="font-display text-2xl font-bold tracking-tight text-gallery-text">
+    Circles
+    <span class="text-gallery-muted">({{ circles|length }})</span>
+  </h1>
+</div>
+
+<p class="text-gallery-muted text-sm mb-6">
+  Labelled groups for filtering views. A subject can belong to any number of circles.
+</p>
+
+{# ── Create a new circle ───────────────────────────── #}
+<form method="post" action="/api/circles/create"
+      class="mb-8 flex flex-wrap items-end gap-3 rounded-lg border border-gallery-border bg-gallery-card p-4">
+  <div class="flex-1 min-w-[180px]">
+    <label for="new-circle-name" class="block text-xs text-gallery-muted mb-1">Name</label>
+    <input id="new-circle-name" name="name" required maxlength="60" autocomplete="off"
+           placeholder="e.g. family, acquaintances, strangers"
+           class="w-full rounded-md border border-gallery-border bg-gallery-bg px-3 py-1.5 text-sm text-gallery-text
+                  outline-none transition-all focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+  </div>
+  <div class="flex-[2] min-w-[240px]">
+    <label for="new-circle-description" class="block text-xs text-gallery-muted mb-1">Description (optional)</label>
+    <input id="new-circle-description" name="description" maxlength="200" autocomplete="off"
+           placeholder="short note to remind yourself what this circle is for"
+           class="w-full rounded-md border border-gallery-border bg-gallery-bg px-3 py-1.5 text-sm text-gallery-text
+                  outline-none transition-all focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+  </div>
+  <button type="submit"
+          class="rounded-lg bg-gallery-accent px-4 py-2 text-sm font-medium text-gallery-bg
+                 transition-colors hover:bg-gallery-accent/90 cursor-pointer">
+    Create circle
+  </button>
+</form>
+
+{% if not circles %}
+<p class="rounded-lg border border-gallery-border bg-gallery-card px-6 py-10 text-center text-gallery-muted">
+  No circles yet. Create one above.
+</p>
+{% else %}
+<div class="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+  {% for c in circles %}
+  <div class="group relative flex items-start justify-between rounded-lg border border-gallery-border
+              bg-gallery-card p-4 transition-colors hover:border-gallery-accent/50">
+    <div class="min-w-0 flex-1">
+      <a href="/circles/{{ c.id }}"
+         class="font-medium text-gallery-text hover:text-gallery-accent transition-colors">
+        {{ c.name }}
+      </a>
+      <p class="text-xs text-gallery-muted mt-1">
+        {{ c.member_count }} member{{ '' if c.member_count == 1 else 's' }}
+      </p>
+      {% if c.description %}
+      <p class="text-sm text-gallery-muted mt-2 line-clamp-2">{{ c.description }}</p>
+      {% endif %}
+    </div>
+
+    {# Delete, gated by confirmDialog — cascades to subject_circles via FK #}
+    <button type="button"
+            data-circle-id="{{ c.id }}"
+            data-circle-name="{{ c.name }}"
+            data-member-count="{{ c.member_count }}"
+            @click="
+              const el = $el;
+              const members = parseInt(el.dataset.memberCount, 10);
+              const noun = members === 1 ? 'membership' : 'memberships';
+              const ok = await confirmDialog({
+                title: `Delete circle ${el.dataset.circleName}?`,
+                message: `${members} ${noun} will be removed. Subjects themselves stay. Undoable for 60s.`,
+                confirmLabel: 'Delete',
+                danger: true
+              });
+              if (!ok) return;
+              const r = await fetch(`/api/circles/${el.dataset.circleId}/delete`,
+                                    { method: 'POST', headers: { 'HX-Request': 'true' } });
+              const data = await r.json();
+              if (data.ok) location.reload();"
+            title="Delete"
+            class="ml-3 opacity-0 group-hover:opacity-100 transition-opacity
+                   rounded-md p-1.5 text-gallery-muted hover:bg-gallery-danger/20 hover:text-gallery-danger">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/>
+      </svg>
+    </button>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}

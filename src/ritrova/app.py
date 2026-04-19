@@ -32,10 +32,13 @@ from .services import (
     compute_singleton_hints,
 )
 from .undo import (
+    AddSubjectToCirclePayload,
     DeleteSubjectPayload,
     DismissPayload,
     FindingFieldsSnapshot,
     FindingPersonSnapshot,
+    RecreateCirclePayload,
+    RemoveSubjectFromCirclePayload,
     RestoreClusterPayload,
     RestorePersonIdsPayload,
     ResurrectSubjectPayload,
@@ -152,6 +155,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "total": total,
                 "ranked_subjects": ranked,
                 "kind": kind,
+                "species": species,
             },
             request=request,
         )
@@ -631,6 +635,61 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         # page (same pattern as assign_cluster_to_existing's non-HX branch).
         return RedirectResponse(_next_similar_cluster(subject_id, cluster_id), status_code=303)
 
+    @app.post("/api/clusters/{cluster_id}/mark-stranger")
+    def mark_cluster_stranger(cluster_id: int) -> RedirectResponse:
+        """File a cluster into the user's Strangers bucket.
+
+        If the Strangers circle already holds a subject whose findings are
+        mostly this cluster's species (e.g. a user-created ``cani a caso``
+        for dog clusters), route the cluster into that subject — no new
+        ``Stranger #N`` gets born. Otherwise create ``Stranger #N`` and
+        enroll it in the Strangers circle, same as before.
+        """
+        findings = db.get_cluster_findings(cluster_id, limit=1)
+        species = findings[0].species if findings else "human"
+        subject_kind = _subject_kind_for_species(species)
+        strangers = db.get_circle_by_name("Strangers")
+
+        pending_ids = db.get_unassigned_cluster_finding_ids(cluster_id)
+        bucket_id = (
+            db.find_stranger_bucket(strangers.id, species) if strangers is not None else None
+        )
+        if bucket_id is not None:
+            # Reuse existing catch-all subject; don't create or tag again.
+            db.assign_cluster_to_subject(cluster_id, bucket_id)
+            bucket = db.get_subject(bucket_id)
+            bucket_name = bucket.name if bucket else f"subject #{bucket_id}"
+            undo_store.put(
+                description=_describe_cluster_assign(bucket_name, len(pending_ids)),
+                payload=RestorePersonIdsPayload(
+                    snapshots=[
+                        FindingPersonSnapshot(finding_id=fid, person_id=None) for fid in pending_ids
+                    ]
+                ),
+            )
+            return RedirectResponse(_next_similar_cluster(bucket_id, cluster_id), status_code=303)
+
+        # Fall back: mint a new `Stranger #N` for this kind.
+        row = db.conn.execute(
+            """
+            SELECT COALESCE(
+              MAX(CAST(SUBSTR(name, 11) AS INTEGER)), 0
+            ) FROM subjects
+            WHERE kind = ? AND name LIKE 'Stranger #%'
+            """,
+            (subject_kind,),
+        ).fetchone()
+        name = f"Stranger #{int(row[0] or 0) + 1}"
+        subject_id = db.create_subject(name, kind=subject_kind)
+        db.assign_cluster_to_subject(cluster_id, subject_id)
+        if strangers is not None:
+            db.add_subject_to_circle(subject_id, strangers.id)
+        undo_store.put(
+            description=_describe_cluster_name(name, len(pending_ids)),
+            payload=DeleteSubjectPayload(subject_id=subject_id),
+        )
+        return RedirectResponse(_next_similar_cluster(subject_id, cluster_id), status_code=303)
+
     @app.post("/api/clusters/{cluster_id}/assign", response_model=None)
     def assign_cluster_to_existing(
         request: Request,
@@ -961,6 +1020,106 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         data = json.loads(db.export_json())
         return JSONResponse(content=data)
 
+    # ── Circles (FEAT-27): admin + membership mutations ──────────────────
+
+    @app.get("/circles", response_class=HTMLResponse)
+    def circles_index(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            name="circles.html",
+            context={"circles": db.list_circles()},
+            request=request,
+        )
+
+    @app.get("/circles/{circle_id}", response_class=HTMLResponse)
+    def circle_detail(request: Request, circle_id: int) -> HTMLResponse:
+        circle = db.get_circle(circle_id)
+        if circle is None:
+            raise HTTPException(404, "Circle not found")
+        members = db.get_circle_members(circle_id)
+        return templates.TemplateResponse(
+            name="circle_detail.html",
+            context={"circle": circle, "members": members},
+            request=request,
+        )
+
+    @app.post("/api/circles/create")
+    def create_circle_api(
+        name: str = Form(...),
+        description: str = Form(""),
+    ) -> RedirectResponse:
+        circle_id = db.create_circle(name, description=description.strip() or None)
+        # No undo for create — delete is the obvious reverse and user has that button.
+        return RedirectResponse(f"/circles/{circle_id}", status_code=303)
+
+    @app.post("/api/circles/{circle_id}/rename")
+    def rename_circle_api(circle_id: int, name: str = Form(...)) -> RedirectResponse:
+        db.rename_circle(circle_id, name)
+        return RedirectResponse(f"/circles/{circle_id}", status_code=303)
+
+    @app.post("/api/circles/{circle_id}/delete", response_model=None)
+    def delete_circle_api(request: Request, circle_id: int) -> JSONResponse | RedirectResponse:
+        circle = db.get_circle(circle_id)
+        if circle is None:
+            raise HTTPException(404, "Circle not found")
+        member_ids = db.get_circle_subject_ids(circle_id)
+        db.delete_circle(circle_id)
+        token = undo_store.put(
+            description=f"Deleted circle '{circle.name}' ({len(member_ids)} members)",
+            payload=RecreateCirclePayload(
+                name=circle.name,
+                description=circle.description,
+                member_subject_ids=member_ids,
+            ),
+        )
+        if request.headers.get("HX-Request"):
+            return JSONResponse({"ok": True, "undo_token": token})
+        return RedirectResponse("/circles", status_code=303)
+
+    @app.post("/api/subjects/{subject_id}/circles/{circle_id}/add")
+    def add_subject_to_circle_api(
+        request: Request, subject_id: int, circle_id: int
+    ) -> JSONResponse:
+        subject = db.get_subject(subject_id)
+        circle = db.get_circle(circle_id)
+        if subject is None or circle is None:
+            raise HTTPException(404)
+        added = db.add_subject_to_circle(subject_id, circle_id)
+        if not added:
+            return JSONResponse({"ok": True, "already": True})
+        token = undo_store.put(
+            description=f"Added {subject.name} to {circle.name}",
+            payload=RemoveSubjectFromCirclePayload(subject_id=subject_id, circle_id=circle_id),
+        )
+        return JSONResponse({"ok": True, "undo_token": token})
+
+    @app.post("/api/subjects/{subject_id}/circles/{circle_id}/remove")
+    def remove_subject_from_circle_api(
+        request: Request, subject_id: int, circle_id: int
+    ) -> JSONResponse:
+        subject = db.get_subject(subject_id)
+        circle = db.get_circle(circle_id)
+        if subject is None or circle is None:
+            raise HTTPException(404)
+        removed = db.remove_subject_from_circle(subject_id, circle_id)
+        if not removed:
+            return JSONResponse({"ok": True, "already": True})
+        token = undo_store.put(
+            description=f"Removed {subject.name} from {circle.name}",
+            payload=AddSubjectToCirclePayload(subject_id=subject_id, circle_id=circle_id),
+        )
+        return JSONResponse({"ok": True, "undo_token": token})
+
+    @app.get("/api/circles/all")
+    def list_circles_api() -> JSONResponse:
+        circles = db.list_circles()
+        return JSONResponse(
+            {
+                "circles": [
+                    {"id": c.id, "name": c.name, "member_count": c.member_count} for c in circles
+                ]
+            }
+        )
+
     # ── Catch-all /{kind}/... routes (must be after all /api/ and specific routes) ──
 
     @app.get("/{kind}/clusters", response_class=HTMLResponse)
@@ -1075,6 +1234,9 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             [(entry, entry[0].file_path) for entry in videos], key="videos"
         )
         all_subjects = db.get_subjects()
+        subject_circles = db.get_subject_circles(subject_id)
+        all_circles = db.list_circles()
+        has_unclustered = db.has_unclustered_findings(species=_species_for_kind(kind))
         return templates.TemplateResponse(
             name="subject_detail.html",
             context={
@@ -1086,20 +1248,39 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
                 "videos": videos,
                 "video_groups": video_groups,
                 "all_subjects": all_subjects,
+                "subject_circles": subject_circles,
+                "all_circles": all_circles,
+                "has_unclustered": has_unclustered,
                 "kind": kind,
             },
             request=request,
         )
 
     @app.get("/{kind}", response_class=HTMLResponse)
-    def subjects_page(request: Request, kind: KindType) -> HTMLResponse:
+    def subjects_page(
+        request: Request, kind: KindType, hide_strangers: bool = True
+    ) -> HTMLResponse:
         species = _species_for_kind(kind)
         subject_kind = _subject_kind_for_species(species)
         subjects = db.get_subjects_by_kind(subject_kind)
+        excluded_count = 0
+        if hide_strangers:
+            strangers = db.get_circle_by_name("Strangers")
+            if strangers is not None:
+                excluded_ids = db.subjects_in_any_circle([strangers.id])
+                before = len(subjects)
+                subjects = [s for s in subjects if s.id not in excluded_ids]
+                excluded_count = before - len(subjects)
         avatars = db.get_random_avatars([s.id for s in subjects])
         return templates.TemplateResponse(
             name="subjects.html",
-            context={"subjects": subjects, "kind": kind, "avatars": avatars},
+            context={
+                "subjects": subjects,
+                "kind": kind,
+                "avatars": avatars,
+                "hide_strangers": hide_strangers,
+                "excluded_count": excluded_count,
+            },
             request=request,
         )
 

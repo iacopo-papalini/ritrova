@@ -143,6 +143,57 @@ class ResurrectSubjectPayload(UndoPayload):
         db.restore_person_ids([(fid, self.subject.id) for fid in self.finding_ids])
 
 
+@dataclass
+class AddSubjectToCirclePayload(UndoPayload):
+    """Undo a circle membership removal: re-add the subject."""
+
+    subject_id: int
+    circle_id: int
+
+    def undo(self, db: FaceDB) -> None:
+        db.add_subject_to_circle(self.subject_id, self.circle_id)
+
+
+@dataclass
+class RemoveSubjectFromCirclePayload(UndoPayload):
+    """Undo a circle membership add: remove the subject again."""
+
+    subject_id: int
+    circle_id: int
+
+    def undo(self, db: FaceDB) -> None:
+        db.remove_subject_from_circle(self.subject_id, self.circle_id)
+
+
+@dataclass
+class DeleteCirclePayload(UndoPayload):
+    """Undo circle creation: delete the circle (cascades to memberships)."""
+
+    circle_id: int
+
+    def undo(self, db: FaceDB) -> None:
+        db.delete_circle(self.circle_id)
+
+
+@dataclass
+class RecreateCirclePayload(UndoPayload):
+    """Undo circle deletion: recreate the circle and all its memberships.
+
+    The new circle gets a fresh id (old id is gone); the subject_circles
+    rows are re-inserted for every subject that was a member. Subjects are
+    unchanged — they never got deleted, only the membership rows did.
+    """
+
+    name: str
+    description: str | None
+    member_subject_ids: list[int]
+
+    def undo(self, db: FaceDB) -> None:
+        circle_id = db.create_circle(self.name, description=self.description)
+        for sid in self.member_subject_ids:
+            db.add_subject_to_circle(sid, circle_id)
+
+
 # ── Store ────────────────────────────────────────────────────────────
 
 

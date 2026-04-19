@@ -1,0 +1,49 @@
+{# Reusable circle typeahead picker.
+   Must be inside an x-data="circlePicker({...})" scope.
+   Keyboard: Arrow Down/Up to navigate, Enter to select, Escape to close. #}
+
+<div class="relative" @click.outside="open = false">
+  <input type="text"
+         x-model="query"
+         @focus="open = true"
+         @input="open = true; hi = 0"
+         @keydown.escape="open = false"
+         @keydown.arrow-down.prevent="onArrowDown()"
+         @keydown.arrow-up.prevent="onArrowUp()"
+         @keydown.enter.prevent="onEnter()"
+         placeholder="Add to circle..."
+         class="w-full rounded-lg border border-gallery-border bg-gallery-card px-3 py-2 text-sm text-gallery-text
+                placeholder-gallery-muted outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+
+  {# Loading indicator #}
+  <div x-show="open && loading" x-cloak
+       class="absolute z-50 mt-1 w-full rounded-lg border border-gallery-border bg-gallery-card shadow-xl px-3 py-2 text-sm text-gallery-muted">
+    Loading...
+  </div>
+
+  {# Dropdown results #}
+  <div x-show="open && !loading && filtered.length > 0"
+       x-cloak x-ref="dropdown"
+       class="absolute z-50 mt-1 w-full rounded-lg border border-gallery-border bg-gallery-card shadow-xl
+              max-h-60 overflow-y-auto">
+    <template x-for="(c, idx) in filtered" :key="c.id">
+      <button @click="pick(c)"
+              @mouseenter="hi = idx"
+              :data-hi="hi === idx"
+              class="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gallery-text
+                     transition-colors cursor-pointer"
+              :class="hi === idx ? 'bg-gallery-accent/15 text-gallery-accent' : 'hover:bg-gallery-accent/10'">
+        <span class="flex-1 truncate" x-text="c.name"></span>
+        <span class="text-xs text-gallery-muted" x-text="'(' + c.member_count + ')'"></span>
+      </button>
+    </template>
+  </div>
+
+  {# Empty-state hint: picker is open, query is non-empty, nothing matches #}
+  <div x-show="open && !loading && query.trim() && filtered.length === 0"
+       x-cloak
+       class="absolute z-50 mt-1 w-full rounded-lg border border-gallery-border bg-gallery-card shadow-xl
+              px-3 py-2 text-sm text-gallery-muted">
+    No matching circles. Create one on the <a href="/circles" class="text-gallery-accent underline">Circles</a> page.
+  </div>
+</div>

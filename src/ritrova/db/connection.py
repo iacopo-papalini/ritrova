@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ._base import _locked
+from .circles import CirclesMixin
 from .clusters import ClusterMixin
 from .curation import CurationMixin
 from .descriptions import DescriptionMixin
@@ -90,6 +91,7 @@ class FaceDB(
     ClusterMixin,
     CurationMixin,
     DescriptionMixin,
+    CirclesMixin,
     UndoMixin,
     MaintenanceMixin,
 ):
@@ -195,12 +197,41 @@ class FaceDB(
                 retired_at      TEXT,
                 notes           TEXT
             );
+
+            -- FEAT-27: circles as a filtering metadata axis on subjects.
+            CREATE TABLE IF NOT EXISTS circles (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL UNIQUE,
+                description TEXT,
+                created_at  TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS subject_circles (
+                subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+                circle_id  INTEGER NOT NULL REFERENCES circles(id)  ON DELETE CASCADE,
+                added_at   TEXT NOT NULL,
+                PRIMARY KEY (subject_id, circle_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_subject_circles_circle
+                ON subject_circles(circle_id);
         """)
         self.conn.commit()
 
         self._backfill_finding_scan_ids()
         self._enforce_finding_scan_id_not_null()
         self._sync_scan_types()
+        self._ensure_strangers_circle()
+
+    def _ensure_strangers_circle(self) -> None:
+        """Seed the 'Strangers' circle so mark-stranger has somewhere to file subjects."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO circles (name, description, created_at) VALUES (?, ?, ?)",
+            (
+                "Strangers",
+                "Auto-created faces the user explicitly marked as unknown.",
+                self._now(),
+            ),
+        )
+        self.conn.commit()
 
     def _sync_scan_types(self) -> None:
         """INSERT OR REPLACE the known scan_types entries.

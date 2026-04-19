@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ circle.name }} — Circle{% endblock %}
+{% block content %}
+
+<div class="mb-6">
+  <div class="flex items-center gap-3">
+    <a href="/circles" class="text-gallery-muted hover:text-gallery-text transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+      </svg>
+    </a>
+
+    {# Rename inline — double-click to edit. Outer quotes are single so the
+       tojson'd name (which contains double quotes) can nest without clashing. #}
+    <h1 x-data='{ editing: false, name: {{ circle.name|tojson }} }'
+        class="flex items-center gap-2 font-display text-2xl font-bold tracking-tight text-gallery-text">
+      <span x-show="!editing" @dblclick="editing = true" x-text="name"
+            class="cursor-pointer" title="Double-click to rename"></span>
+      <form x-show="editing" x-cloak method="post" action="/api/circles/{{ circle.id }}/rename"
+            class="flex items-center gap-2" @keydown.escape="editing = false">
+        <input name="name" :value="name" required maxlength="60" autocomplete="off"
+               class="rounded-md border border-gallery-border bg-gallery-card px-2 py-1 text-xl
+                      outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+        <button type="submit" class="text-sm text-gallery-accent hover:underline">save</button>
+        <button type="button" @click="editing = false" class="text-sm text-gallery-muted hover:text-gallery-text">cancel</button>
+      </form>
+    </h1>
+
+    <span class="text-gallery-muted text-sm">
+      ({{ circle.member_count }} member{{ '' if circle.member_count == 1 else 's' }})
+    </span>
+  </div>
+  {% if circle.description %}
+  <p class="text-gallery-muted text-sm mt-2 ml-8">{{ circle.description }}</p>
+  {% endif %}
+</div>
+
+{% if not members %}
+<p class="rounded-lg border border-gallery-border bg-gallery-card px-6 py-10 text-center text-gallery-muted">
+  This circle has no members yet. Add subjects from their detail pages.
+</p>
+{% else %}
+<ul class="divide-y divide-gallery-border rounded-lg border border-gallery-border bg-gallery-card">
+  {% for sid, name, kind in members %}
+  <li class="group flex items-center justify-between px-4 py-3 hover:bg-gallery-bg/40">
+    <a href="/{{ 'pets' if kind == 'pet' else 'people' }}/{{ sid }}"
+       class="flex items-center gap-3 flex-1 min-w-0 text-gallery-text hover:text-gallery-accent">
+      <span class="text-xs uppercase tracking-wide text-gallery-muted w-8">{{ kind }}</span>
+      <span class="truncate">{{ name }}</span>
+    </a>
+    <button type="button" title="Remove from circle"
+            @click="fetch('/api/subjects/{{ sid }}/circles/{{ circle.id }}/remove', { method: 'POST' })
+                      .then(r => r.json())
+                      .then(data => { if (data.ok) $el.closest('li').remove(); })"
+            class="opacity-0 group-hover:opacity-100 transition-opacity
+                   rounded-md p-1.5 text-gallery-muted hover:bg-gallery-danger/20 hover:text-gallery-danger">
+      <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+        <path fill-rule="evenodd" clip-rule="evenodd"
+              d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"/>
+      </svg>
+    </button>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% endblock %}
