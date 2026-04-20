@@ -1081,6 +1081,47 @@ class TestFindingAssignmentMigration(TestCase):
         db.close()
 
 
+class TestFindingCuration(TestCase):
+    """``Finding.curation`` reifies the (subject_id, exclusion_reason) XOR."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, db: FaceDB) -> None:
+        self.db = db
+
+    def test_uncurated_when_both_none(self) -> None:
+        from ritrova.db.models import Uncurated
+
+        _, fid = _add_source_with_finding(self.db, path="/a.jpg")
+        finding = self.db.get_finding(fid)
+        assert finding is not None
+        assert finding.curation == Uncurated()
+
+    def test_assigned_to_when_subject_set(self) -> None:
+        from ritrova.db.models import AssignedTo
+
+        sid = self.db.create_subject("Alice")
+        _, fid = _add_source_with_finding(self.db, path="/a.jpg")
+        self.db.assign_finding_to_subject(fid, sid)
+        finding = self.db.get_finding(fid)
+        assert finding is not None
+        assert finding.curation == AssignedTo(subject_id=sid)
+
+    def test_excluded_when_exclusion_reason_set(self) -> None:
+        from ritrova.db.models import Excluded
+
+        _, fid = _add_source_with_finding(self.db, path="/a.jpg")
+        self.db.set_exclusions([fid], "stranger")
+        finding = self.db.get_finding(fid)
+        assert finding is not None
+        assert finding.curation == Excluded(reason="stranger")
+
+        # Flip the same finding to not_a_face via the dismiss path.
+        self.db.dismiss_findings([fid])
+        finding = self.db.get_finding(fid)
+        assert finding is not None
+        assert finding.curation == Excluded(reason="not_a_face")
+
+
 class TestFindingAssignmentConstraints(TestCase):
     """XOR CHECK + enum CHECK on finding_assignment."""
 
