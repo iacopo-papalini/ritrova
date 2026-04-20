@@ -29,7 +29,6 @@ from .routers import (
     clusters,
     findings,
     images,
-    legacy_redirects,
     pages,
     subjects,
     together,
@@ -66,8 +65,5 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     app.include_router(together.router)
     app.include_router(undo.router)
     app.include_router(pages.router)
-    # Legacy redirects go last so they don't shadow the canonical /{kind}/...
-    # pages; they are the long-tail safety net for old bookmarks.
-    app.include_router(legacy_redirects.router)
 
     return app

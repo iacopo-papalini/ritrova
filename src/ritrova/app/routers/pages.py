@@ -4,7 +4,7 @@ Included **last** in ``create_app`` — ``/{kind}/...`` here would shadow
 specific ``/api/...`` endpoints (``CLAUDE.md:16`` + route-ordering test).
 ``/favicon.ico``, ``/api/export``, ``/api/singletons/faces-html`` are
 grab-bag endpoints kept here rather than forced into an aggregate router
-of their own. Legacy 301 redirects live in ``legacy_redirects.py``.
+of their own.
 """
 
 from __future__ import annotations
