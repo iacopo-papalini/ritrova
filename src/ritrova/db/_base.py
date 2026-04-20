@@ -71,6 +71,9 @@ class _DBAccessor:
     def _species_for_kind(self, kind: str) -> str:
         raise NotImplementedError
 
+    def _kind_for_species(self, species: str) -> str:
+        raise NotImplementedError
+
     def _is_species_kind_compatible(self, finding_species: str, subject_kind: str) -> bool:
         raise NotImplementedError
 

@@ -32,6 +32,15 @@ class SubjectMixin(_DBAccessor):
         assert cur.lastrowid is not None
         return cur.lastrowid
 
+    def create_subject_for_species(self, name: str, species: str) -> int:
+        """Species-keyed wrapper around ``create_subject``.
+
+        HTTP code carries finding ``species`` (a DB→HTTP crossing value) and
+        has no business computing the singular ``subject.kind`` itself —
+        this helper does the translation inside the DB layer.
+        """
+        return self.create_subject(name, kind=self._kind_for_species(species))
+
     @_locked
     def get_subject(self, subject_id: int) -> Subject | None:
         row = self.conn.execute(
@@ -79,6 +88,14 @@ class SubjectMixin(_DBAccessor):
             Subject(id=r["id"], name=r["name"], kind=r["kind"], face_count=r["face_count"])
             for r in rows
         ]
+
+    def get_subjects_by_species(self, species: str) -> list[Subject]:
+        """Species-keyed wrapper around ``get_subjects_by_kind``.
+
+        HTTP code speaks species (a DB→HTTP crossing value) so the
+        singular subject-kind translation stays inside the DB layer.
+        """
+        return self.get_subjects_by_kind(self._kind_for_species(species))
 
     @_locked
     def get_subject_centroids(

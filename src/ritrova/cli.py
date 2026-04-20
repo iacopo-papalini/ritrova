@@ -873,12 +873,13 @@ def cluster(
             print(f"\n── auto-merge {kind} skipped (threshold {t:.0f}%) ──")
             continue
         print(f"\n── auto-merge {kind} (≥ {t:.0f}%) ──")
+        species = FaceDB.KIND_TO_SPECIES[kind]
         total_merged = 0
         total_moved = 0
         iteration = 0
         max_iterations = 20  # safety cap — convergence is typically 1-3 passes
         while iteration < max_iterations:
-            result = auto_merge_clusters(db, min_similarity=t / 100, kind=kind)
+            result = auto_merge_clusters(db, min_similarity=t / 100, species=species)
             iteration += 1
             print(
                 f"  pass {iteration}: merged {result['merged']} pairs, "
@@ -924,7 +925,8 @@ def auto_merge(ctx: click.Context, min_similarity: float, kind: str) -> None:
     from .db import FaceDB
 
     db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
-    result = auto_merge_clusters(db, min_similarity=min_similarity / 100, kind=kind)
+    species = FaceDB.KIND_TO_SPECIES[kind]
+    result = auto_merge_clusters(db, min_similarity=min_similarity / 100, species=species)
 
     print(
         f"\nMerged {result['merged']} cluster pairs "

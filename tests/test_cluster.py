@@ -172,7 +172,7 @@ class TestSuggestMerges(TestCase):
         fid4 = _add_finding(self.db, "/b2.jpg", seed=1, species="dog")
         self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
 
-        person_suggestions = suggest_merges(self.db, min_similarity=50.0, kind="person")
+        person_suggestions = suggest_merges(self.db, min_similarity=50.0, species="human")
         # Only cluster 10 is human, so no pairs
         assert len(person_suggestions) == 0
 

@@ -17,7 +17,6 @@ from ..helpers import (
     describe_subject_delete,
     describe_subject_merge,
     group_by_month,
-    kind_for_subject,
 )
 
 router = APIRouter()
@@ -91,7 +90,9 @@ def rename_subject(subject_id: int, name: str = Form(...)) -> RedirectResponse:
     subject = db.get_subject(subject_id)
     if not subject:
         raise HTTPException(404, "Subject not found")
-    kind = kind_for_subject(subject.kind)
+    # DB→URL boundary: singular subject.kind ("person"/"pet") ->
+    # plural URL kind ("people"/"pets"). Inlined per ADR-012 M0.5.
+    kind = "pets" if subject.kind == "pet" else "people"
     db.rename_subject(subject_id, name)
     return RedirectResponse(f"/{kind}/{subject_id}", status_code=303)
 
@@ -115,7 +116,8 @@ def merge_subjects(source_id: int = Form(...), target_id: int = Form(...)) -> Re
     source_snapshot = SubjectSnapshot(
         id=source_row[0], name=source_row[1], kind=source_row[2], created_at=source_row[3]
     )
-    kind = kind_for_subject(target.kind)
+    # DB→URL boundary (see rename_subject above).
+    kind = "pets" if target.kind == "pet" else "people"
     db.merge_subjects(source_id, target_id)
     undo_store.put(
         description=describe_subject_merge(source_snapshot.name, target.name, len(moved_ids)),
@@ -138,7 +140,8 @@ def delete_subject(subject_id: int) -> RedirectResponse:
     assert row is not None  # get_subject hit means the row exists
     finding_ids = db.get_subject_finding_ids(subject_id)
     snapshot = SubjectSnapshot(id=row[0], name=row[1], kind=row[2], created_at=row[3])
-    kind = kind_for_subject(subject.kind)
+    # DB→URL boundary (see rename_subject above).
+    kind = "pets" if subject.kind == "pet" else "people"
     db.delete_subject(subject_id)
     undo_store.put(
         description=describe_subject_delete(snapshot.name, len(finding_ids)),

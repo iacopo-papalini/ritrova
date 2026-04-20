@@ -65,6 +65,16 @@ class PathMixin(_DBAccessor):
         """Map subject kind to the finding species filter value."""
         return self.KIND_TO_SPECIES[kind]
 
+    def _kind_for_species(self, species: str) -> str:
+        """Map a finding species to the matching subject kind (DB-internal).
+
+        Returns singular subject-kind ("person" / "pet"). Callers in the
+        domain layer (cluster, services, DB mixins) may use this freely;
+        HTTP code must not — it keeps the plural URL kind / species
+        vocabulary strictly separate; see ADR-012 M0.5.
+        """
+        return "pet" if species in self.PET_SPECIES or species == "pet" else "person"
+
     def _is_species_kind_compatible(self, finding_species: str, subject_kind: str) -> bool:
         """Check if a finding's species is compatible with a subject's kind."""
         if subject_kind == "person":

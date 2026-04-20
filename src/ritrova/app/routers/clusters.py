@@ -28,7 +28,6 @@ from ..helpers import (
     describe_cluster_merge,
     describe_cluster_name,
     kind_for_species,
-    subject_kind_for_species,
     undo_hx_trigger,
 )
 
@@ -46,8 +45,7 @@ def _next_similar_cluster(subject_id: int, cluster_id: int) -> str:
     kind = kind_for_species(species)
     fallback = f"/{kind}/clusters"
 
-    subject_kind = subject_kind_for_species(species)
-    next_cluster = find_similar_cluster(db, subject_id, kind=subject_kind)
+    next_cluster = find_similar_cluster(db, subject_id, species=species)
     if next_cluster:
         return f"/clusters/{next_cluster}?suggested_person={subject_id}"
     return fallback
@@ -75,8 +73,7 @@ def merge_suggestions_api(
     species: str = "human",
 ) -> JSONResponse:
     db = get_db()
-    kind = subject_kind_for_species(species)
-    suggestions = suggest_merges(db, min_similarity=min_sim, kind=kind)
+    suggestions = suggest_merges(db, min_similarity=min_sim, species=species)
     subjects_map = {s.id: s.name for s in db.get_subjects()}
     page = suggestions[offset : offset + limit]
     return JSONResponse(
@@ -111,8 +108,7 @@ def merge_suggestions_html(
 ) -> HTMLResponse:
     db = get_db()
     templates = get_templates()
-    kind = subject_kind_for_species(species)
-    suggestions = suggest_merges(db, min_similarity=min_sim, kind=kind)
+    suggestions = suggest_merges(db, min_similarity=min_sim, species=species)
     subjects_map = {s.id: s.name for s in db.get_subjects()}
     total = len(suggestions)
     page = suggestions[offset : offset + limit]
@@ -212,14 +208,15 @@ def cluster_faces_html(
 def name_cluster(cluster_id: int, name: str = Form(...)) -> RedirectResponse:
     db = get_db()
     undo_store = get_undo_store()
-    # Determine subject kind from cluster's finding species
+    # Derive species from the cluster's findings; the DB knows how to turn
+    # it into a subject (create_subject_for_species is the single boundary).
     findings = db.get_cluster_findings(cluster_id, limit=1)
-    subject_kind = subject_kind_for_species(findings[0].species) if findings else "person"
+    species = findings[0].species if findings else "human"
     # Snapshot exactly which findings assign_cluster_to_subject will touch
-    # (WHERE person_id IS NULL) so undo can NULL precisely those — not any
+    # (WHERE subject_id IS NULL) so undo can NULL precisely those — not any
     # pre-existing assignments in the cluster.
     pending_ids = db.get_unassigned_cluster_finding_ids(cluster_id)
-    subject_id = db.create_subject(name, kind=subject_kind)
+    subject_id = db.create_subject_for_species(name, species=species)
     db.assign_cluster_to_subject(cluster_id, subject_id)
     undo_store.put(
         description=describe_cluster_name(name, len(pending_ids)),

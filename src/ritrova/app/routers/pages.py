@@ -25,9 +25,7 @@ from ..helpers import (
     KindType,
     group_by_month,
     kind_for_species,
-    kind_for_subject,
     species_for_kind,
-    subject_kind_for_species,
 )
 
 router = APIRouter()
@@ -100,9 +98,8 @@ def singletons_faces_html(
     request: Request, species: str = "human", offset: int = 0, limit: int = 200
 ) -> HTMLResponse:
     db = get_db()
-    kind = subject_kind_for_species(species)
     findings = db.get_singleton_findings(species=species, limit=limit, offset=offset)
-    face_hints = compute_singleton_hints(db, findings, kind)
+    face_hints = compute_singleton_hints(db, findings, species)
     total = db.get_singleton_count(species=species)
     return get_templates().TemplateResponse(
         name="partials/singleton_grid.html",
@@ -170,7 +167,11 @@ def photo_page(request: Request, photo_id: int) -> HTMLResponse:
 def search_page(request: Request, q: str = "") -> HTMLResponse:
     db = get_db()
     results = db.search_subjects(q) if q else []
-    result_kinds = {s.id: kind_for_subject(s.kind) for s in results}
+    # Each search result redirects to /{plural-url-kind}/{subject_id}; pick
+    # the plural URL kind from each subject's singular DB kind at the
+    # HTTP-boundary. The conversion is a one-liner dict lookup — keeping
+    # it inline avoids holding a helper that encodes singular in HTTP.
+    result_kinds = {s.id: ("pets" if s.kind == "pet" else "people") for s in results}
     avatars = db.get_random_avatars([s.id for s in results])
     return get_templates().TemplateResponse(
         name="search.html",
@@ -231,15 +232,14 @@ def clusters_page(request: Request, kind: KindType) -> HTMLResponse:
 def singletons_page(request: Request, kind: KindType) -> HTMLResponse:
     db = get_db()
     species = species_for_kind(kind)
-    subject_kind = subject_kind_for_species(species)
     total = db.get_singleton_count(species=species)
     findings = db.get_singleton_findings(species=species, limit=200)
-    subjects = db.get_subjects_by_kind(subject_kind)
+    subjects = db.get_subjects_by_species(species)
     sources = db.get_sources_batch([f.source_id for f in findings])
     face_paths = {
         f.id: sources[f.source_id].file_path if f.source_id in sources else "" for f in findings
     }
-    face_hints = compute_singleton_hints(db, findings, subject_kind)
+    face_hints = compute_singleton_hints(db, findings, species)
     return get_templates().TemplateResponse(
         name="singletons.html",
         context={
@@ -272,8 +272,7 @@ def compare_page(
 ) -> HTMLResponse:
     db = get_db()
     species = species_for_kind(kind)
-    subject_kind = subject_kind_for_species(species)
-    subjects = db.get_subjects_by_kind(subject_kind)
+    subjects = db.get_subjects_by_species(species)
     result = None
     subject_a = None
     subject_b = None
@@ -360,8 +359,7 @@ def subject_detail(request: Request, kind: KindType, subject_id: int) -> HTMLRes
 def subjects_page(request: Request, kind: KindType) -> HTMLResponse:
     db = get_db()
     species = species_for_kind(kind)
-    subject_kind = subject_kind_for_species(species)
-    subjects = db.get_subjects_by_kind(subject_kind)
+    subjects = db.get_subjects_by_species(species)
     avatars = db.get_random_avatars([s.id for s in subjects])
     in_circle = {
         int(r[0])

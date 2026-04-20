@@ -45,13 +45,16 @@ def compute_cluster_hint(db: FaceDB, cluster_id: int) -> dict[str, Any] | None:
 def compute_singleton_hints(
     db: FaceDB,
     findings: list[Finding],
-    kind: str,
+    species: str,
 ) -> dict[int, dict[str, Any]]:
     """For each singleton finding, find the nearest subject by centroid similarity.
 
     Returns {finding_id: {"person_id": int, "name": str, "sim": float}}.
     (person_id kept because the FK column on findings is still person_id.)
     """
+    # Internal: domain layer thinks in singular subject `kind` for
+    # subject lookups and embedding-dim selection.
+    kind = db._kind_for_species(species)  # noqa: SLF001 — DB-internal mapper
     dim = EMBEDDING_DIMS.get(kind)
     subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
     if not subject_centroids:

@@ -411,11 +411,10 @@ def compare_subjects(
 def auto_merge_clusters(
     db: FaceDB,
     min_similarity: float = 0.70,
-    kind: str = "person",
+    species: str = "human",
 ) -> dict[str, Any]:
     """Auto-merge unnamed cluster pairs whose centroids exceed the similarity threshold."""
-    species = FaceDB.KIND_TO_SPECIES[kind]
-    suggestions = suggest_merges(db, min_similarity=min_similarity * 100, kind=kind)
+    suggestions = suggest_merges(db, min_similarity=min_similarity * 100, species=species)
 
     merged = 0
     faces_moved = 0
@@ -464,10 +463,9 @@ def find_similar_cluster(
     db: FaceDB,
     subject_id: int,
     min_similarity: float = 0.35,
-    kind: str = "person",
+    species: str = "human",
 ) -> int | None:
     """Find the unnamed cluster most similar to a subject. Returns cluster_id or None."""
-    species = FaceDB.KIND_TO_SPECIES[kind]
     subject_findings = db.get_subject_findings(subject_id, limit=500)
     if not subject_findings:
         return None
@@ -496,7 +494,7 @@ def find_similar_cluster(
 def suggest_merges(
     db: FaceDB,
     min_similarity: float = 40.0,
-    kind: str = "person",
+    species: str = "human",
 ) -> list[MergeSuggestion]:
     """Compare cluster/subject centroids and suggest likely merges.
 
@@ -504,7 +502,9 @@ def suggest_merges(
     centroid cosine similarity exceeds *min_similarity* % is returned,
     sorted by similarity descending.
     """
-    species = FaceDB.KIND_TO_SPECIES[kind]
+    # Internal: domain layer still thinks in singular subject `kind` for
+    # subject lookups and embedding-dim selection.
+    kind = db._kind_for_species(species)  # noqa: SLF001 — DB-internal mapper
     dim = EMBEDDING_DIMS.get(kind, 512)
     groups: list[tuple[str, int, list[int], np.ndarray]] = []
 

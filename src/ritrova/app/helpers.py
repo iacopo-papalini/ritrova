@@ -6,17 +6,19 @@ them or importing from a sibling router.
 
 Kinds and species
 -----------------
-The codebase uses five overlapping vocabularies (see ADR-012). The helpers
-below translate between the ones the HTTP layer cares about:
+Per ADR-012 M0.5 the HTTP layer speaks only two vocabularies:
 
 - URL kind ``"people"`` / ``"pets"`` — what shows up in paths like ``/{kind}/…``
 - Finding species ``"human"`` / ``"dog"`` / ``"cat"`` / ``"other_pet"``
-  — the DB value on ``findings.species``
-- Subject kind ``"person"`` / ``"pet"`` — the DB value on ``subjects.kind``
+  — the DB value on ``findings.species`` (a legitimate DB→HTTP crossing value)
 
-``db/paths.py`` has its own ``_species_for_kind`` (subject-kind-indexed) which
-is kept separate — the two take different argument types and live in
-different layers, so they stay independent.
+The singular subject kind (``"person"`` / ``"pet"``) lives inside the DB and
+domain layers; HTTP code never holds it. When HTTP needs a plural URL kind
+from a subject row, it inlines the one-line mapping rather than importing a
+named helper.
+
+``db/paths.py`` owns ``_species_for_kind`` and ``_kind_for_species`` for
+domain/DB consumers.
 """
 
 from __future__ import annotations
@@ -43,18 +45,6 @@ def kind_for_species(species: str) -> KindType:
     if species in ("pet", "cat", "dog"):
         return "pets"
     return "people"
-
-
-def subject_kind_for_species(species: str) -> str:
-    """Map a finding species to subject kind."""
-    if species in ("pet", "cat", "dog", "other_pet"):
-        return "pet"
-    return "person"
-
-
-def kind_for_subject(subject_kind: str) -> KindType:
-    """Map subject kind to URL kind."""
-    return "pets" if subject_kind == "pet" else "people"
 
 
 _DATE_RE = re.compile(r"(\d{4})-(\d{2})")
