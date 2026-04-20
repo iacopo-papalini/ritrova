@@ -271,7 +271,7 @@ class AnalysisPersister:
         self,
         analysis: SourceAnalysis,
         strategy_id: str,
-        scan_type: str = "composite",
+        scan_type: str = "subjects",
     ) -> None:
         """Write analysis results to the database.
 

@@ -323,7 +323,7 @@ class TestAnalysisPersister(TestCase):
         assert self.db.get_source_by_path("/empty.jpg") is not None
         assert self.db.get_finding_count() == 0
 
-    def test_scan_type_defaults_to_composite(self) -> None:
+    def test_scan_type_defaults_to_subjects(self) -> None:
         analysis = SourceAnalysis(
             source_path="/photo.jpg",
             source_type="photo",
@@ -333,7 +333,7 @@ class TestAnalysisPersister(TestCase):
         self.persister.persist(analysis, strategy_id="test")
         scans = self.db.find_scans()
         assert len(scans) == 1
-        assert scans[0]["scan_type"] == "composite"
+        assert scans[0]["scan_type"] == "subjects"
 
     def test_persists_frame_number(self) -> None:
         analysis = SourceAnalysis(

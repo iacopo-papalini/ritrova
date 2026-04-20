@@ -630,7 +630,7 @@ def describe_eval(
             JOIN scans sc ON sc.source_id = s.id
             LEFT JOIN findings f ON f.scan_id = sc.id
             JOIN descriptions d ON d.scan_id = sc.id
-            WHERE sc.scan_type LIKE 'composite%' AND d.caption IS NOT NULL
+            WHERE sc.scan_type LIKE 'subjects%' AND d.caption IS NOT NULL
             GROUP BY s.id
             HAVING COUNT(f.id) >= 4
             """
@@ -1361,12 +1361,11 @@ def migrate_paths(ctx: click.Context) -> None:
 def prune(ctx: click.Context, dry_run: bool, yes: bool) -> None:
     """Remove duplicate findings on the same source.
 
-    When a source is re-analysed (e.g. by the composite pipeline after an
-    earlier per-species scan), duplicate findings accumulate. This command
-    collapses them:
+    When a source is re-analysed, duplicate findings can accumulate. This
+    command collapses them:
 
     \b
-    - (source_id, person_id): keep newest finding per assigned subject
+    - (source_id, subject_id): keep newest finding per assigned subject
     - (source_id, cluster_id): keep newest finding per cluster (unassigned)
     """
     from .db import FaceDB
