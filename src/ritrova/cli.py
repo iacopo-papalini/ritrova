@@ -47,22 +47,6 @@ def _require_photos_dir(ctx: click.Context) -> str:
 
 
 @cli.command()
-@click.option("--min-confidence", default=0.65, help="Minimum detection confidence")
-@click.pass_context
-def scan(ctx: click.Context, min_confidence: float) -> None:
-    """Scan photos for human faces. Legacy — delegates to analyse."""
-    ctx.invoke(analyse, no_pets=True, no_videos=True, min_face_confidence=min_confidence)
-
-
-@cli.command()
-@click.option("--min-confidence", default=0.7, help="Minimum YOLO detection confidence")
-@click.pass_context
-def scan_pets(ctx: click.Context, min_confidence: float) -> None:
-    """Scan photos for pets. Legacy — delegates to analyse."""
-    ctx.invoke(analyse, no_faces=True, no_videos=True, min_pet_confidence=min_confidence)
-
-
-@cli.command()
 @click.option("--no-faces", is_flag=True, help="Skip human face detection")
 @click.option("--no-pets", is_flag=True, help="Skip pet detection")
 @click.option(
@@ -101,8 +85,8 @@ def scan_pets(ctx: click.Context, min_confidence: float) -> None:
     "--interval",
     default=2.0,
     help="Seconds between sampled video frames. Higher = faster but misses "
-    "brief subject appearances. Default 2s matches the legacy scan-videos "
-    "behaviour — 5s was found to lose faces on short clips.",
+    "brief subject appearances. Default 2s — 5s was found to lose faces on "
+    "short clips.",
 )
 @click.option(
     "--workers", "-j", default=1, help="Number of parallel workers (default 1; GPU serialised)"
@@ -827,21 +811,6 @@ def translate_bench(
     )
 
 
-@cli.command()
-@click.option("--min-confidence", default=0.65, help="Minimum detection confidence")
-@click.option("--interval", default=2.0, help="Seconds between sampled frames")
-@click.pass_context
-def scan_videos(ctx: click.Context, min_confidence: float, interval: float) -> None:
-    """Scan videos for human faces. Legacy — delegates to analyse."""
-    ctx.invoke(
-        analyse,
-        no_pets=True,
-        no_caption=True,
-        min_face_confidence=min_confidence,
-        interval=interval,
-    )
-
-
 SPECIES_THRESHOLDS = {
     "human": 0.50,  # ArcFace 512-dim. Bumped from 0.45 — no intruders observed at 0.45
     "dog": 0.23,  # SigLIP 768-dim: much denser, needs tighter threshold. Bumped from 0.20
@@ -1422,7 +1391,6 @@ def doctor(ctx: click.Context, fix: bool, yes: bool) -> None:
         ("findings with missing source", report.findings_missing_source),
         ("findings with missing scan", report.findings_missing_scan),
         ("scans with missing source", report.scans_missing_source),
-        ("dismissed_findings with missing finding", report.dismissed_missing_finding),
     ]
 
     click.echo(f"DB: {ctx.obj['db_path']}")

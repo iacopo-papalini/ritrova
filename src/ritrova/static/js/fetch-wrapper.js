@@ -9,9 +9,6 @@
    cross-species assignment), where the UI deliberately handles the
    response. We skip the auto-toast for 409 so it doesn't fire
    alongside a confirm dialog.
-
-   window.showToast and window.safeToast are exposed as globals so
-   legacy inline handlers and non-module scripts can still use them.
    =================================================================== */
 
 const _origFetch = window.fetch.bind(window);
@@ -48,7 +45,6 @@ function _describeRequest(resource) {
 }
 
 // Exported so sibling modules can toast without touching Alpine directly.
-// Window-global form kept for legacy inline handlers.
 export function safeToast(level, message, opts = {}) {
   const store = window.Alpine && window.Alpine.store && window.Alpine.store('toast');
   if (store) {
@@ -59,12 +55,6 @@ export function safeToast(level, message, opts = {}) {
     console.warn(`[toast:${level}]`, message);
   }
 }
-
-// Legacy global — inline handlers still call window.showToast(...).
-window.showToast = function (opts) {
-  if (typeof opts === 'string') opts = { message: opts };
-  safeToast(opts.level || 'info', opts.message, opts);
-};
 
 // htmx uses XMLHttpRequest, so the fetch wrapper above doesn't see its
 // traffic. Surface both response errors (4xx/5xx) and send errors

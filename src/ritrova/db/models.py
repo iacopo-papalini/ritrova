@@ -66,7 +66,6 @@ class OrphanReport:
     findings_missing_source: list[int]
     findings_missing_scan: list[int]
     scans_missing_source: list[int]
-    dismissed_missing_finding: list[int]
 
     @property
     def total(self) -> int:
@@ -74,7 +73,6 @@ class OrphanReport:
             len(self.findings_missing_source)
             + len(self.findings_missing_scan)
             + len(self.scans_missing_source)
-            + len(self.dismissed_missing_finding)
         )
 
 

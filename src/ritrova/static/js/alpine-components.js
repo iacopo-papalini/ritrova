@@ -384,8 +384,8 @@ document.addEventListener('alpine:init', () => {
   // /api/findings/{id}/frame so video-frame findings render correctly
   // (FEAT-14) — previously the store 404'd on video sources.
   //
-  // Back-compat: `show(sourceId)` still works. New callers prefer
-  // `openFromGrid($el, 'finding')` which walks the DOM for sibling thumbnails.
+  // Entry points: `openFromGrid($el, type)` (preferred — walks the DOM for
+  // sibling thumbnails), `showFinding(id)` / `showSource(id)` for singletons.
   Alpine.store('lightbox', {
     open: false,
     items: [],      // [{ type: 'finding'|'source', id: number }]
@@ -397,12 +397,6 @@ document.addEventListener('alpine:init', () => {
     longitude: null,
     type: null,     // 'photo' | 'video' | null (while loading)
     rotation: 0,
-    // Back-compat accessor for templates written against the old store.
-    get photoId() {
-      const it = this.items[this.index];
-      if (!it) return null;
-      return it.type === 'source' ? it.id : this.sourceId;
-    },
 
     // ----- Computed URLs (reactive via the items/index state) -----
     get currentItem() { return this.items[this.index] || null; },
@@ -420,8 +414,6 @@ document.addEventListener('alpine:init', () => {
     get canNext() { return this.index < this.items.length - 1; },
 
     // ----- Public API -----
-    // Legacy single-source entry. Kept so external callers don't break.
-    show(sourceId) { this._openList([{ type: 'source', id: sourceId }], 0); },
     showSource(sourceId) { this._openList([{ type: 'source', id: sourceId }], 0); },
     showFinding(findingId) { this._openList([{ type: 'finding', id: findingId }], 0); },
     openSources(ids, start = 0) {

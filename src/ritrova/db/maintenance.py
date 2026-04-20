@@ -37,16 +37,10 @@ class MaintenanceMixin(_DBAccessor):
                 "WHERE s.id IS NULL"
             ).fetchall()
         ]
-        # Apr 2026 refactor: dismissed_findings is gone (merged into
-        # finding_assignment.exclusion_reason). The FK cascade on
-        # finding_assignment.finding_id → findings.id makes orphans
-        # structurally impossible, but we still report the field for
-        # backwards compatibility with callers that pickle OrphanReport.
         return OrphanReport(
             findings_missing_source=findings_no_source,
             findings_missing_scan=findings_no_scan,
             scans_missing_source=scans_no_source,
-            dismissed_missing_finding=[],
         )
 
     @_locked
@@ -68,7 +62,6 @@ class MaintenanceMixin(_DBAccessor):
         _chunked_delete("findings", "id", report.findings_missing_source)
         _chunked_delete("findings", "id", report.findings_missing_scan)
         _chunked_delete("scans", "id", report.scans_missing_source)
-        # dismissed_missing_finding is always empty post-refactor; skipping.
         self.conn.commit()
 
     @_locked
