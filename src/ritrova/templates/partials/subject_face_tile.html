@@ -1,8 +1,8 @@
 {# One face tile in a subject's face grid.
    Required context: face (has .id).
    Parent must supply faceSelection() scope (selected, toggle).
-   - Container click  -> toggle selection
-   - Image click      -> preview whole picture in the lightbox #}
+   - Click anywhere on the tile -> toggle selection
+   - Hover preview icon (top-left) -> open lightbox #}
 <div class="group relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150"
      data-finding-id="{{ face.id }}"
      @click="toggle({{ face.id }})"
@@ -10,6 +10,24 @@
   <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
        loading="lazy"
        alt="face"
-       @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
        class="aspect-square w-full object-cover">
+
+  <button @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
+          class="absolute top-1 left-1 z-10 hidden group-hover:flex h-6 w-6 items-center justify-center
+                 rounded-full bg-black/60 text-gallery-text transition-colors
+                 hover:bg-gallery-accent hover:text-gallery-bg"
+          title="Preview photo">
+    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round"
+            d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/>
+    </svg>
+  </button>
+
+  <div x-show="selected.has({{ face.id }})" x-cloak
+       class="absolute inset-0 bg-gallery-accent/20 flex items-center justify-center pointer-events-none">
+    <svg class="w-8 h-8 text-gallery-accent drop-shadow-lg" fill="currentColor" viewBox="0 0 20 20">
+      <path fill-rule="evenodd" clip-rule="evenodd"
+            d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/>
+    </svg>
+  </div>
 </div>

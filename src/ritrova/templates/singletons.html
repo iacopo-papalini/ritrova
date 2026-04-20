@@ -6,11 +6,7 @@
        const subject = $event.detail;
        const faceIds = ids;
        if (!faceIds.length) return;
-       fetch('/api/subjects/' + subject.id + '/claim-faces', {
-         method: 'POST',
-         headers: { 'Content-Type': 'application/json' },
-         body: JSON.stringify({ face_ids: faceIds })
-       }).then(r => { if (r.ok) location.reload(); })"
+       claimFaces(subject.id, faceIds).then(ok => { if (ok) location.reload(); })"
 
   <!-- Page heading -->
   <div class="mb-6">
@@ -55,6 +51,26 @@
     <div class="w-56" x-data="subjectPicker()">
       {% include "partials/subject_picker.html" %}
     </div>
+    {% set stranger_s = 'pet' if kind == 'pets' else 'person' %}
+    {% set stranger_p = 'pets' if kind == 'pets' else 'people' %}
+    <button @click="
+              const faceIds = ids;
+              if (!faceIds.length) return;
+              fetch('/api/findings/mark-stranger', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ face_ids: faceIds })
+              }).then(r => r.ok && r.json()).then(d => {
+                if (!d) return;
+                faceIds.forEach(id => document.querySelector(`[data-finding-id=&quot;${id}&quot;]`)?.remove());
+                clear();
+                if (d.undo_token) window.showUndoToast({ message: d.message, token: d.undo_token });
+              })"
+            class="rounded-lg border border-gallery-border px-3 py-1.5 text-sm font-medium text-gallery-text
+                   transition-colors hover:bg-gallery-card cursor-pointer">
+      I don't know
+      <span x-text="count === 1 ? 'this {{ stranger_s }}' : 'these {{ stranger_p }}'"></span>
+    </button>
     <button @click="
               const faceIds = ids;
               if (!faceIds.length) return;
@@ -88,19 +104,26 @@
       <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
            loading="lazy"
            alt="face"
-           @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
            class="aspect-square w-full object-cover">
+      <!-- Preview photo button (visible on hover) -->
+      <button @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
+              class="absolute top-1 left-1 z-10 hidden group-hover:flex h-6 w-6 items-center justify-center
+                     rounded-full bg-black/60 text-gallery-text transition-colors
+                     hover:bg-gallery-accent hover:text-gallery-bg"
+              title="Preview photo">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round"
+                d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/>
+        </svg>
+      </button>
       {% if hint %}
       <!-- Hint overlay: click to quick-assign -->
       <div class="absolute inset-x-0 bottom-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200
                   bg-gallery-bg/80 backdrop-blur-sm px-2 py-1.5 text-xs text-gallery-accent font-medium
                   cursor-pointer hover:bg-gallery-accent/20"
            @click.stop="
-             fetch('/api/subjects/{{ hint.person_id }}/claim-faces', {
-               method: 'POST',
-               headers: { 'Content-Type': 'application/json' },
-               body: JSON.stringify({ face_ids: [{{ face.id }}] })
-             }).then(r => { if (r.ok) $el.closest('[data-face-id]').remove() })
+             claimFaces({{ hint.person_id }}, [{{ face.id }}])
+               .then(ok => { if (ok) $el.closest('[data-face-id]').remove() })
            ">
         {{ hint.name }} {{ hint.sim }}%
       </div>

@@ -848,6 +848,12 @@ SPECIES_THRESHOLDS = {
     "cat": 0.23,
 }
 
+# Per-kind auto-merge thresholds (%). SigLIP embeds cat-as-a-concept, not individuals:
+# any two cats' centroids sit at 0.92-0.98 cosine sim, so any threshold <100 cascades
+# into a single mega-cluster. Disable pet auto-merge entirely — rely on curation + the
+# `suggest_merges` UI for pets.
+AUTO_MERGE_THRESHOLDS = {"person": 70.0, "pet": 101.0}
+
 
 @cli.command()
 @click.option(
@@ -859,11 +865,12 @@ SPECIES_THRESHOLDS = {
 @click.option("--min-size", default=2, help="Minimum faces per cluster")
 @click.option(
     "--auto-merge-threshold",
-    default=70.0,
+    default=None,
     type=float,
     help=(
-        "Similarity % above which cluster pairs are auto-merged after clustering. "
-        "Loops to convergence. Set to 100 (or higher) to disable."
+        "Override per-kind auto-merge similarity %. "
+        "Default: 70 for people, disabled for pets (SigLIP centroids too close). "
+        "Set to 100 (or higher) to disable for all kinds."
     ),
 )
 @click.pass_context
@@ -871,7 +878,7 @@ def cluster(
     ctx: click.Context,
     threshold: float | None,
     min_size: int,
-    auto_merge_threshold: float,
+    auto_merge_threshold: float | None,
 ) -> None:
     """Cluster all detected faces by embedding similarity (humans + pets)."""
     from .cluster import auto_merge_clusters, cluster_faces
@@ -889,30 +896,31 @@ def cluster(
         if result.get("largest_cluster"):
             print(f"  Largest cluster:  {result['largest_cluster']} faces")
 
-    if auto_merge_threshold < 100.0:
-        # Per-kind (person, pet) rather than per-species: pet auto-merge spans
-        # dog + cat because they share the SigLIP embedding space.
-        for kind in ("person", "pet"):
-            print(f"\n── auto-merge {kind} (≥ {auto_merge_threshold:.0f}%) ──")
-            total_merged = 0
-            total_moved = 0
-            iteration = 0
-            max_iterations = 20  # safety cap — convergence is typically 1-3 passes
-            while iteration < max_iterations:
-                result = auto_merge_clusters(
-                    db, min_similarity=auto_merge_threshold / 100, kind=kind
-                )
-                iteration += 1
-                print(
-                    f"  pass {iteration}: merged {result['merged']} pairs, "
-                    f"moved {result['faces_moved']} faces, "
-                    f"{result['remaining_clusters']} clusters remain"
-                )
-                if result["merged"] == 0:
-                    break
-                total_merged += result["merged"]
-                total_moved += result["faces_moved"]
-            print(f"  total: {total_merged} merges, {total_moved} faces moved")
+    # Per-kind (person, pet) rather than per-species: pet auto-merge spans
+    # dog + cat because they share the SigLIP embedding space.
+    for kind, default_merge in AUTO_MERGE_THRESHOLDS.items():
+        t = auto_merge_threshold if auto_merge_threshold is not None else default_merge
+        if t >= 100.0:
+            print(f"\n── auto-merge {kind} skipped (threshold {t:.0f}%) ──")
+            continue
+        print(f"\n── auto-merge {kind} (≥ {t:.0f}%) ──")
+        total_merged = 0
+        total_moved = 0
+        iteration = 0
+        max_iterations = 20  # safety cap — convergence is typically 1-3 passes
+        while iteration < max_iterations:
+            result = auto_merge_clusters(db, min_similarity=t / 100, kind=kind)
+            iteration += 1
+            print(
+                f"  pass {iteration}: merged {result['merged']} pairs, "
+                f"moved {result['faces_moved']} faces, "
+                f"{result['remaining_clusters']} clusters remain"
+            )
+            if result["merged"] == 0:
+                break
+            total_merged += result["merged"]
+            total_moved += result["faces_moved"]
+        print(f"  total: {total_merged} merges, {total_moved} faces moved")
 
     db.close()
 

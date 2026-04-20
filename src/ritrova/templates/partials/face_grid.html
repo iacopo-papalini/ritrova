@@ -7,8 +7,18 @@
   <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
        loading="lazy"
        alt="face"
-       @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
        class="aspect-square w-full object-cover">
+  <!-- Preview photo button (visible on hover) -->
+  <button @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
+          class="absolute top-1 left-1 z-10 hidden group-hover:flex h-6 w-6 items-center justify-center
+                 rounded-full bg-black/60 text-gallery-text transition-colors
+                 hover:bg-gallery-accent hover:text-gallery-bg"
+          title="Preview photo">
+    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round"
+            d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/>
+    </svg>
+  </button>
   <!-- Remove single face button -->
   <button @click.stop="(await confirmDialog({title: 'Remove this face from cluster?', confirmLabel: 'Remove', danger: true})) &&
             fetch('/api/findings/exclude', {

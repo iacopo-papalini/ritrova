@@ -75,11 +75,8 @@
     <button @click="
               const faceIds = ids;
               if (!faceIds.length) return;
-              fetch('/api/subjects/{{ subject.id }}/claim-faces', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ face_ids: faceIds })
-              }).then(r => { if (r.ok) location.href = '/{{ kind }}/{{ subject.id }}'; })"
+              claimFaces({{ subject.id }}, faceIds)
+                .then(ok => { if (ok) location.href = '/{{ kind }}/{{ subject.id }}'; })"
             class="rounded-lg bg-gallery-accent px-4 py-1.5 text-sm font-medium text-gallery-bg
                    transition-colors hover:bg-gallery-accent/80 cursor-pointer">
       Claim selected

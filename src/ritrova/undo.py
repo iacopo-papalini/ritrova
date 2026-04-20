@@ -157,6 +157,22 @@ class RestoreFromStrangerPayload(UndoPayload):
 
 
 @dataclass
+class RestoreFromStrangerBatchPayload(UndoPayload):
+    """Undo mark-stranger on an ad-hoc batch of findings: clear exclusion
+    rows and restore each finding's prior cluster (or leave uncluttered
+    if the finding had none — e.g. singletons)."""
+
+    snapshots: list[FindingFieldsSnapshot]
+
+    def undo(self, db: FaceDB) -> None:
+        fids = [s.finding_id for s in self.snapshots]
+        db.clear_curations(fids)
+        restore = {s.finding_id: s.cluster_id for s in self.snapshots if s.cluster_id is not None}
+        if restore:
+            db.set_cluster_memberships(restore)
+
+
+@dataclass
 class AddSubjectToCirclePayload(UndoPayload):
     """Undo a circle membership removal: re-add the subject."""
 

@@ -40,6 +40,7 @@ from .undo import (
     RecreateCirclePayload,
     RemoveSubjectFromCirclePayload,
     RestoreClusterPayload,
+    RestoreFromStrangerBatchPayload,
     RestoreFromStrangerPayload,
     RestorePersonIdsPayload,
     ResurrectSubjectPayload,
@@ -777,6 +778,34 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         entry.payload.undo(db)
         return JSONResponse({"ok": True, "undone": entry.description})
 
+    @app.post("/api/findings/mark-stranger")
+    def mark_findings_stranger(face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
+        """Flag an ad-hoc batch of findings as strangers.
+
+        Writes `exclusion_reason='stranger'` on each one (overwriting any
+        prior uncurated state) and drops their cluster_findings rows so
+        they vanish from clustering / merge-suggestions / auto-assign.
+        Reversible: prior cluster membership is snapshotted and restored
+        on undo. Findings that had no cluster (singletons) return to the
+        uncurated-unclustered state."""
+        if not face_ids:
+            return JSONResponse({"ok": True, "marked": 0})
+        rows = db.snapshot_findings_fields(face_ids)
+        snapshots = [
+            FindingFieldsSnapshot(finding_id=fid, person_id=pid, cluster_id=cid)
+            for fid, pid, cid in rows
+        ]
+        db.set_exclusions(face_ids, "stranger")
+        db.remove_cluster_memberships(face_ids)
+        n = len(face_ids)
+        noun = "face" if n == 1 else "faces"
+        message = f"Marked {n} {noun} as stranger"
+        token = undo_store.put(
+            description=message,
+            payload=RestoreFromStrangerBatchPayload(snapshots=snapshots),
+        )
+        return JSONResponse({"ok": True, "marked": n, "undo_token": token, "message": message})
+
     @app.post("/api/findings/dismiss")
     def dismiss_findings(face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
         """Mark findings as non-faces (statues, paintings, dogs, etc.)."""
@@ -823,6 +852,26 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         except ValueError as e:
             return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
         return JSONResponse({"ok": True})
+
+    @app.post("/api/findings/unassign")
+    def unassign_findings_batch(face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
+        """Unassign multiple findings from their current subjects in one call."""
+        if not face_ids:
+            return JSONResponse({"ok": True, "unassigned": 0})
+        prior = db.snapshot_findings_fields(face_ids)
+        snapshots = [
+            FindingPersonSnapshot(finding_id=fid, person_id=pid)
+            for fid, pid, _cid in prior
+            if pid is not None
+        ]
+        db.unassign_findings(face_ids)
+        n = len(face_ids)
+        message = f"Removed {n} face{'s' if n != 1 else ''}"
+        token = undo_store.put(
+            description=message,
+            payload=RestorePersonIdsPayload(snapshots=snapshots),
+        )
+        return JSONResponse({"ok": True, "unassigned": n, "undo_token": token, "message": message})
 
     @app.post("/api/findings/{finding_id}/unassign")
     def unassign_finding(finding_id: int) -> JSONResponse:
