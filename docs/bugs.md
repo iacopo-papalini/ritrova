@@ -2,6 +2,13 @@
 
 ## Open
 
+### BUG-22: "Go to photo" from video-frame lightbox renders the frame JPG with bbox overlays for every finding
+**Reported:** 2026-04-20
+**Repro:** Open the lightbox on a finding backed by a video frame (e.g. `/Users/iacopo.papalini/nextCloud/Photos/2019/2019-06-17.Arno/2019-08-22-2a.mp4`). Click the "go to the photo" icon.
+**Observed:** The `/photo/{source_id}` page renders a single JPEG photogram (the extracted frame) with the bbox overlays for every finding extracted from the entire video plastered on top. Looks awful.
+**Root cause (suspected):** `/photo/{source_id}` assumes the source is a still image and resolves to its own file. For a video source, the bbox overlays are computed against the full-video frame coordinates while the rendered image is a single frame — overlays don't line up and are visually noisy.
+**Action:** Either hide the "go to photo" button for video sources (short-term) or render a dedicated video-source page that picks the frame the lightbox was showing and only draws that finding's bbox.
+
 ### BUG-5: Thumbnails in data/ dir get indexed by pet scanner
 **Reported:** 2026-04-10 | **Closed:** 2026-04-15
 **Fix:** `.fr_exclude` marker file. Scanner skips dirs with this file. Created in `data/`.
