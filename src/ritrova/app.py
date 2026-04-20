@@ -629,6 +629,15 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             return f"/clusters/{next_cluster}?suggested_person={subject_id}"
         return fallback
 
+    def _next_unnamed_cluster_url(current_cluster_id: int, species: str) -> str:
+        """URL of the next unnamed cluster of the same species (biggest first).
+        Falls back to the species' cluster list when nothing's left."""
+        kind = _kind_for_species(species)
+        for c in db.get_unnamed_clusters(species=species):
+            if c["cluster_id"] != current_cluster_id:
+                return f"/clusters/{c['cluster_id']}"
+        return f"/{kind}/clusters"
+
     @app.post("/api/clusters/{cluster_id}/name")
     def name_cluster(cluster_id: int, name: str = Form(...)) -> RedirectResponse:
         # Determine subject kind from cluster's finding species
@@ -661,12 +670,11 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         """
         findings = db.get_cluster_findings(cluster_id, limit=1)
         species = findings[0].species if findings else "human"
-        kind = _kind_for_species(species)
 
         # Only touch findings that don't already carry a curation row.
         pending_ids = db.get_unassigned_cluster_finding_ids(cluster_id)
         if not pending_ids:
-            return RedirectResponse(f"/{kind}/clusters", status_code=303)
+            return RedirectResponse(_next_unnamed_cluster_url(cluster_id, species), status_code=303)
 
         db.set_exclusions(pending_ids, "stranger")
         db.remove_cluster_memberships(pending_ids)
@@ -676,7 +684,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             description=message,
             payload=RestoreFromStrangerPayload(cluster_id=cluster_id, finding_ids=pending_ids),
         )
-        return RedirectResponse(f"/{kind}/clusters", status_code=303)
+        return RedirectResponse(_next_unnamed_cluster_url(cluster_id, species), status_code=303)
 
     @app.post("/api/clusters/{cluster_id}/assign", response_model=None)
     def assign_cluster_to_existing(
@@ -717,6 +725,9 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         finding_ids = db.get_cluster_finding_ids(cluster_id)
         if not finding_ids:
             return JSONResponse({"ok": True, "dismissed": 0})
+        # Species must be read before dismiss strips cluster_findings rows.
+        sample = db.get_cluster_findings(cluster_id, limit=1)
+        species = sample[0].species if sample else "human"
         # Snapshot person_id/cluster_id per finding so undo can both delete
         # the dismissed_findings rows and restore prior assignments.
         rows = db.snapshot_findings_fields(finding_ids)
@@ -731,7 +742,13 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
             payload=DismissPayload(snapshots=snapshots),
         )
         return JSONResponse(
-            {"ok": True, "dismissed": len(finding_ids), "undo_token": token, "message": message}
+            {
+                "ok": True,
+                "dismissed": len(finding_ids),
+                "undo_token": token,
+                "message": message,
+                "next_url": _next_unnamed_cluster_url(cluster_id, species),
+            }
         )
 
     @app.post("/api/clusters/merge", response_model=None)
