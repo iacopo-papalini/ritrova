@@ -1179,16 +1179,38 @@ def scans_prune(
 @cli.command()
 @click.argument("source")
 @click.option(
-    "--scan-type",
-    default="all",
-    type=click.Choice(["all", "human", "pet"]),
-    help="Which scan to redo (default all existing on the source)",
+    "--faces/--no-faces",
+    default=True,
+    help="Include human face detection (default on).",
+)
+@click.option(
+    "--pets/--no-pets",
+    default=True,
+    help="Include pet detection (default on).",
 )
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
 @click.pass_context
-def rescan(ctx: click.Context, source: str, scan_type: str, yes: bool) -> None:
-    """Rescan a single source: delete existing scans + findings, run fresh detection."""
+def rescan(ctx: click.Context, source: str, faces: bool, pets: bool, yes: bool) -> None:
+    """Rescan a single source: delete existing scans + findings, run fresh detection.
+
+    ADR-012 §M3 step 4: this command now routes through ``AnalysisPipeline``
+    + ``AnalysisPersister`` — the same persistence path ``ritrova analyse``
+    uses. The legacy pre-composite ``human`` / ``pet`` scan types are
+    retired; a rescan always produces a ``subjects`` scan row.
+    """
+    from .analysis import (
+        AnalysisPersister,
+        AnalysisPipelineBuilder,
+        SourceAnalysis,
+        photo_frames,
+        video_frames,
+    )
+    from .analysis_steps import DeduplicationStep, FaceDetectionStep, PetDetectionStep
     from .db import FaceDB
+    from .scanner import get_exif_date, get_exif_gps
+
+    if not faces and not pets:
+        raise click.UsageError("Nothing to do — pass --faces and/or --pets.")
 
     photos_dir = _require_photos_dir(ctx)
     db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
@@ -1203,13 +1225,10 @@ def rescan(ctx: click.Context, source: str, scan_type: str, yes: bool) -> None:
     src = db.get_source_by_path(stored_path)
     if src is None:
         raise click.UsageError(
-            f"Source not in DB: {stored_path}\nRun `ritrova scan` (or scan-pets/scan-videos) "
-            "to ingest new files first."
+            f"Source not in DB: {stored_path}\nRun `ritrova analyse` to ingest new files first."
         )
 
     existing = [s for s in db.find_scans() if s["source_id"] == src.id]
-    if scan_type != "all":
-        existing = [s for s in existing if s["scan_type"] == scan_type]
     if not existing:
         click.echo(f"(no matching scans on {stored_path})")
         db.close()
@@ -1222,6 +1241,7 @@ def rescan(ctx: click.Context, source: str, scan_type: str, yes: bool) -> None:
         f"WHERE fa.subject_id IS NOT NULL AND f.scan_id IN "
         f"({','.join(str(t['id']) for t in existing)})"
     )[0][0]
+
     click.echo(
         f"About to rescan {stored_path}\n"
         f"Replacing {len(existing)} scan(s): {sorted({t['scan_type'] for t in existing})}\n"
@@ -1233,38 +1253,49 @@ def rescan(ctx: click.Context, source: str, scan_type: str, yes: bool) -> None:
         db.close()
         return
 
-    types_to_redo = {t["scan_type"] for t in existing}
     for t in existing:
         db.delete_scan(t["id"])
 
-    # Re-run only the appropriate single-source scanners.
-    from .scanner import (
-        scan_one_photo_for_human,
-        scan_one_photo_for_pets,
-        scan_one_video_for_human,
-    )
+    # Build the pipeline matching the selected detectors.
+    builder = AnalysisPipelineBuilder()
+    if faces:
+        from .detector import FaceDetector
 
-    if src.type == "video":
-        if "human" in types_to_redo:
-            from .detector import FaceDetector
+        builder.add_step(FaceDetectionStep(FaceDetector(), min_confidence=0.65))
+    if pets:
+        from .pet_detector import PetDetector
 
-            detector = FaceDetector()
-            frames_dir = Path(ctx.obj["db_path"]).parent / "tmp" / "frames"
-            ok, n = scan_one_video_for_human(db, abs_path, detector, frames_dir)
-            click.echo(f"  video human scan: {'ok' if ok else 'FAILED'}, {n} face(s)")
+        builder.add_step(PetDetectionStep(PetDetector(), min_confidence=0.5))
+    builder.add_step(DeduplicationStep())
+    pipeline = builder.build()
+
+    frames_dir = Path(ctx.obj["db_path"]).parent / "tmp" / "frames"
+    persister = AnalysisPersister(db, frames_dir=frames_dir)
+
+    initial = SourceAnalysis(source_path=stored_path, source_type=src.type)
+    if src.type == "photo":
+        initial.taken_at = get_exif_date(abs_path)
+        gps = get_exif_gps(abs_path)
+        if gps:
+            initial.latitude, initial.longitude = gps
+        frame_iter = photo_frames(abs_path)
     else:
-        if "human" in types_to_redo:
-            from .detector import FaceDetector
+        frame_iter = video_frames(abs_path)
 
-            detector = FaceDetector()
-            ok, n = scan_one_photo_for_human(db, abs_path, detector)
-            click.echo(f"  photo human scan: {'ok' if ok else 'FAILED'}, {n} face(s)")
-        if "pet" in types_to_redo:
-            from .pet_detector import PetDetector
+    try:
+        result = pipeline.analyse_source(
+            abs_path,
+            source_type=src.type,
+            frames=frame_iter,
+            initial_state=initial,
+        )
+    except OSError as e:
+        click.echo(f"  rescan FAILED: {e}")
+        db.close()
+        return
 
-            pet_detector = PetDetector()
-            ok, n = scan_one_photo_for_pets(db, abs_path, pet_detector)
-            click.echo(f"  photo pet scan:   {'ok' if ok else 'FAILED'}, {n} pet(s)")
+    persister.persist(result, strategy_id=pipeline.strategy_id, scan_type="subjects")
+    click.echo(f"  rescan: {len(result.findings)} finding(s) via {pipeline.strategy_id}")
 
     db.close()
 

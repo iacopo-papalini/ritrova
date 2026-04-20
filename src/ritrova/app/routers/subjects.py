@@ -1,23 +1,19 @@
-"""Subject-level endpoints: CRUD, claim-faces, and the typeahead feed."""
+"""Subject-level endpoints: CRUD, claim-faces, and the typeahead feed.
+
+Mutating endpoints forward to ``SubjectService`` (ADR-012 §M3).
+``claim-faces`` translates a ``SpeciesMismatch`` into the HTTP 409
+``{error, needs_confirm: true}`` contract — the wire behaviour the
+client already depends on.
+"""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from ...undo import (
-    FindingSubjectSnapshot,
-    RestoreSubjectIdsPayload,
-    ResurrectSubjectPayload,
-    SubjectSnapshot,
-)
-from ..deps import get_db, get_templates, get_undo_store
-from ..helpers import (
-    describe_findings_reassign,
-    describe_subject_delete,
-    describe_subject_merge,
-    group_by_month,
-)
+from ...services_domain import SpeciesMismatch
+from ..deps import get_db, get_subject_service, get_templates
+from ..helpers import group_by_month
 
 router = APIRouter()
 
@@ -28,24 +24,19 @@ def claim_faces(
     face_ids: list[int] = Body(..., embed=True),
     force: bool = Body(False, embed=True),
 ) -> JSONResponse:
-    db = get_db()
-    undo_store = get_undo_store()
-    prior = db.snapshot_findings_fields(face_ids)
-    snapshots = [FindingSubjectSnapshot(finding_id=fid, subject_id=sid) for fid, sid, _cid in prior]
     try:
-        for fid in face_ids:
-            db.assign_finding_to_subject(fid, subject_id, force=force)
-    except ValueError as e:
+        receipt = get_subject_service().claim_faces(subject_id, face_ids, force=force)
+    except SpeciesMismatch as e:
         return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
-    subject = db.get_subject(subject_id)
-    name = subject.name if subject else f"#{subject_id}"
-    message = describe_findings_reassign("Claimed", name, len(face_ids))
-    token = undo_store.put(
-        description=message,
-        payload=RestoreSubjectIdsPayload(snapshots=snapshots),
-    )
+    if receipt is None:
+        return JSONResponse({"ok": True, "claimed": 0})
     return JSONResponse(
-        {"ok": True, "claimed": len(face_ids), "undo_token": token, "message": message}
+        {
+            "ok": True,
+            "claimed": len(face_ids),
+            "undo_token": receipt.token,
+            "message": receipt.message,
+        }
     )
 
 
@@ -88,36 +79,27 @@ def rename_subject(subject_id: int, name: str = Form(...)) -> RedirectResponse:
     # DB→URL boundary: singular subject.kind ("person"/"pet") ->
     # plural URL kind ("people"/"pets"). Inlined per ADR-012 M0.5.
     kind = "pets" if subject.kind == "pet" else "people"
-    db.rename_subject(subject_id, name)
+    get_subject_service().rename_subject(subject_id, name)
     return RedirectResponse(f"/{kind}/{subject_id}", status_code=303)
 
 
 @router.post("/api/subjects/merge")
 def merge_subjects(source_id: int = Form(...), target_id: int = Form(...)) -> RedirectResponse:
     db = get_db()
-    undo_store = get_undo_store()
-    if source_id == target_id:
-        raise HTTPException(400, "Cannot merge subject with themselves")
+    # Resolve the target subject for the redirect kind *before* calling
+    # the service — the service mutates merge semantics but the target
+    # row is unchanged. Errors fall back to ValueError → 404.
     target = db.get_subject(target_id)
     if not target:
         raise HTTPException(404, "Target subject not found")
-    # Snapshot the source subject row and all its findings BEFORE merge
-    # destroys both. merge_subjects flips subject_id source->target on
-    # every assignment row, then DELETEs the source subject.
-    source_row = db.get_subject_row(source_id)
-    if not source_row:
-        raise HTTPException(404, "Source subject not found")
-    moved_ids = db.get_subject_finding_ids(source_id)
-    source_snapshot = SubjectSnapshot(
-        id=source_row[0], name=source_row[1], kind=source_row[2], created_at=source_row[3]
-    )
-    # DB→URL boundary (see rename_subject above).
+    try:
+        get_subject_service().merge_subjects(source_id, target_id)
+    except ValueError as e:
+        msg = str(e)
+        if "themselves" in msg:
+            raise HTTPException(400, msg) from e
+        raise HTTPException(404, msg) from e
     kind = "pets" if target.kind == "pet" else "people"
-    db.merge_subjects(source_id, target_id)
-    undo_store.put(
-        description=describe_subject_merge(source_snapshot.name, target.name, len(moved_ids)),
-        payload=ResurrectSubjectPayload(subject=source_snapshot, finding_ids=moved_ids),
-    )
     return RedirectResponse(f"/{kind}/{target_id}", status_code=303)
 
 
@@ -125,23 +107,11 @@ def merge_subjects(source_id: int = Form(...), target_id: int = Form(...)) -> Re
 def delete_subject(subject_id: int) -> RedirectResponse:
     """Unassign all findings and delete the subject."""
     db = get_db()
-    undo_store = get_undo_store()
     subject = db.get_subject(subject_id)
     if not subject:
         raise HTTPException(404, "Subject not found")
-    # Snapshot the full row + every assigned finding_id BEFORE delete
-    # destroys the row and cascades the assignment rows away.
-    row = db.get_subject_row(subject_id)
-    assert row is not None  # get_subject hit means the row exists
-    finding_ids = db.get_subject_finding_ids(subject_id)
-    snapshot = SubjectSnapshot(id=row[0], name=row[1], kind=row[2], created_at=row[3])
-    # DB→URL boundary (see rename_subject above).
     kind = "pets" if subject.kind == "pet" else "people"
-    db.delete_subject(subject_id)
-    undo_store.put(
-        description=describe_subject_delete(snapshot.name, len(finding_ids)),
-        payload=ResurrectSubjectPayload(subject=snapshot, finding_ids=finding_ids),
-    )
+    get_subject_service().delete_subject(subject_id)
     return RedirectResponse(f"/{kind}", status_code=303)
 
 
@@ -152,7 +122,7 @@ def create_subject_api(
 ) -> JSONResponse:
     """Create a subject and return its data. Used by typeahead picker."""
     db = get_db()
-    subject_id = db.create_subject(name, kind=kind)
+    subject_id, _receipt = get_subject_service().create_subject(name, kind=kind)
     subject = db.get_subject(subject_id)
     assert subject is not None
     return JSONResponse(

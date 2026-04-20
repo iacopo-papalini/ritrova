@@ -21,12 +21,22 @@ from pathlib import Path
 from fastapi.templating import Jinja2Templates
 
 from ..db import FaceDB
+from ..services_domain import (
+    CirclesService,
+    ClusterService,
+    CurationService,
+    SubjectService,
+)
 from ..undo import UndoStore
 
 _db: FaceDB | None = None
 _undo_store: UndoStore | None = None
 _templates: Jinja2Templates | None = None
 _thumbnails_dir: Path | None = None
+_curation_service: CurationService | None = None
+_subject_service: SubjectService | None = None
+_cluster_service: ClusterService | None = None
+_circles_service: CirclesService | None = None
 
 
 def configure(
@@ -38,10 +48,17 @@ def configure(
 ) -> None:
     """Called once from ``create_app`` at startup."""
     global _db, _undo_store, _templates, _thumbnails_dir
+    global _curation_service, _subject_service, _cluster_service, _circles_service
     _db = db
     _undo_store = undo_store
     _templates = templates
     _thumbnails_dir = thumbnails_dir
+    # Domain services are wired here so routers can get them via
+    # get_*_service accessors (ADR-012 §M3).
+    _curation_service = CurationService(db, undo_store)
+    _subject_service = SubjectService(db, undo_store)
+    _cluster_service = ClusterService(db, undo_store)
+    _circles_service = CirclesService(db, undo_store)
 
 
 def get_db() -> FaceDB:
@@ -66,3 +83,27 @@ def get_thumbnails_dir() -> Path:
     if _thumbnails_dir is None:
         raise RuntimeError("deps.configure(...) has not been called — use create_app()")
     return _thumbnails_dir
+
+
+def get_curation_service() -> CurationService:
+    if _curation_service is None:
+        raise RuntimeError("deps.configure(...) has not been called — use create_app()")
+    return _curation_service
+
+
+def get_subject_service() -> SubjectService:
+    if _subject_service is None:
+        raise RuntimeError("deps.configure(...) has not been called — use create_app()")
+    return _subject_service
+
+
+def get_cluster_service() -> ClusterService:
+    if _cluster_service is None:
+        raise RuntimeError("deps.configure(...) has not been called — use create_app()")
+    return _cluster_service
+
+
+def get_circles_service() -> CirclesService:
+    if _circles_service is None:
+        raise RuntimeError("deps.configure(...) has not been called — use create_app()")
+    return _circles_service

@@ -19,7 +19,7 @@ from ...cluster import (
     find_similar_unclustered,
     rank_subjects_for_cluster,
 )
-from ...services import compute_singleton_hints
+from ...hints import compute_singleton_hints
 from ..deps import get_db, get_templates
 from ..helpers import (
     KindType,

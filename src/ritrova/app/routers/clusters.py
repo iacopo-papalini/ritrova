@@ -1,8 +1,12 @@
 """Cluster-level endpoints and the merge-suggestions data feed.
 
-``/api/merge-suggestions`` and its ``-html`` partial live here because the
-suggestions are cluster↔cluster pairings — logically the aggregate is the
-cluster, not the subject.
+``/api/merge-suggestions`` and its ``-html`` partial live here because
+the suggestions are cluster↔cluster pairings — logically the aggregate
+is the cluster, not the subject.
+
+Mutating endpoints forward to the domain-service layer
+(``services_domain``) per ADR-012 §M3; routers translate
+``SpeciesMismatch`` into the HTTP 409 contract.
 """
 
 from __future__ import annotations
@@ -11,25 +15,16 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from ...cluster import find_similar_cluster, suggest_merges
-from ...services import compute_cluster_hint
-from ...undo import (
-    DeleteSubjectPayload,
-    DismissPayload,
-    FindingFieldsSnapshot,
-    FindingSubjectSnapshot,
-    RestoreClusterPayload,
-    RestoreFromStrangerPayload,
-    RestoreSubjectIdsPayload,
+from ...hints import compute_cluster_hint
+from ...services_domain import SpeciesMismatch
+from ..deps import (
+    get_cluster_service,
+    get_curation_service,
+    get_db,
+    get_subject_service,
+    get_templates,
 )
-from ..deps import get_db, get_templates, get_undo_store
-from ..helpers import (
-    describe_cluster_assign,
-    describe_cluster_dismiss,
-    describe_cluster_merge,
-    describe_cluster_name,
-    kind_for_species,
-    undo_hx_trigger,
-)
+from ..helpers import kind_for_species, undo_hx_trigger
 
 router = APIRouter()
 
@@ -197,23 +192,18 @@ def cluster_faces_html(
 @router.post("/api/clusters/{cluster_id}/name")
 def name_cluster(cluster_id: int, name: str = Form(...)) -> RedirectResponse:
     db = get_db()
-    undo_store = get_undo_store()
-    # Derive species from the cluster's findings; the DB knows how to turn
-    # it into a subject (create_subject_for_species is the single boundary).
+    # Derive species from the cluster's findings; the subject service
+    # creates the row with the correct singular kind and registers the
+    # undo (which deletes the subject on pop).
     findings = db.get_cluster_findings(cluster_id, limit=1)
     species = findings[0].species if findings else "human"
-    # Snapshot exactly which findings assign_cluster_to_subject will touch
-    # (WHERE subject_id IS NULL) so undo can NULL precisely those — not any
-    # pre-existing assignments in the cluster.
     pending_ids = db.get_unassigned_cluster_finding_ids(cluster_id)
-    subject_id = db.create_subject_for_species(name, species=species)
-    db.assign_cluster_to_subject(cluster_id, subject_id)
-    undo_store.put(
-        description=describe_cluster_name(name, len(pending_ids)),
-        payload=DeleteSubjectPayload(subject_id=subject_id),
+    subject_id, _receipt = get_subject_service().create_subject_and_register_delete(
+        name, species=species, n_findings=len(pending_ids)
     )
-    # Redirect path; the toast is recovered by /api/undo/peek on the next
-    # page (same pattern as assign_cluster_to_existing's non-HX branch).
+    db.assign_cluster_to_subject(cluster_id, subject_id)
+    # Redirect path; the toast is recovered by /api/undo/peek on the
+    # next page (same pattern as assign_cluster_to_existing's non-HX branch).
     return RedirectResponse(_next_similar_cluster(subject_id, cluster_id), status_code=303)
 
 
@@ -221,31 +211,16 @@ def name_cluster(cluster_id: int, name: str = Form(...)) -> RedirectResponse:
 def mark_cluster_stranger(cluster_id: int) -> RedirectResponse:
     """Flag every uncurated finding in a cluster as a stranger.
 
-    Writes `exclusion_reason='stranger'` on each uncurated finding and
-    drops their cluster_findings rows (strangers don't re-cluster).
-    No subject is created; the findings stay visible on their source
-    photos but are hidden from clustering, merge-suggestions, auto-
-    assign, and the curation queue. Reversible from the photo page by
-    assigning a name (which overwrites the exclusion row).
+    Writes ``exclusion_reason='stranger'`` on each uncurated finding and
+    drops their cluster_findings rows (strangers don't re-cluster). No
+    subject is created; the findings stay visible on their source photos
+    but are hidden from clustering, merge-suggestions, auto-assign, and
+    the curation queue. Reversible via the undo token.
     """
     db = get_db()
-    undo_store = get_undo_store()
     findings = db.get_cluster_findings(cluster_id, limit=1)
     species = findings[0].species if findings else "human"
-
-    # Only touch findings that don't already carry a curation row.
-    pending_ids = db.get_unassigned_cluster_finding_ids(cluster_id)
-    if not pending_ids:
-        return RedirectResponse(_next_unnamed_cluster_url(cluster_id, species), status_code=303)
-
-    db.set_exclusions(pending_ids, "stranger")
-    db.remove_cluster_memberships(pending_ids)
-    noun = "face" if len(pending_ids) == 1 else "faces"
-    message = f"Marked {len(pending_ids)} {noun} as stranger"
-    undo_store.put(
-        description=message,
-        payload=RestoreFromStrangerPayload(cluster_id=cluster_id, finding_ids=pending_ids),
-    )
+    get_curation_service().mark_cluster_stranger(cluster_id)
     return RedirectResponse(_next_unnamed_cluster_url(cluster_id, species), status_code=303)
 
 
@@ -257,31 +232,16 @@ def assign_cluster_to_existing(
     force: bool = Form(False),
 ) -> RedirectResponse | HTMLResponse | JSONResponse:
     db = get_db()
-    undo_store = get_undo_store()
-    subject = db.get_subject(subject_id)
-    if not subject:
+    if not db.get_subject(subject_id):
         raise HTTPException(404, "Subject not found")
-    # Snapshot the findings that assign_cluster_to_subject will actually
-    # mutate (it only inserts assignment rows for findings with no prior
-    # row) so undo can delete exactly those rows.
-    pending_ids = db.get_unassigned_cluster_finding_ids(cluster_id)
     try:
-        db.assign_cluster_to_subject(cluster_id, subject_id, force=force)
-    except ValueError as e:
+        receipt = get_cluster_service().assign_cluster(cluster_id, subject_id, force=force)
+    except SpeciesMismatch as e:
         return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
-    token = undo_store.put(
-        description=describe_cluster_assign(subject.name, len(pending_ids)),
-        payload=RestoreSubjectIdsPayload(
-            snapshots=[
-                FindingSubjectSnapshot(finding_id=fid, subject_id=None) for fid in pending_ids
-            ]
-        ),
-    )
-    message = describe_cluster_assign(subject.name, len(pending_ids))
     if request.headers.get("HX-Request"):
-        return HTMLResponse("", headers=undo_hx_trigger(message, token))
-    # Non-htmx form post: the user is being redirected to the next cluster.
-    # The toast will be picked up on the new page by a /api/undo/peek poll.
+        return HTMLResponse("", headers=undo_hx_trigger(receipt.message, receipt.token))
+    # Non-htmx form post: redirect to the next cluster. Toast is picked
+    # up on the new page by a /api/undo/peek poll.
     return RedirectResponse(_next_similar_cluster(subject_id, cluster_id), status_code=303)
 
 
@@ -289,32 +249,19 @@ def assign_cluster_to_existing(
 def dismiss_cluster(cluster_id: int) -> JSONResponse:
     """Dismiss all findings in a cluster as non-faces."""
     db = get_db()
-    undo_store = get_undo_store()
-    finding_ids = db.get_cluster_finding_ids(cluster_id)
-    if not finding_ids:
-        return JSONResponse({"ok": True, "dismissed": 0})
     # Species must be read before dismiss strips cluster_findings rows.
     sample = db.get_cluster_findings(cluster_id, limit=1)
     species = sample[0].species if sample else "human"
-    # Snapshot subject_id/cluster_id per finding so undo can both clear
-    # the exclusion rows and restore prior assignments.
-    rows = db.snapshot_findings_fields(finding_ids)
-    snapshots = [
-        FindingFieldsSnapshot(finding_id=fid, subject_id=sid, cluster_id=cid)
-        for fid, sid, cid in rows
-    ]
-    db.dismiss_findings(finding_ids)
-    message = describe_cluster_dismiss(cluster_id, len(finding_ids))
-    token = undo_store.put(
-        description=message,
-        payload=DismissPayload(snapshots=snapshots),
-    )
+    finding_ids = db.get_cluster_finding_ids(cluster_id)
+    receipt = get_curation_service().dismiss_findings_as_cluster(cluster_id)
+    if receipt is None:
+        return JSONResponse({"ok": True, "dismissed": 0})
     return JSONResponse(
         {
             "ok": True,
             "dismissed": len(finding_ids),
-            "undo_token": token,
-            "message": message,
+            "undo_token": receipt.token,
+            "message": receipt.message,
             "next_url": _next_unnamed_cluster_url(cluster_id, species),
         }
     )
@@ -327,17 +274,7 @@ def merge_clusters_api(
     target_cluster: int = Form(...),
 ) -> JSONResponse | HTMLResponse:
     """Move all findings from source cluster into target cluster."""
-    db = get_db()
-    undo_store = get_undo_store()
-    # Snapshot the finding ids currently in the source cluster before the
-    # merge rewrites their cluster_id — undo flips them back to source.
-    moved_ids = db.get_cluster_finding_ids(source_cluster)
-    db.merge_clusters(source_cluster, target_cluster)
-    message = describe_cluster_merge(source_cluster, target_cluster, len(moved_ids))
-    token = undo_store.put(
-        description=message,
-        payload=RestoreClusterPayload(cluster_id=source_cluster, finding_ids=moved_ids),
-    )
+    receipt = get_cluster_service().merge_clusters(source_cluster, target_cluster)
     if request.headers.get("HX-Request"):
-        return HTMLResponse("", headers=undo_hx_trigger(message, token))
-    return JSONResponse({"ok": True, "undo_token": token, "message": message})
+        return HTMLResponse("", headers=undo_hx_trigger(receipt.message, receipt.token))
+    return JSONResponse({"ok": True, "undo_token": receipt.token, "message": receipt.message})

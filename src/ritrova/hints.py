@@ -1,4 +1,11 @@
-"""Business logic services extracted from presentation layers."""
+"""Pure-function hint helpers (cluster-hint + singleton-hint).
+
+Renamed from ``services.py`` in ADR-012 §M3 step 4: the module held only
+read-only similarity-scoring helpers (no mutations, no undo orchestration),
+which made the "services" name misleading now that ``services_domain/``
+hosts the real coordinator layer. These stay pure and are imported by
+router modules that render cluster / singleton pages.
+"""
 
 from __future__ import annotations
 

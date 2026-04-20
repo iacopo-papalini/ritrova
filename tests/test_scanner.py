@@ -1,26 +1,16 @@
-"""Tests for ritrova.scanner module."""
+"""Tests for ritrova.scanner module.
+
+ADR-012 §M3 step 4: the single-source scan helpers were deleted and
+their tests removed. What remains: file-discovery + EXIF guard tests
+that still apply to the slim discovery-only module.
+"""
 
 from pathlib import Path
 from unittest import TestCase
 
-import numpy as np
 import pytest
 
-from ritrova.scanner import _is_duplicate, find_images, find_videos
-
-
-def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    v = rng.standard_normal(dim).astype(np.float32)
-    return v / np.linalg.norm(v)
-
-
-def _make_jpeg(path: Path) -> None:
-    """Create a minimal valid JPEG file."""
-    from PIL import Image
-
-    img = Image.new("RGB", (200, 200), color="blue")
-    img.save(str(path), "JPEG")
+from ritrova.scanner import find_images, find_videos
 
 
 def _stub_file(path: Path) -> None:
@@ -85,22 +75,6 @@ class TestFindVideos(TestCase):
         (self.tmp / "empty.mp4").touch()
         result = find_videos(self.tmp)
         assert [p.name for p in result] == ["good.mp4"]
-
-
-class TestIsDuplicate(TestCase):
-    def test_above_threshold(self) -> None:
-        emb = np.array([1.0, 0.0], dtype=np.float32)
-        seen = [np.array([1.0, 0.0], dtype=np.float32)]
-        assert _is_duplicate(emb, seen, threshold=0.5)
-
-    def test_below_threshold(self) -> None:
-        emb = np.array([1.0, 0.0], dtype=np.float32)
-        seen = [np.array([0.0, 1.0], dtype=np.float32)]
-        assert not _is_duplicate(emb, seen, threshold=0.5)
-
-    def test_empty_seen(self) -> None:
-        emb = np.array([1.0, 0.0], dtype=np.float32)
-        assert not _is_duplicate(emb, [], threshold=0.5)
 
 
 class TestGetExifGps(TestCase):

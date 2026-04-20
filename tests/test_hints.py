@@ -1,4 +1,4 @@
-"""Tests for ritrova.services module."""
+"""Tests for ritrova.hints module (renamed from services in ADR-012 §M3)."""
 
 from unittest import TestCase
 
@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from ritrova.db import FaceDB
-from ritrova.services import (
+from ritrova.hints import (
     compute_cluster_hint,
     compute_singleton_hints,
 )

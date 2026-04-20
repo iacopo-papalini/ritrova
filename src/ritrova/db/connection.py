@@ -33,10 +33,11 @@ KNOWN_SCAN_TYPES: list[dict[str, str | None]] = [
         "pipeline": "arcface(buffalo_l, det_size=640)",
         "outputs": "findings(species=human, 512-dim embedding, bbox, confidence)",
         "introduced_at": "2026-04",
-        "retired_at": None,
+        "retired_at": "2026-04-20",
         "notes": (
-            "Legacy face-only pipeline. No MIN_FACE_SIZE filter, no quality "
-            "thresholds. Still the authoritative face baseline for pre-composite rows."
+            "Retired in ADR-012 §M3. Pre-composite face-only pipeline. "
+            "Historic `human` scan rows stay put (logical FK only); new "
+            "writes are `subjects`. Rescan no longer produces this type."
         ),
     },
     {
@@ -44,8 +45,11 @@ KNOWN_SCAN_TYPES: list[dict[str, str | None]] = [
         "pipeline": "yolo(yolo11m, classes={cat=15,dog=16}) -> siglip(base-patch16-224)",
         "outputs": "findings(species=dog|cat|other_pet, 768-dim embedding, bbox, confidence)",
         "introduced_at": "2026-04",
-        "retired_at": None,
-        "notes": "Legacy pet-only pipeline.",
+        "retired_at": "2026-04-20",
+        "notes": (
+            "Retired in ADR-012 §M3. Pre-composite pet-only pipeline. "
+            "Historic `pet` scan rows stay put; new writes are `subjects`."
+        ),
     },
     {
         "name": "composite",
