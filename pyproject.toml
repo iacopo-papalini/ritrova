@@ -79,7 +79,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RET", "T20", "LOG"]
 ignore = ["E501", "UP047"]
 
 [tool.ruff.lint.per-file-ignores]
-"src/ritrova/app.py" = ["B008"]
+"src/ritrova/app/**/*.py" = ["B008"]
 "src/ritrova/cli.py" = ["T20"]
 "src/ritrova/scanner.py" = ["T20"]
 "src/ritrova/scan_pipeline.py" = ["T20"]

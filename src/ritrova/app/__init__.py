@@ -18,20 +18,20 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .cluster import (
+from ..cluster import (
     compare_subjects,
     find_similar_cluster,
     find_similar_unclustered,
     rank_subjects_for_cluster,
     suggest_merges,
 )
-from .db import FaceDB
-from .images import crop_face_thumbnail, resize_photo
-from .services import (
+from ..db import FaceDB
+from ..images import crop_face_thumbnail, resize_photo
+from ..services import (
     compute_cluster_hint,
     compute_singleton_hints,
 )
-from .undo import (
+from ..undo import (
     AddSubjectToCirclePayload,
     DeleteSubjectPayload,
     DismissPayload,
@@ -77,8 +77,8 @@ def _kind_for_subject(subject_kind: str) -> KindType:
     return "pets" if subject_kind == "pet" else "people"
 
 
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-STATIC_DIR = Path(__file__).parent / "static"
+TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
+STATIC_DIR = Path(__file__).parent.parent / "static"
 
 _DATE_RE = re.compile(r"(\d{4})-(\d{2})")
 
