@@ -1321,9 +1321,18 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         subject_kind = _subject_kind_for_species(species)
         subjects = db.get_subjects_by_kind(subject_kind)
         avatars = db.get_random_avatars([s.id for s in subjects])
+        in_circle = {
+            int(r[0])
+            for r in db.conn.execute("SELECT DISTINCT subject_id FROM subject_circles").fetchall()
+        }
         return templates.TemplateResponse(
             name="subjects.html",
-            context={"subjects": subjects, "kind": kind, "avatars": avatars},
+            context={
+                "subjects": subjects,
+                "kind": kind,
+                "avatars": avatars,
+                "in_circle": in_circle,
+            },
             request=request,
         )
 

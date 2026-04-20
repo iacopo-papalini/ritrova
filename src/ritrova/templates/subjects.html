@@ -2,29 +2,49 @@
 {% block title %}{% if kind == 'pets' %}Pets{% else %}Persons{% endif %}{% endblock %}
 {% block content %}
 
-{# Embed names as JSON in a script tag — safe context for tojson #}
-<script>window._subjectNames = {{ subjects | map(attribute='name') | list | tojson }};</script>
+{# Embed (name, inCircle) pairs so client-side filter can count without touching the DOM #}
+<script>
+  window._subjectIndex = [
+    {% for subject in subjects -%}
+    { name: {{ subject.name|tojson }}, inCircle: {{ 'true' if subject.id in in_circle else 'false' }} }{% if not loop.last %},{% endif %}
+    {% endfor %}
+  ];
+</script>
 
 <div x-data="{
   filter: '',
-  names: window._subjectNames,
+  orphansOnly: localStorage.getItem('subjects.{{ kind }}.orphansOnly') === '1',
+  index: window._subjectIndex,
   get matchCount() {
-    if (!this.filter) return this.names.length;
     const q = this.filter.toLowerCase();
-    return this.names.filter(n => n.toLowerCase().includes(q)).length;
+    return this.index.filter(s =>
+      (!q || s.name.toLowerCase().includes(q)) &&
+      (!this.orphansOnly || !s.inCircle)
+    ).length;
   }
-}">
-  <div class="mb-6 flex items-center justify-between gap-4">
+}"
+  x-init="$watch('orphansOnly', v => localStorage.setItem('subjects.{{ kind }}.orphansOnly', v ? '1' : '0'))">
+  <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
     <h1 class="font-display text-2xl font-bold tracking-tight text-gallery-text shrink-0">
       {% if kind == 'pets' %}Pets{% else %}Persons{% endif %}
       <span class="text-gallery-muted">(<span x-text="matchCount"></span>)</span>
     </h1>
-    <input type="text"
-           x-model="filter"
-           placeholder="Filter..."
-           class="w-48 rounded-lg border border-gallery-border bg-gallery-card px-3 py-1.5 text-sm text-gallery-text
-                  placeholder-gallery-muted outline-none transition-all
-                  focus:w-64 focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+    <div class="flex items-center gap-3">
+      <button type="button"
+              @click="orphansOnly = !orphansOnly"
+              class="rounded-full border px-3 py-1.5 text-sm font-medium transition-colors cursor-pointer"
+              :class="orphansOnly
+                ? 'bg-gallery-accent text-gallery-bg border-gallery-accent'
+                : 'border-gallery-border text-gallery-muted hover:text-gallery-text hover:bg-gallery-card'">
+        Not in any circle
+      </button>
+      <input type="text"
+             x-model="filter"
+             placeholder="Filter..."
+             class="w-48 rounded-lg border border-gallery-border bg-gallery-card px-3 py-1.5 text-sm text-gallery-text
+                    placeholder-gallery-muted outline-none transition-all
+                    focus:w-64 focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+    </div>
   </div>
 
   {% if not subjects %}
@@ -41,15 +61,19 @@
   <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
     {% for subject in subjects %}
       <div data-name="{{ subject.name|lower }}"
-           x-show="!filter || $el.dataset.name.includes(filter.toLowerCase())">
+           data-in-circle="{{ 'true' if subject.id in in_circle else 'false' }}"
+           x-show="(!filter || $el.dataset.name.includes(filter.toLowerCase()))
+                   && (!orphansOnly || $el.dataset.inCircle === 'false')">
         {% include "partials/subject_card.html" %}
       </div>
     {% endfor %}
   </div>
 
-  <div x-show="filter && matchCount === 0" x-cloak
+  <div x-show="matchCount === 0 && (filter || orphansOnly)" x-cloak
        class="rounded-xl border border-gallery-border bg-gallery-card px-6 py-12 text-center mt-4">
-    <p class="text-gallery-muted">No matches for "<span x-text="filter"></span>"</p>
+    <p class="text-gallery-muted">
+      No matches<template x-if="filter"><span> for "<span x-text="filter"></span>"</span></template><template x-if="orphansOnly"><span> — every {% if kind == 'pets' %}pet{% else %}person{% endif %} shown is in at least one circle</span></template>.
+    </p>
   </div>
   {% endif %}
 </div>
