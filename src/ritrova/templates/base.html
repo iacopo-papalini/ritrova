@@ -16,8 +16,9 @@
   <!-- htmx 2.0 -->
   <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
 
-  <!-- App JS (must load before Alpine so alpine:init listener is registered) -->
-  <script defer src="/static/app.js?v=13"></script>
+  <!-- App JS (ES module — see ADR-012 §M1 step 6). Must load before Alpine
+       so the alpine:init listener in alpine-components.js is registered. -->
+  <script type="module" src="/static/app.js?v=14"></script>
 
   <!-- Alpine.js 3.x -->
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
