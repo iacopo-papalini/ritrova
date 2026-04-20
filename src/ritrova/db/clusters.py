@@ -159,6 +159,23 @@ class ClusterMixin(_DBAccessor):
         ).fetchall()
         return [r[0] for r in rows]
 
+    @_locked
+    def get_cluster_face_stubs(
+        self, cluster_id: int, limit: int = 200, offset: int = 0
+    ) -> list[tuple[int, int]]:
+        """Paginated ``(finding_id, source_id)`` for every finding in a cluster.
+
+        Routes use this to render a face grid + link each tile back to its
+        photo without materialising full ``Finding`` rows. Goes through
+        ``_FINDING_FROM`` so curation-state changes can't leak around the
+        JOIN convention.
+        """
+        rows = self.conn.execute(
+            f"SELECT f.id, f.source_id {_FINDING_FROM} WHERE cf.cluster_id = ? LIMIT ? OFFSET ?",
+            (cluster_id, limit, offset),
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
     def merge_clusters(self, source_id: int, target_id: int) -> None:
         """Move all findings from source cluster to target cluster."""
         self.merge_cluster_memberships(source_id, target_id)  # type: ignore[attr-defined]

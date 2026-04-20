@@ -167,13 +167,8 @@ def cluster_hint_html(request: Request, cluster_id: int) -> HTMLResponse:
 @router.get("/api/clusters/{cluster_id}/faces")
 def cluster_faces_api(cluster_id: int, offset: int = 0, limit: int = 200) -> JSONResponse:
     db = get_db()
-    rows = db.query(
-        "SELECT f.id, f.source_id FROM findings f "
-        "JOIN cluster_findings cf ON cf.finding_id = f.id "
-        "WHERE cf.cluster_id = ? LIMIT ? OFFSET ?",
-        (cluster_id, limit, offset),
-    )
-    return JSONResponse([{"id": r[0], "source_id": r[1]} for r in rows])
+    stubs = db.get_cluster_face_stubs(cluster_id, limit=limit, offset=offset)
+    return JSONResponse([{"id": fid, "source_id": sid} for fid, sid in stubs])
 
 
 @router.get("/api/clusters/{cluster_id}/faces-html", response_class=HTMLResponse)
@@ -181,13 +176,8 @@ def cluster_faces_html(
     request: Request, cluster_id: int, offset: int = 0, limit: int = 200
 ) -> HTMLResponse:
     db = get_db()
-    rows = db.query(
-        "SELECT f.id, f.source_id FROM findings f "
-        "JOIN cluster_findings cf ON cf.finding_id = f.id "
-        "WHERE cf.cluster_id = ? LIMIT ? OFFSET ?",
-        (cluster_id, limit, offset),
-    )
-    faces = [{"id": r[0], "source_id": r[1]} for r in rows]
+    stubs = db.get_cluster_face_stubs(cluster_id, limit=limit, offset=offset)
+    faces = [{"id": fid, "source_id": sid} for fid, sid in stubs]
     return get_templates().TemplateResponse(
         name="partials/face_grid.html",
         context={

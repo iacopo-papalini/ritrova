@@ -52,13 +52,8 @@ def claim_faces(
 @router.get("/api/subjects/{subject_id}/findings")
 def subject_faces_api(subject_id: int, offset: int = 0, limit: int = 200) -> JSONResponse:
     db = get_db()
-    rows = db.query(
-        "SELECT f.id, f.source_id FROM findings f "
-        "JOIN finding_assignment fa ON fa.finding_id = f.id "
-        "WHERE fa.subject_id = ? LIMIT ? OFFSET ?",
-        (subject_id, limit, offset),
-    )
-    return JSONResponse([{"id": r[0], "source_id": r[1]} for r in rows])
+    stubs = db.get_subject_face_stubs(subject_id, limit=limit, offset=offset)
+    return JSONResponse([{"id": fid, "source_id": sid} for fid, sid in stubs])
 
 
 @router.get("/api/subjects/{subject_id}/findings-html", response_class=HTMLResponse)

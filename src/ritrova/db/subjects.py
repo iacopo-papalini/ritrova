@@ -208,6 +208,23 @@ class SubjectMixin(_DBAccessor):
         self.conn.commit()
 
     @_locked
+    def get_subject_face_stubs(
+        self, subject_id: int, limit: int = 200, offset: int = 0
+    ) -> list[tuple[int, int]]:
+        """Paginated ``(finding_id, source_id)`` for a subject's assigned findings.
+
+        Used by face-grid endpoints that render thumbnails + link to the
+        source photo and don't need full ``Finding`` rows. Goes through
+        ``_FINDING_FROM`` so a change to the curation-state JOIN convention
+        stays local to ``findings.py``.
+        """
+        rows = self.conn.execute(
+            f"SELECT f.id, f.source_id {_FINDING_FROM} WHERE fa.subject_id = ? LIMIT ? OFFSET ?",
+            (subject_id, limit, offset),
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    @_locked
     def get_subject_findings(
         self, subject_id: int, limit: int = 200, offset: int = 0
     ) -> list[Finding]:
