@@ -14,8 +14,7 @@ from .embeddings import cosine_similarity, normalize
 def compute_cluster_hint(db: FaceDB, cluster_id: int) -> dict[str, Any] | None:
     """Return the best matching subject for a cluster, or None.
 
-    Returns dict with keys: person_id, name, sim (percentage).
-    (person_id kept because the FK column on findings is still person_id.)
+    Returns dict with keys: subject_id, name, sim (percentage).
     """
     findings = db.get_cluster_findings(cluster_id, limit=200)
     if not findings:
@@ -39,7 +38,7 @@ def compute_cluster_hint(db: FaceDB, cluster_id: int) -> dict[str, Any] | None:
 
     if best_name is None:
         return None
-    return {"person_id": best_sid, "name": best_name, "sim": round(best_sim * 100, 1)}
+    return {"subject_id": best_sid, "name": best_name, "sim": round(best_sim * 100, 1)}
 
 
 def compute_singleton_hints(
@@ -49,8 +48,7 @@ def compute_singleton_hints(
 ) -> dict[int, dict[str, Any]]:
     """For each singleton finding, find the nearest subject by centroid similarity.
 
-    Returns {finding_id: {"person_id": int, "name": str, "sim": float}}.
-    (person_id kept because the FK column on findings is still person_id.)
+    Returns {finding_id: {"subject_id": int, "name": str, "sim": float}}.
     """
     # Internal: domain layer thinks in singular subject `kind` for
     # subject lookups and embedding-dim selection.
@@ -70,7 +68,7 @@ def compute_singleton_hints(
         best_sim = float(sims[best_idx])
         sid, sname, _ = subject_centroids[best_idx]
         hints[finding.id] = {
-            "person_id": sid,
+            "subject_id": sid,
             "name": sname,
             "sim": round(best_sim * 100, 1),
         }

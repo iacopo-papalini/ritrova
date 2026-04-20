@@ -133,8 +133,8 @@ def photo_page(request: Request, photo_id: int) -> HTMLResponse:
     have_dims = source.width > 0 and source.height > 0
     for finding in findings:
         subject_name = None
-        if finding.person_id:
-            s = db.get_subject(finding.person_id)
+        if finding.subject_id:
+            s = db.get_subject(finding.subject_id)
             subject_name = s.name if s else None
         findings_data.append(
             {
@@ -143,8 +143,8 @@ def photo_page(request: Request, photo_id: int) -> HTMLResponse:
                 "bbox_y_pct": (finding.bbox_y / source.height * 100) if have_dims else None,
                 "bbox_w_pct": (finding.bbox_w / source.width * 100) if have_dims else None,
                 "bbox_h_pct": (finding.bbox_h / source.height * 100) if have_dims else None,
-                "person_id": finding.person_id,
-                "person_name": subject_name,
+                "subject_id": finding.subject_id,
+                "subject_name": subject_name,
                 "confidence": finding.confidence,
                 "is_stranger": finding.exclusion_reason == "stranger",
             }

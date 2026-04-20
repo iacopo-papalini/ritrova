@@ -21,7 +21,7 @@
                   if (selected.length < 2 || searching) return;
                   searching = true;
                   const ids = selected.map(s => s.id).join(',');
-                  const url = `/api/together-html?person_ids=${ids}&alone=${alone}&source_type=${sourceType}`;
+                  const url = `/api/together-html?subject_ids=${ids}&alone=${alone}&source_type=${sourceType}`;
                   fetch(url)
                     .then(r => r.text())
                     .then(html => { document.getElementById('results').innerHTML = html; })

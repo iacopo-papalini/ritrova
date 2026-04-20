@@ -13,10 +13,10 @@ from fastapi.responses import JSONResponse
 from ...undo import (
     DismissPayload,
     FindingFieldsSnapshot,
-    FindingPersonSnapshot,
+    FindingSubjectSnapshot,
     RestoreClusterPayload,
     RestoreFromStrangerBatchPayload,
-    RestorePersonIdsPayload,
+    RestoreSubjectIdsPayload,
 )
 from ..deps import get_db, get_undo_store
 from ..helpers import describe_findings_dismiss, describe_findings_reassign
@@ -27,20 +27,20 @@ router = APIRouter()
 @router.post("/api/findings/swap")
 def swap_findings(
     face_ids: list[int] = Body(...),
-    target_person_id: int = Body(...),
+    target_subject_id: int = Body(...),
 ) -> JSONResponse:
     db = get_db()
     undo_store = get_undo_store()
     prior = db.snapshot_findings_fields(face_ids)
-    snapshots = [FindingPersonSnapshot(finding_id=fid, person_id=pid) for fid, pid, _cid in prior]
+    snapshots = [FindingSubjectSnapshot(finding_id=fid, subject_id=sid) for fid, sid, _cid in prior]
     for fid in face_ids:
-        db.assign_finding_to_subject(fid, target_person_id)
-    subject = db.get_subject(target_person_id)
-    name = subject.name if subject else f"#{target_person_id}"
+        db.assign_finding_to_subject(fid, target_subject_id)
+    subject = db.get_subject(target_subject_id)
+    name = subject.name if subject else f"#{target_subject_id}"
     message = describe_findings_reassign("Swapped", name, len(face_ids))
     token = undo_store.put(
         description=message,
-        payload=RestorePersonIdsPayload(snapshots=snapshots),
+        payload=RestoreSubjectIdsPayload(snapshots=snapshots),
     )
     return JSONResponse(
         {"ok": True, "swapped": len(face_ids), "undo_token": token, "message": message}
@@ -63,8 +63,8 @@ def mark_findings_stranger(face_ids: list[int] = Body(..., embed=True)) -> JSONR
         return JSONResponse({"ok": True, "marked": 0})
     rows = db.snapshot_findings_fields(face_ids)
     snapshots = [
-        FindingFieldsSnapshot(finding_id=fid, person_id=pid, cluster_id=cid)
-        for fid, pid, cid in rows
+        FindingFieldsSnapshot(finding_id=fid, subject_id=sid, cluster_id=cid)
+        for fid, sid, cid in rows
     ]
     db.set_exclusions(face_ids, "stranger")
     db.remove_cluster_memberships(face_ids)
@@ -87,8 +87,8 @@ def dismiss_findings(face_ids: list[int] = Body(..., embed=True)) -> JSONRespons
         return JSONResponse({"ok": True, "dismissed": 0})
     rows = db.snapshot_findings_fields(face_ids)
     snapshots = [
-        FindingFieldsSnapshot(finding_id=fid, person_id=pid, cluster_id=cid)
-        for fid, pid, cid in rows
+        FindingFieldsSnapshot(finding_id=fid, subject_id=sid, cluster_id=cid)
+        for fid, sid, cid in rows
     ]
     db.dismiss_findings(face_ids)
     message = describe_findings_dismiss(len(face_ids))
@@ -124,11 +124,11 @@ def exclude_findings(
 
 @router.post("/api/findings/{finding_id}/assign")
 def assign_finding(
-    finding_id: int, person_id: int = Form(...), force: bool = Form(False)
+    finding_id: int, subject_id: int = Form(...), force: bool = Form(False)
 ) -> JSONResponse:
     db = get_db()
     try:
-        db.assign_finding_to_subject(finding_id, person_id, force=force)
+        db.assign_finding_to_subject(finding_id, subject_id, force=force)
     except ValueError as e:
         return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
     return JSONResponse({"ok": True})
@@ -143,16 +143,16 @@ def unassign_findings_batch(face_ids: list[int] = Body(..., embed=True)) -> JSON
         return JSONResponse({"ok": True, "unassigned": 0})
     prior = db.snapshot_findings_fields(face_ids)
     snapshots = [
-        FindingPersonSnapshot(finding_id=fid, person_id=pid)
-        for fid, pid, _cid in prior
-        if pid is not None
+        FindingSubjectSnapshot(finding_id=fid, subject_id=sid)
+        for fid, sid, _cid in prior
+        if sid is not None
     ]
     db.unassign_findings(face_ids)
     n = len(face_ids)
     message = f"Removed {n} face{'s' if n != 1 else ''}"
     token = undo_store.put(
         description=message,
-        payload=RestorePersonIdsPayload(snapshots=snapshots),
+        payload=RestoreSubjectIdsPayload(snapshots=snapshots),
     )
     return JSONResponse({"ok": True, "unassigned": n, "undo_token": token, "message": message})
 
@@ -161,16 +161,18 @@ def unassign_findings_batch(face_ids: list[int] = Body(..., embed=True)) -> JSON
 def unassign_finding(finding_id: int) -> JSONResponse:
     db = get_db()
     undo_store = get_undo_store()
-    prior_person_id = db.get_finding_person_id(finding_id)
+    prior_subject_id = db.get_finding_subject_id(finding_id)
     db.unassign_finding(finding_id)
-    if prior_person_id is not None:
-        subject = db.get_subject(prior_person_id)
-        name = subject.name if subject else f"#{prior_person_id}"
+    if prior_subject_id is not None:
+        subject = db.get_subject(prior_subject_id)
+        name = subject.name if subject else f"#{prior_subject_id}"
         message = f"Removed face from {name}"
         token = undo_store.put(
             description=message,
-            payload=RestorePersonIdsPayload(
-                snapshots=[FindingPersonSnapshot(finding_id=finding_id, person_id=prior_person_id)]
+            payload=RestoreSubjectIdsPayload(
+                snapshots=[
+                    FindingSubjectSnapshot(finding_id=finding_id, subject_id=prior_subject_id)
+                ]
             ),
         )
         return JSONResponse({"ok": True, "undo_token": token, "message": message})

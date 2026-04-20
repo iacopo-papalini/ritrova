@@ -58,7 +58,7 @@ class TestAutoAssign(TestCase):
         # Verify findings assigned to Alice
         finding = self.db.get_finding(fid2)
         assert finding is not None
-        assert finding.person_id == sid
+        assert finding.subject_id == sid
 
     def test_below_threshold_skips(self) -> None:
         sid = self.db.create_subject("Alice")

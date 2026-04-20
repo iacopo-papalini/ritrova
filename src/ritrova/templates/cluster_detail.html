@@ -26,7 +26,7 @@
        x-data="subjectPicker({
          onSelect(subject) {
            const fd = new FormData();
-           fd.append('person_id', subject.id);
+           fd.append('subject_id', subject.id);
            fetch('/api/clusters/{{ cluster_id }}/assign', { method: 'POST', body: fd, redirect: 'follow' })
              .then(r => {
                if (r.ok) { location.href = r.url; return; }
@@ -40,7 +40,7 @@
                    });
                    if (!ok) return;
                    const fd2 = new FormData();
-                   fd2.append('person_id', subject.id);
+                   fd2.append('subject_id', subject.id);
                    fd2.append('force', 'true');
                    fetch('/api/clusters/{{ cluster_id }}/assign', { method: 'POST', body: fd2, redirect: 'follow' })
                      .then(r2 => { if (r2.ok) location.href = r2.url; });

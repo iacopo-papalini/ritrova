@@ -3,10 +3,8 @@
 Apr 2026 refactor: curation state (subject assignment + exclusion) and
 cluster membership now live on `finding_assignment` and `cluster_findings`.
 All read queries LEFT JOIN both side tables and alias their columns back
-to the Finding dataclass's existing field names (`person_id`,
-`cluster_id`) plus the new `exclusion_reason`. The old denormalized
-columns on `findings` are still present at this commit but are no longer
-read — Commit D drops them.
+onto the Finding dataclass's fields (`subject_id`, `cluster_id`,
+`exclusion_reason`).
 """
 
 from __future__ import annotations
@@ -24,7 +22,7 @@ _FINDING_COLUMNS = (
     "f.id, f.source_id, f.bbox_x, f.bbox_y, f.bbox_w, f.bbox_h, "
     "f.embedding, f.confidence, f.detected_at, f.species, "
     "f.frame_path, f.embedding_dim, f.scan_id, f.frame_number, "
-    "fa.subject_id AS person_id, "
+    "fa.subject_id AS subject_id, "
     "fa.exclusion_reason AS exclusion_reason, "
     "cf.cluster_id AS cluster_id"
 )
@@ -48,7 +46,7 @@ def _row_to_finding(row: object) -> Finding | None:
         bbox_w=row["bbox_w"],  # type: ignore[index]
         bbox_h=row["bbox_h"],  # type: ignore[index]
         embedding=np.frombuffer(emb_bytes, dtype=np.float32),
-        person_id=row["person_id"],  # type: ignore[index]
+        subject_id=row["subject_id"],  # type: ignore[index]
         cluster_id=row["cluster_id"],  # type: ignore[index]
         confidence=row["confidence"],  # type: ignore[index]
         detected_at=row["detected_at"],  # type: ignore[index]

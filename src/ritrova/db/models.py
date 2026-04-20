@@ -28,7 +28,7 @@ class Finding:
     bbox_w: int
     bbox_h: int
     embedding: np.ndarray
-    person_id: int | None  # populated via LEFT JOIN finding_assignment.subject_id
+    subject_id: int | None  # populated via LEFT JOIN finding_assignment.subject_id
     cluster_id: int | None  # populated via LEFT JOIN cluster_findings.cluster_id
     confidence: float
     detected_at: str

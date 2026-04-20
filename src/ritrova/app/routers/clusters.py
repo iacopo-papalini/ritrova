@@ -16,10 +16,10 @@ from ...undo import (
     DeleteSubjectPayload,
     DismissPayload,
     FindingFieldsSnapshot,
-    FindingPersonSnapshot,
+    FindingSubjectSnapshot,
     RestoreClusterPayload,
     RestoreFromStrangerPayload,
-    RestorePersonIdsPayload,
+    RestoreSubjectIdsPayload,
 )
 from ..deps import get_db, get_templates, get_undo_store
 from ..helpers import (
@@ -263,26 +263,28 @@ def mark_cluster_stranger(cluster_id: int) -> RedirectResponse:
 def assign_cluster_to_existing(
     request: Request,
     cluster_id: int,
-    person_id: int = Form(...),
+    subject_id: int = Form(...),
     force: bool = Form(False),
 ) -> RedirectResponse | HTMLResponse | JSONResponse:
     db = get_db()
     undo_store = get_undo_store()
-    subject = db.get_subject(person_id)
+    subject = db.get_subject(subject_id)
     if not subject:
         raise HTTPException(404, "Subject not found")
     # Snapshot the findings that assign_cluster_to_subject will actually
-    # mutate (it UPDATEs only where person_id IS NULL) so undo can flip
-    # exactly those rows back to NULL.
+    # mutate (it only inserts assignment rows for findings with no prior
+    # row) so undo can delete exactly those rows.
     pending_ids = db.get_unassigned_cluster_finding_ids(cluster_id)
     try:
-        db.assign_cluster_to_subject(cluster_id, person_id, force=force)
+        db.assign_cluster_to_subject(cluster_id, subject_id, force=force)
     except ValueError as e:
         return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
     token = undo_store.put(
         description=describe_cluster_assign(subject.name, len(pending_ids)),
-        payload=RestorePersonIdsPayload(
-            snapshots=[FindingPersonSnapshot(finding_id=fid, person_id=None) for fid in pending_ids]
+        payload=RestoreSubjectIdsPayload(
+            snapshots=[
+                FindingSubjectSnapshot(finding_id=fid, subject_id=None) for fid in pending_ids
+            ]
         ),
     )
     message = describe_cluster_assign(subject.name, len(pending_ids))
@@ -290,7 +292,7 @@ def assign_cluster_to_existing(
         return HTMLResponse("", headers=undo_hx_trigger(message, token))
     # Non-htmx form post: the user is being redirected to the next cluster.
     # The toast will be picked up on the new page by a /api/undo/peek poll.
-    return RedirectResponse(_next_similar_cluster(person_id, cluster_id), status_code=303)
+    return RedirectResponse(_next_similar_cluster(subject_id, cluster_id), status_code=303)
 
 
 @router.post("/api/clusters/{cluster_id}/dismiss")
@@ -304,12 +306,12 @@ def dismiss_cluster(cluster_id: int) -> JSONResponse:
     # Species must be read before dismiss strips cluster_findings rows.
     sample = db.get_cluster_findings(cluster_id, limit=1)
     species = sample[0].species if sample else "human"
-    # Snapshot person_id/cluster_id per finding so undo can both delete
-    # the dismissed_findings rows and restore prior assignments.
+    # Snapshot subject_id/cluster_id per finding so undo can both clear
+    # the exclusion rows and restore prior assignments.
     rows = db.snapshot_findings_fields(finding_ids)
     snapshots = [
-        FindingFieldsSnapshot(finding_id=fid, person_id=pid, cluster_id=cid)
-        for fid, pid, cid in rows
+        FindingFieldsSnapshot(finding_id=fid, subject_id=sid, cluster_id=cid)
+        for fid, sid, cid in rows
     ]
     db.dismiss_findings(finding_ids)
     message = describe_cluster_dismiss(cluster_id, len(finding_ids))

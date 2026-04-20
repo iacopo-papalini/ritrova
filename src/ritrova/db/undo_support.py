@@ -1,8 +1,8 @@
 """Undo snapshot/restore mixin (FEAT-5).
 
-Apr 2026 refactor: snapshots + restores now operate on `finding_assignment`
-and `cluster_findings` rather than the old `findings.person_id` /
-`cluster_id` columns.
+Apr 2026 refactor: snapshots + restores operate on `finding_assignment`
+and `cluster_findings`; the old denormalized columns on `findings` are
+gone.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ class UndoMixin(_DBAccessor):
         rows = self.conn.execute(
             f"""
             SELECT f.id,
-                   fa.subject_id AS person_id,
+                   fa.subject_id AS subject_id,
                    cf.cluster_id AS cluster_id
             FROM findings f
             LEFT JOIN finding_assignment fa ON fa.finding_id = f.id
@@ -34,7 +34,7 @@ class UndoMixin(_DBAccessor):
             """,
             tuple(finding_ids),
         ).fetchall()
-        return [(r["id"], r["person_id"], r["cluster_id"]) for r in rows]
+        return [(r["id"], r["subject_id"], r["cluster_id"]) for r in rows]
 
     @_locked
     def restore_dismissed_findings(
@@ -60,7 +60,7 @@ class UndoMixin(_DBAccessor):
             tuple(finding_ids),
         )
         # Re-insert subject assignments for those that had one.
-        subject_rows = [(fid, pid, now) for fid, pid, _cid in snapshots if pid is not None]
+        subject_rows = [(fid, sid, now) for fid, sid, _cid in snapshots if sid is not None]
         if subject_rows:
             self.conn.executemany(
                 "INSERT OR REPLACE INTO finding_assignment"
@@ -69,7 +69,7 @@ class UndoMixin(_DBAccessor):
                 subject_rows,
             )
         # Re-insert cluster memberships for those that had one.
-        cluster_rows = [(fid, cid) for fid, _pid, cid in snapshots if cid is not None]
+        cluster_rows = [(fid, cid) for fid, _sid, cid in snapshots if cid is not None]
         if cluster_rows:
             self.conn.executemany(
                 "INSERT OR REPLACE INTO cluster_findings(finding_id, cluster_id) VALUES (?, ?)",
@@ -89,7 +89,7 @@ class UndoMixin(_DBAccessor):
         self.conn.commit()
 
     @_locked
-    def get_finding_person_id(self, finding_id: int) -> int | None:
+    def get_finding_subject_id(self, finding_id: int) -> int | None:
         """Read just the subject_id for a finding."""
         row = self.conn.execute(
             "SELECT subject_id FROM finding_assignment WHERE finding_id = ?",
@@ -150,7 +150,7 @@ class UndoMixin(_DBAccessor):
         self.conn.commit()
 
     @_locked
-    def restore_person_ids(self, snapshots: list[tuple[int, int | None]]) -> None:
+    def restore_subject_ids(self, snapshots: list[tuple[int, int | None]]) -> None:
         """Set per-finding subject_id from a snapshot map.
 
         Each element is ``(finding_id, prior_subject_id)``. A None means
@@ -160,8 +160,8 @@ class UndoMixin(_DBAccessor):
         if not snapshots:
             return
         now = self._now()
-        to_delete = [fid for fid, pid in snapshots if pid is None]
-        to_upsert = [(fid, pid, now) for fid, pid in snapshots if pid is not None]
+        to_delete = [fid for fid, sid in snapshots if sid is None]
+        to_upsert = [(fid, sid, now) for fid, sid in snapshots if sid is not None]
         if to_delete:
             placeholders = ",".join("?" * len(to_delete))
             self.conn.execute(

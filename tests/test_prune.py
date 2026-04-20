@@ -27,7 +27,7 @@ class TestPruneDuplicateFindings(TestCase):
         self,
         scan_id: int,
         species: str = "human",
-        person_id: int | None = None,
+        subject_id: int | None = None,
         cluster_id: int | None = None,
     ) -> int:
         self.db.add_findings_batch(
@@ -37,8 +37,8 @@ class TestPruneDuplicateFindings(TestCase):
         )
         row = self.db.conn.execute("SELECT id FROM findings ORDER BY id DESC LIMIT 1").fetchone()
         fid = row[0]
-        if person_id is not None:
-            self.db.set_subject(fid, person_id)
+        if subject_id is not None:
+            self.db.set_subject(fid, subject_id)
         if cluster_id is not None:
             self.db.set_cluster_memberships({fid: cluster_id})
         return fid
@@ -46,7 +46,7 @@ class TestPruneDuplicateFindings(TestCase):
     def test_no_duplicates_returns_zero(self) -> None:
         subject_id = self.db.create_subject("Alice")
         scan_id = self.db.record_scan(self.source_id, "human")
-        self._add_finding(scan_id, person_id=subject_id)
+        self._add_finding(scan_id, subject_id=subject_id)
         report = self.db.prune_duplicate_findings()
         assert report.total == 0
 
@@ -54,9 +54,9 @@ class TestPruneDuplicateFindings(TestCase):
         subject_id = self.db.create_subject("Alice")
         # Old scan (human) and new scan (composite) both have a finding for Alice
         scan1 = self.db.record_scan(self.source_id, "human")
-        old_fid = self._add_finding(scan1, person_id=subject_id)
+        old_fid = self._add_finding(scan1, subject_id=subject_id)
         scan2 = self.db.record_scan(self.source_id, "composite")
-        new_fid = self._add_finding(scan2, person_id=subject_id)
+        new_fid = self._add_finding(scan2, subject_id=subject_id)
 
         assert self.db.get_finding_count() == 2
 
@@ -81,9 +81,9 @@ class TestPruneDuplicateFindings(TestCase):
     def test_dry_run_does_not_delete(self) -> None:
         subject_id = self.db.create_subject("Bob")
         scan1 = self.db.record_scan(self.source_id, "human")
-        self._add_finding(scan1, person_id=subject_id)
+        self._add_finding(scan1, subject_id=subject_id)
         scan2 = self.db.record_scan(self.source_id, "composite")
-        self._add_finding(scan2, person_id=subject_id)
+        self._add_finding(scan2, subject_id=subject_id)
 
         report = self.db.prune_duplicate_findings(dry_run=True)
         assert report.by_subject == 1
@@ -93,8 +93,8 @@ class TestPruneDuplicateFindings(TestCase):
         alice = self.db.create_subject("Alice")
         bob = self.db.create_subject("Bob")
         scan = self.db.record_scan(self.source_id, "composite")
-        self._add_finding(scan, person_id=alice)
-        self._add_finding(scan, person_id=bob)
+        self._add_finding(scan, subject_id=alice)
+        self._add_finding(scan, subject_id=bob)
 
         report = self.db.prune_duplicate_findings()
         assert report.total == 0
@@ -105,7 +105,7 @@ class TestPruneDuplicateFindings(TestCase):
         subject_id = self.db.create_subject("Alice")
 
         scan1 = self.db.record_scan(self.source_id, "composite")
-        self._add_finding(scan1, person_id=subject_id)
+        self._add_finding(scan1, subject_id=subject_id)
 
         scan2 = self.db.record_scan(src2, "composite")
         self.db.add_findings_batch(

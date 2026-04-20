@@ -22,13 +22,13 @@ def together_page(request: Request) -> HTMLResponse:
 
 @router.get("/api/together")
 def together_api(
-    person_ids: str = "", alone: bool = False, source_type: str = "either"
+    subject_ids: str = "", alone: bool = False, source_type: str = "either"
 ) -> JSONResponse:
     """Find sources containing ALL given subject IDs (comma-separated)."""
     db = get_db()
-    if not person_ids.strip():
+    if not subject_ids.strip():
         return JSONResponse({"sources": [], "total": 0})
-    ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
+    ids = [int(x) for x in subject_ids.split(",") if x.strip().isdigit()]
     type_filter = normalize_source_type(source_type)
     sources = db.get_sources_with_all_subjects(ids, alone=alone, source_type=type_filter)
     return JSONResponse(
@@ -45,7 +45,7 @@ def together_api(
 @router.get("/api/together-html", response_class=HTMLResponse)
 def together_html(
     request: Request,
-    person_ids: str = "",
+    subject_ids: str = "",
     offset: int = 0,
     limit: int = 60,
     alone: bool = False,
@@ -53,9 +53,9 @@ def together_html(
 ) -> HTMLResponse:
     db = get_db()
     templates = get_templates()
-    if not person_ids.strip():
+    if not subject_ids.strip():
         return HTMLResponse("")
-    ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
+    ids = [int(x) for x in subject_ids.split(",") if x.strip().isdigit()]
     type_filter = normalize_source_type(source_type)
     total = db.count_sources_with_all_subjects(ids, alone=alone, source_type=type_filter)
     sources = db.get_sources_with_all_subjects(
@@ -67,7 +67,7 @@ def together_html(
         context={
             "source_groups": groups,
             "total": total,
-            "person_ids": person_ids,
+            "subject_ids": subject_ids,
             "alone": alone,
             "source_type": source_type,
             "offset": offset,

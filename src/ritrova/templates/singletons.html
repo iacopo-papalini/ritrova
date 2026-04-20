@@ -122,7 +122,7 @@
                   bg-gallery-bg/80 backdrop-blur-sm px-2 py-1.5 text-xs text-gallery-accent font-medium
                   cursor-pointer hover:bg-gallery-accent/20"
            @click.stop="
-             claimFaces({{ hint.person_id }}, [{{ face.id }}])
+             claimFaces({{ hint.subject_id }}, [{{ face.id }}])
                .then(ok => { if (ok) $el.closest('[data-face-id]').remove() })
            ">
         {{ hint.name }} {{ hint.sim }}%

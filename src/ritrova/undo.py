@@ -27,19 +27,19 @@ if TYPE_CHECKING:
 
 @dataclass
 class FindingFieldsSnapshot:
-    """Prior (person_id, cluster_id) for a single finding."""
+    """Prior (subject_id, cluster_id) for a single finding."""
 
     finding_id: int
-    person_id: int | None
+    subject_id: int | None
     cluster_id: int | None
 
 
 @dataclass
-class FindingPersonSnapshot:
-    """Prior person_id for a single finding."""
+class FindingSubjectSnapshot:
+    """Prior subject_id for a single finding."""
 
     finding_id: int
-    person_id: int | None
+    subject_id: int | None
 
 
 @dataclass
@@ -70,7 +70,7 @@ class UndoPayload(ABC):
 @dataclass
 class DismissPayload(UndoPayload):
     """Undo ``dismiss_findings``: remove dismissed_findings rows and restore
-    the prior ``(person_id, cluster_id)`` for each finding.
+    the prior ``(subject_id, cluster_id)`` for each finding.
 
     Used for both whole-cluster dismiss and partial (selected faces) dismiss.
     """
@@ -79,7 +79,7 @@ class DismissPayload(UndoPayload):
 
     def undo(self, db: FaceDB) -> None:
         db.restore_dismissed_findings(
-            [(s.finding_id, s.person_id, s.cluster_id) for s in self.snapshots]
+            [(s.finding_id, s.subject_id, s.cluster_id) for s in self.snapshots]
         )
 
 
@@ -95,22 +95,23 @@ class RestoreClusterPayload(UndoPayload):
 
 
 @dataclass
-class RestorePersonIdsPayload(UndoPayload):
+class RestoreSubjectIdsPayload(UndoPayload):
     """Undo claim-faces, swap, unassign, or cluster assign: restore
-    per-finding person_id (including NULL for previously-unassigned)."""
+    per-finding subject_id (including NULL for previously-unassigned)."""
 
-    snapshots: list[FindingPersonSnapshot]
+    snapshots: list[FindingSubjectSnapshot]
 
     def undo(self, db: FaceDB) -> None:
-        db.restore_person_ids([(s.finding_id, s.person_id) for s in self.snapshots])
+        db.restore_subject_ids([(s.finding_id, s.subject_id) for s in self.snapshots])
 
 
 @dataclass
 class DeleteSubjectPayload(UndoPayload):
     """Undo cluster naming: delete the subject that was created.
 
-    The subjects FK ``ON DELETE SET NULL`` cascades to NULL ``person_id`` on
-    every finding that was assigned to this subject.
+    The subjects FK ``ON DELETE CASCADE`` on ``finding_assignment.subject_id``
+    drops every assignment row that pointed at this subject, returning those
+    findings to the uncurated state.
     """
 
     subject_id: int
@@ -140,7 +141,7 @@ class ResurrectSubjectPayload(UndoPayload):
             self.subject.kind,
             self.subject.created_at,
         )
-        db.restore_person_ids([(fid, self.subject.id) for fid in self.finding_ids])
+        db.restore_subject_ids([(fid, self.subject.id) for fid in self.finding_ids])
 
 
 @dataclass

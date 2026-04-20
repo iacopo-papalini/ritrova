@@ -6,8 +6,8 @@ from fastapi import APIRouter, Body, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from ...undo import (
-    FindingPersonSnapshot,
-    RestorePersonIdsPayload,
+    FindingSubjectSnapshot,
+    RestoreSubjectIdsPayload,
     ResurrectSubjectPayload,
     SubjectSnapshot,
 )
@@ -31,7 +31,7 @@ def claim_faces(
     db = get_db()
     undo_store = get_undo_store()
     prior = db.snapshot_findings_fields(face_ids)
-    snapshots = [FindingPersonSnapshot(finding_id=fid, person_id=pid) for fid, pid, _cid in prior]
+    snapshots = [FindingSubjectSnapshot(finding_id=fid, subject_id=sid) for fid, sid, _cid in prior]
     try:
         for fid in face_ids:
             db.assign_finding_to_subject(fid, subject_id, force=force)
@@ -42,7 +42,7 @@ def claim_faces(
     message = describe_findings_reassign("Claimed", name, len(face_ids))
     token = undo_store.put(
         description=message,
-        payload=RestorePersonIdsPayload(snapshots=snapshots),
+        payload=RestoreSubjectIdsPayload(snapshots=snapshots),
     )
     return JSONResponse(
         {"ok": True, "claimed": len(face_ids), "undo_token": token, "message": message}
@@ -107,8 +107,8 @@ def merge_subjects(source_id: int = Form(...), target_id: int = Form(...)) -> Re
     if not target:
         raise HTTPException(404, "Target subject not found")
     # Snapshot the source subject row and all its findings BEFORE merge
-    # destroys both. merge_subjects flips person_id source->target on
-    # every finding, then DELETEs the source row.
+    # destroys both. merge_subjects flips subject_id source->target on
+    # every assignment row, then DELETEs the source subject.
     source_row = db.get_subject_row(source_id)
     if not source_row:
         raise HTTPException(404, "Source subject not found")
@@ -135,7 +135,7 @@ def delete_subject(subject_id: int) -> RedirectResponse:
     if not subject:
         raise HTTPException(404, "Subject not found")
     # Snapshot the full row + every assigned finding_id BEFORE delete
-    # destroys the row and NULLs the person_ids.
+    # destroys the row and cascades the assignment rows away.
     row = db.get_subject_row(subject_id)
     assert row is not None  # get_subject hit means the row exists
     finding_ids = db.get_subject_finding_ids(subject_id)

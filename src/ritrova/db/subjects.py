@@ -1,9 +1,8 @@
 """Subject CRUD, assignment, and centroid mixin.
 
-Apr 2026 refactor: all reads of `findings.person_id` are routed through
-`finding_assignment.subject_id`, and all writes go via AssignmentMixin
-(`self.set_subject`, `self.clear_curation`, etc.). The old column is no
-longer touched; Commit D drops it.
+Apr 2026 refactor: subject assignment lives on `finding_assignment.subject_id`
+and all writes go via AssignmentMixin (`self.set_subject`,
+`self.clear_curation`, etc.).
 """
 
 from __future__ import annotations
@@ -265,7 +264,7 @@ class SubjectMixin(_DBAccessor):
     def delete_subject(self, subject_id: int) -> None:
         """Delete a subject. FK cascade clears finding_assignment rows
         (leaving those findings uncurated — no longer 'orphans' with
-        person_id=NULL, they just vanish from the assignment table)."""
+        subject_id=NULL, they just vanish from the assignment table)."""
         self.conn.execute("DELETE FROM subjects WHERE id = ?", (subject_id,))
         self.conn.commit()
 

@@ -1,10 +1,8 @@
 """Curation mutations and together-query mixin.
 
 Apr 2026 refactor: dismissals + subject unassignments route through
-AssignmentMixin; no code here touches `findings.person_id` / `cluster_id`
-or the obsolete `dismissed_findings` table for reads (the old table still
-exists until Commit D but no new rows are written and existing ones were
-migrated).
+AssignmentMixin; all state lives on `finding_assignment` and
+`cluster_findings`.
 """
 
 from __future__ import annotations

@@ -423,7 +423,7 @@ class TestTogetherAPI(TestCase):
         self.db.assign_finding_to_subject(findings[0].id, sid_a)
         self.db.assign_finding_to_subject(findings[1].id, sid_b)
 
-        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}")
+        resp = self.client.get(f"/api/together?subject_ids={sid_a},{sid_b}")
         data = resp.json()
         assert data["total"] == 1
         assert data["sources"][0]["id"] == source_id
@@ -437,7 +437,7 @@ class TestTogetherAPI(TestCase):
         findings = self.db.get_source_findings(source_id)
         self.db.assign_finding_to_subject(findings[0].id, sid_a)
 
-        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}")
+        resp = self.client.get(f"/api/together?subject_ids={sid_a},{sid_b}")
         assert resp.json()["total"] == 0
 
     def test_cross_kind_human_and_pet(self) -> None:
@@ -450,7 +450,7 @@ class TestTogetherAPI(TestCase):
         self.db.assign_finding_to_subject(findings[0].id, sid_human)
         self.db.assign_finding_to_subject(findings[1].id, sid_pet)
 
-        resp = self.client.get(f"/api/together?person_ids={sid_human},{sid_pet}")
+        resp = self.client.get(f"/api/together?subject_ids={sid_human},{sid_pet}")
         data = resp.json()
         assert data["total"] == 1
 
@@ -476,10 +476,10 @@ class TestTogetherAPI(TestCase):
         self.db.assign_finding_to_subject(f2[2].id, sid_c)
 
         # Without alone: both sources match
-        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}")
+        resp = self.client.get(f"/api/together?subject_ids={sid_a},{sid_b}")
         assert resp.json()["total"] == 2
         # With alone: only the duo
-        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}&alone=true")
+        resp = self.client.get(f"/api/together?subject_ids={sid_a},{sid_b}&alone=true")
         assert resp.json()["total"] == 1
 
     # ── FEAT-20: source_type filter ─────────────────────────────────
@@ -514,7 +514,7 @@ class TestTogetherAPI(TestCase):
         sid_a = self.db.create_subject("Alice")
         sid_b = self.db.create_subject("Bob")
         ids = self._seed_mixed_media(sid_a, sid_b)
-        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}")
+        resp = self.client.get(f"/api/together?subject_ids={sid_a},{sid_b}")
         returned = {s["id"] for s in resp.json()["sources"]}
         assert returned == {ids["photo"], ids["video"]}
 
@@ -522,7 +522,7 @@ class TestTogetherAPI(TestCase):
         sid_a = self.db.create_subject("Alice")
         sid_b = self.db.create_subject("Bob")
         ids = self._seed_mixed_media(sid_a, sid_b)
-        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}&source_type=photo")
+        resp = self.client.get(f"/api/together?subject_ids={sid_a},{sid_b}&source_type=photo")
         data = resp.json()
         assert data["total"] == 1
         assert data["sources"][0]["id"] == ids["photo"]
@@ -531,7 +531,7 @@ class TestTogetherAPI(TestCase):
         sid_a = self.db.create_subject("Alice")
         sid_b = self.db.create_subject("Bob")
         ids = self._seed_mixed_media(sid_a, sid_b)
-        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}&source_type=video")
+        resp = self.client.get(f"/api/together?subject_ids={sid_a},{sid_b}&source_type=video")
         data = resp.json()
         assert data["total"] == 1
         assert data["sources"][0]["id"] == ids["video"]
@@ -540,7 +540,7 @@ class TestTogetherAPI(TestCase):
         sid_a = self.db.create_subject("Alice")
         sid_b = self.db.create_subject("Bob")
         ids = self._seed_mixed_media(sid_a, sid_b)
-        resp = self.client.get(f"/api/together?person_ids={sid_a},{sid_b}&source_type=bogus")
+        resp = self.client.get(f"/api/together?subject_ids={sid_a},{sid_b}&source_type=bogus")
         assert {s["id"] for s in resp.json()["sources"]} == {ids["photo"], ids["video"]}
 
 

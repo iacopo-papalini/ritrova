@@ -283,7 +283,7 @@ class TestFindingOperations(TestCase):
         self.db.dismiss_findings([fid])
         finding = self.db.get_finding(fid)
         assert finding is not None
-        assert finding.person_id is None
+        assert finding.subject_id is None
         assert finding.cluster_id is None
 
     def test_unassign_finding(self) -> None:
@@ -292,12 +292,12 @@ class TestFindingOperations(TestCase):
         self.db.assign_finding_to_subject(fid, subject_id)
         finding = self.db.get_finding(fid)
         assert finding is not None
-        assert finding.person_id == subject_id
+        assert finding.subject_id == subject_id
 
         self.db.unassign_finding(fid)
         finding = self.db.get_finding(fid)
         assert finding is not None
-        assert finding.person_id is None
+        assert finding.subject_id is None
 
     def test_exclude_findings(self) -> None:
         _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
@@ -400,7 +400,7 @@ class TestSubjectOperations(TestCase):
         # Finding should be unassigned, not deleted
         finding = self.db.get_finding(fid)
         assert finding is not None
-        assert finding.person_id is None
+        assert finding.subject_id is None
 
     def test_search_subjects(self) -> None:
         self.db.create_subject("Alice")
@@ -878,7 +878,7 @@ class TestCircles(TestCase):
 def _build_pre_refactor_db(
     path: Path,
     *,
-    person_ids: dict[int, int] | None = None,
+    subject_ids: dict[int, int] | None = None,
     cluster_ids: dict[int, int] | None = None,
     dismissed_ids: list[int] | None = None,
     strangers_circle_member_ids: list[int] | None = None,
@@ -948,15 +948,15 @@ def _build_pre_refactor_db(
         CREATE UNIQUE INDEX idx_subjects_name_kind ON subjects(name, kind);
         """
     )
-    # Seed a minimal source + scan + findings so person_ids/cluster_ids have targets.
+    # Seed a minimal source + scan + findings so subject_ids/cluster_ids have targets.
     conn.execute("INSERT INTO sources (id, file_path) VALUES (1, '/migration-test.jpg')")
     conn.execute("INSERT INTO scans (id, source_id, scan_type) VALUES (1, 1, 'subjects')")
     emb = np.zeros(512, dtype=np.float32)
     emb[0] = 1.0
     # Collect all finding ids referenced by the seeds.
     all_fids: set[int] = set()
-    if person_ids:
-        all_fids.update(person_ids.keys())
+    if subject_ids:
+        all_fids.update(subject_ids.keys())
     if cluster_ids:
         all_fids.update(cluster_ids.keys())
     if dismissed_ids:
@@ -966,14 +966,15 @@ def _build_pre_refactor_db(
             "INSERT INTO findings (id, source_id, embedding, scan_id) VALUES (?, 1, ?, 1)",
             (fid, emb.tobytes()),
         )
-    if person_ids:
-        # Create subjects referenced by person_ids
-        for subject_id in set(person_ids.values()):
+    if subject_ids:
+        # Create subjects referenced by the id map.
+        for subject_id in set(subject_ids.values()):
             conn.execute(
                 "INSERT INTO subjects (id, name, created_at) VALUES (?, ?, '2024-01-01')",
                 (subject_id, f"Subject {subject_id}"),
             )
-        for fid, sid in person_ids.items():
+        for fid, sid in subject_ids.items():
+            # legacy pre-refactor column — intentional; tests the migration path.
             conn.execute("UPDATE findings SET person_id = ? WHERE id = ?", (sid, fid))
     if cluster_ids:
         for fid, cid in cluster_ids.items():
@@ -1016,7 +1017,7 @@ class TestFindingAssignmentMigration(TestCase):
 
     def test_named_subjects_migrated(self) -> None:
         path = self.tmp_path / "old.db"
-        _build_pre_refactor_db(path, person_ids={10: 100})
+        _build_pre_refactor_db(path, subject_ids={10: 100})
         db = FaceDB(path)
         row = db.conn.execute(
             "SELECT subject_id, exclusion_reason FROM finding_assignment WHERE finding_id = ?",
@@ -1040,7 +1041,7 @@ class TestFindingAssignmentMigration(TestCase):
         path = self.tmp_path / "old.db"
         _build_pre_refactor_db(
             path,
-            person_ids={10: 100},
+            subject_ids={10: 100},
             strangers_circle_member_ids=[100],
         )
         db = FaceDB(path)
@@ -1056,7 +1057,7 @@ class TestFindingAssignmentMigration(TestCase):
     def test_migration_is_idempotent(self) -> None:
         """Reopening a migrated DB doesn't duplicate rows."""
         path = self.tmp_path / "old.db"
-        _build_pre_refactor_db(path, person_ids={10: 100}, cluster_ids={10: 7})
+        _build_pre_refactor_db(path, subject_ids={10: 100}, cluster_ids={10: 7})
         db1 = FaceDB(path)
         db1.close()
         db2 = FaceDB(path)
@@ -1068,7 +1069,7 @@ class TestFindingAssignmentMigration(TestCase):
         """After opening, findings.person_id / cluster_id and
         dismissed_findings are gone."""
         path = self.tmp_path / "old.db"
-        _build_pre_refactor_db(path, person_ids={10: 100})
+        _build_pre_refactor_db(path, subject_ids={10: 100})
         db = FaceDB(path)
         cols = {r[1] for r in db.conn.execute("PRAGMA table_info(findings)").fetchall()}
         assert "person_id" not in cols

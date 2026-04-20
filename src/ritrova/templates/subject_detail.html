@@ -154,7 +154,7 @@
            fetch('/api/findings/swap', {
              method: 'POST',
              headers: { 'Content-Type': 'application/json' },
-             body: JSON.stringify({ face_ids: faceIds, target_person_id: target.id })
+             body: JSON.stringify({ face_ids: faceIds, target_subject_id: target.id })
            }).then(r => r.ok && r.json()).then(d => {
              if (!d) return;
              faceIds.forEach(id => document.querySelector(`[data-finding-id=&quot;${id}&quot;]`)?.remove());

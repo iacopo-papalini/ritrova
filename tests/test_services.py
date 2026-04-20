@@ -56,7 +56,7 @@ class TestComputeClusterHint(TestCase):
         result = compute_cluster_hint(self.db, 10)
         assert result is not None
         assert result["name"] == "Alice"
-        assert result["person_id"] == sid
+        assert result["subject_id"] == sid
         assert result["sim"] > 90
 
     def test_no_subjects(self) -> None:
