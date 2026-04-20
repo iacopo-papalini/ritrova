@@ -93,7 +93,8 @@
     <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
       {% for face_id, sim_own, sim_other, path in result.swaps_a_to_b %}
       <div class="relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150"
-           @click="toggle({{ face_id }})"
+           data-finding-id="{{ face_id }}"
+           @click="tileClick({{ face_id }}, $event)"
            :class="selected.has({{ face_id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'"
            title="{{ path }}">
         <img src="/api/findings/{{ face_id }}/thumbnail?size=180"
@@ -181,7 +182,8 @@
     <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
       {% for face_id, sim_own, sim_other, path in result.swaps_b_to_a %}
       <div class="relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150"
-           @click="toggle({{ face_id }})"
+           data-finding-id="{{ face_id }}"
+           @click="tileClick({{ face_id }}, $event)"
            :class="selected.has({{ face_id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'"
            title="{{ path }}">
         <img src="/api/findings/{{ face_id }}/thumbnail?size=180"

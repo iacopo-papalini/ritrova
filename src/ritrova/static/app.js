@@ -267,6 +267,92 @@ document.addEventListener('alpine:init', () => {
 
   Alpine.data('faceSelection', () => ({
     selected: new Set(),
+    anchor: null,         // last plain-clicked id, pivot for shift-click range
+
+    // Drag state — underscored because it's not meant to be read from templates.
+    _dragging: false,
+    _dragAction: 'add',   // 'add' or 'remove' — decided by the start tile's initial state
+    _dragStartId: null,
+    _dragMoved: false,    // set once the pointer enters a different tile
+    _dragLastId: null,
+
+    init() {
+      const root = this.$root;
+      root.addEventListener('mousedown', (e) => this._onMouseDown(e));
+      root.addEventListener('mouseover', (e) => this._onMouseOver(e));
+      // Face thumbnails are <img>s — by default the browser starts a native
+      // drag when you press on them, which eats mouseover on sibling tiles
+      // and kills our drag-select. Veto dragstart inside the grid.
+      root.addEventListener('dragstart', (e) => {
+        if (e.target.closest('[data-finding-id]')) e.preventDefault();
+      });
+      // Listen on window so releases outside the grid still end the drag.
+      this._onUp = () => { this._dragging = false; this._dragLastId = null; };
+      window.addEventListener('mouseup', this._onUp);
+    },
+
+    _tileIdFromEvent(e) {
+      const el = e.target.closest('[data-finding-id]');
+      if (!el || !this.$root.contains(el)) return null;
+      const id = parseInt(el.dataset.findingId, 10);
+      return Number.isNaN(id) ? null : id;
+    },
+
+    _onMouseDown(e) {
+      // Left button only; don't start drag when grabbing a button/link inside a tile.
+      if (e.button !== 0 || e.target.closest('button, a')) return;
+      const id = this._tileIdFromEvent(e);
+      if (id === null) return;
+      this._dragging = true;
+      this._dragStartId = id;
+      this._dragMoved = false;
+      this._dragLastId = id;
+      this._dragAction = this.selected.has(id) ? 'remove' : 'add';
+      // Suppress text selection & native image-drag so mouseover keeps firing.
+      e.preventDefault();
+    },
+
+    _onMouseOver(e) {
+      if (!this._dragging) return;
+      const id = this._tileIdFromEvent(e);
+      if (id === null || id === this._dragLastId) return;
+      this._dragLastId = id;
+      if (!this._dragMoved) {
+        // First real drag move — apply to the start tile retroactively.
+        this._dragMoved = true;
+        this._apply(this._dragStartId);
+      }
+      this._apply(id);
+    },
+
+    _apply(id) {
+      if (this._dragAction === 'add') this.selected.add(id);
+      else this.selected.delete(id);
+    },
+
+    // Called from tile `@click` — same element mousedown+mouseup only.
+    tileClick(id, event) {
+      // A drag that moved already selected/deselected the end tile; don't toggle again.
+      if (this._dragMoved) { this._dragMoved = false; return; }
+      if (event && event.shiftKey && this.anchor !== null && this.anchor !== id) {
+        this._extendTo(id);
+        return;
+      }
+      this.toggle(id);
+      this.anchor = id;
+    },
+
+    _extendTo(id) {
+      // Range-select from anchor to id in DOM (reading) order; additive only.
+      const ids = [...this.$root.querySelectorAll('[data-finding-id]')]
+        .map(el => parseInt(el.dataset.findingId, 10));
+      const i0 = ids.indexOf(this.anchor);
+      const i1 = ids.indexOf(id);
+      if (i0 < 0 || i1 < 0) return;
+      const [a, b] = i0 < i1 ? [i0, i1] : [i1, i0];
+      for (let i = a; i <= b; i++) this.selected.add(ids[i]);
+      this.anchor = id;
+    },
 
     get count() { return this.selected.size; },
     get hasSelection() { return this.selected.size > 0; },
@@ -283,6 +369,7 @@ document.addEventListener('alpine:init', () => {
 
     clear() {
       this.selected.clear();
+      this.anchor = null;
     },
 
     get ids() { return [...this.selected]; }

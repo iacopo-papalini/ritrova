@@ -78,7 +78,8 @@
     <!-- Dismiss entire cluster -->
     <button @click="(await confirmDialog({title: 'Dismiss entire cluster?', message: 'All {{ total }} faces in this cluster will be marked as non-faces. This is permanent.', confirmLabel: 'Dismiss cluster', danger: true})) &&
                       fetch('/api/clusters/{{ cluster_id }}/dismiss', { method: 'POST' })
-                        .then(r => { if (r.ok) location.href = '/{{ kind }}/clusters'; })"
+                        .then(r => r.ok && r.json())
+                        .then(d => { if (d) location.href = d.next_url || '/{{ kind }}/clusters'; })"
             class="rounded-lg border border-gallery-danger/30 px-4 py-2 text-sm font-medium text-gallery-danger
                    transition-colors hover:bg-gallery-danger/10 cursor-pointer">
       Dismiss entire cluster
@@ -145,7 +146,7 @@
     {% for face in findings %}
     <div class="group relative cursor-pointer overflow-hidden rounded-lg transition-all duration-150"
          data-finding-id="{{ face.id }}"
-         @click="toggle({{ face.id }})"
+         @click="tileClick({{ face.id }}, $event)"
          :class="selected.has({{ face.id }}) ? 'ring-2 ring-gallery-accent ring-offset-2 ring-offset-gallery-bg scale-95' : 'hover:scale-[1.03]'">
       <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
            loading="lazy"
