@@ -1104,9 +1104,15 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
         # No undo for create — delete is the obvious reverse and user has that button.
         return RedirectResponse(f"/circles/{circle_id}", status_code=303)
 
-    @app.post("/api/circles/{circle_id}/rename")
-    def rename_circle_api(circle_id: int, name: str = Form(...)) -> RedirectResponse:
+    @app.post("/api/circles/{circle_id}/rename", response_model=None)
+    def rename_circle_api(
+        request: Request, circle_id: int, name: str = Form(...)
+    ) -> RedirectResponse | JSONResponse:
         db.rename_circle(circle_id, name)
+        if request.headers.get("hx-request") or request.headers.get("accept", "").startswith(
+            "application/json"
+        ):
+            return JSONResponse({"ok": True, "name": name.strip()})
         return RedirectResponse(f"/circles/{circle_id}", status_code=303)
 
     @app.post("/api/circles/{circle_id}/delete", response_model=None)

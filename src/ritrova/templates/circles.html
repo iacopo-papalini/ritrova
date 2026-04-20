@@ -44,49 +44,87 @@
 {% else %}
 <div class="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
   {% for c in circles %}
-  <div class="group relative flex items-start justify-between rounded-lg border border-gallery-border
+  <div x-data='{ editing: false, name: {{ c.name|tojson }} }'
+       class="group relative flex items-start justify-between rounded-lg border border-gallery-border
               bg-gallery-card p-4 transition-colors hover:border-gallery-accent/50">
     <div class="min-w-0 flex-1">
-      <a href="/circles/{{ c.id }}"
-         class="font-medium text-gallery-text hover:text-gallery-accent transition-colors">
-        {{ c.name }}
-      </a>
-      <p class="text-xs text-gallery-muted mt-1">
-        {{ c.member_count }} member{{ '' if c.member_count == 1 else 's' }}
-      </p>
-      {% if c.description %}
-      <p class="text-sm text-gallery-muted mt-2 line-clamp-2">{{ c.description }}</p>
-      {% endif %}
+      <div x-show="!editing">
+        <a href="/circles/{{ c.id }}"
+           class="font-medium text-gallery-text hover:text-gallery-accent transition-colors"
+           x-text="name"></a>
+        <p class="text-xs text-gallery-muted mt-1">
+          {{ c.member_count }} member{{ '' if c.member_count == 1 else 's' }}
+        </p>
+        {% if c.description %}
+        <p class="text-sm text-gallery-muted mt-2 line-clamp-2">{{ c.description }}</p>
+        {% endif %}
+      </div>
+      <form x-show="editing" x-cloak
+            @submit.prevent="
+              const input = $el.querySelector('input[name=name]');
+              const next = input.value.trim();
+              if (!next || next === name) { editing = false; return; }
+              const fd = new FormData();
+              fd.append('name', next);
+              const r = await fetch(`/api/circles/{{ c.id }}/rename`, {
+                method: 'POST', body: fd, headers: { 'HX-Request': 'true' }
+              });
+              const data = await r.json().catch(() => null);
+              if (data && data.ok) { name = data.name; editing = false; }"
+            @keydown.escape="editing = false"
+            class="flex items-center gap-2">
+        <input name="name" :value="name" required maxlength="60" autocomplete="off"
+               class="flex-1 rounded-md border border-gallery-border bg-gallery-bg px-2 py-1 text-sm text-gallery-text
+                      outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30"
+               x-effect="editing && $nextTick(() => { $el.focus(); $el.select(); })">
+        <button type="submit" class="text-sm text-gallery-accent hover:underline">save</button>
+        <button type="button" @click="editing = false"
+                class="text-sm text-gallery-muted hover:text-gallery-text">cancel</button>
+      </form>
     </div>
 
-    {# Delete, gated by confirmDialog — cascades to subject_circles via FK #}
-    <button type="button"
-            data-circle-id="{{ c.id }}"
-            data-circle-name="{{ c.name }}"
-            data-member-count="{{ c.member_count }}"
-            @click="
-              const el = $el;
-              const members = parseInt(el.dataset.memberCount, 10);
-              const noun = members === 1 ? 'membership' : 'memberships';
-              const ok = await confirmDialog({
-                title: `Delete circle ${el.dataset.circleName}?`,
-                message: `${members} ${noun} will be removed. Subjects themselves stay. Undoable for 60s.`,
-                confirmLabel: 'Delete',
-                danger: true
-              });
-              if (!ok) return;
-              const r = await fetch(`/api/circles/${el.dataset.circleId}/delete`,
-                                    { method: 'POST', headers: { 'HX-Request': 'true' } });
-              const data = await r.json();
-              if (data.ok) location.reload();"
-            title="Delete"
-            class="ml-3 opacity-0 group-hover:opacity-100 transition-opacity
-                   rounded-md p-1.5 text-gallery-muted hover:bg-gallery-danger/20 hover:text-gallery-danger">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/>
-      </svg>
-    </button>
+    <div class="ml-3 flex items-start gap-1" x-show="!editing">
+      {# Rename — inline edit on the card #}
+      <button type="button"
+              @click="editing = true"
+              title="Rename"
+              class="opacity-0 group-hover:opacity-100 transition-opacity
+                     rounded-md p-1.5 text-gallery-muted hover:bg-gallery-accent/20 hover:text-gallery-accent">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+        </svg>
+      </button>
+
+      {# Delete, gated by confirmDialog — cascades to subject_circles via FK #}
+      <button type="button"
+              data-circle-id="{{ c.id }}"
+              data-circle-name="{{ c.name }}"
+              data-member-count="{{ c.member_count }}"
+              @click="
+                const el = $el;
+                const members = parseInt(el.dataset.memberCount, 10);
+                const noun = members === 1 ? 'membership' : 'memberships';
+                const ok = await confirmDialog({
+                  title: `Delete circle ${el.dataset.circleName}?`,
+                  message: `${members} ${noun} will be removed. Subjects themselves stay. Undoable for 60s.`,
+                  confirmLabel: 'Delete',
+                  danger: true
+                });
+                if (!ok) return;
+                const r = await fetch(`/api/circles/${el.dataset.circleId}/delete`,
+                                      { method: 'POST', headers: { 'HX-Request': 'true' } });
+                const data = await r.json();
+                if (data.ok) location.reload();"
+              title="Delete"
+              class="opacity-0 group-hover:opacity-100 transition-opacity
+                     rounded-md p-1.5 text-gallery-muted hover:bg-gallery-danger/20 hover:text-gallery-danger">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/>
+        </svg>
+      </button>
+    </div>
   </div>
   {% endfor %}
 </div>
