@@ -212,17 +212,18 @@ uv run ritrova scans prune --scan-id 42 --source-pattern "2024/*"  # intersectio
 
 Both filters are optional but at least one is required. The prune operation prints how many findings will be deleted (and how many of those have manual subject assignments) and asks for confirmation. Pass `-y` to skip the prompt.
 
-### rescan
+### Re-running on a single source
 
-Re-run scans on a single source. Use this when the original scan was faulty or detection has improved — by default `scan` skips already-scanned sources to protect curation.
+The standalone `rescan` command was retired — `analyse` now accepts one or more explicit file paths and re-uses the same pipeline:
 
 ```bash
-uv run ritrova rescan path/to/photo.jpg                  # re-run every existing scan on this source
-uv run ritrova rescan path/to/photo.jpg --scan-type pet  # only re-run the pet scan
-uv run ritrova rescan path/to/video.mp4 -y               # skip the confirm
+uv run ritrova analyse path/to/photo.jpg                 # skipped — already scanned
+uv run ritrova analyse path/to/photo.jpg --force         # delete + re-scan; confirms if assignments exist
+uv run ritrova analyse path/to/video.mp4 --force -y      # skip the confirm
+uv run ritrova analyse a.jpg b.jpg --force --caption     # batch with the full VLM pipeline
 ```
 
-The source can be specified as an absolute path or a path relative to `PHOTOS_DIR`. Existing scans (and their findings, including manual subject assignments) on the source are deleted before the new scan runs — confirms before acting.
+Paths can be absolute or relative to the current directory. Without `--force`, already-scanned sources are skipped. With `--force`, existing scans (and their findings, including manual subject assignments) on each source are deleted before the new scan runs — the command confirms before acting when any assignment would be lost (pass `-y` to skip).
 
 ### migrate-paths
 

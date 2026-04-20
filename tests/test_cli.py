@@ -1,9 +1,10 @@
 """Tests for the click CLI commands added with the scan↔finding linkage refactor.
 
-Covers `scans list`, `scans prune`, and the `rescan` argument validation. The
-detector models are not exercised here — those paths are integration-tested via
-the scanner unit tests; the CLI tests focus on argument handling, confirmation,
-and the DB-side cascade.
+Covers `scans list`, `scans prune`, and the single-source `analyse <path>`
+path that replaced the retired `rescan` command. The detector models are not
+exercised here — those paths are integration-tested via the scanner unit
+tests; the CLI tests focus on argument handling, confirmation, and the
+DB-side cascade.
 """
 
 from __future__ import annotations
@@ -122,60 +123,148 @@ def test_scans_prune_by_pattern_intersection(tmp_path: Path) -> None:
     db.close()
 
 
-def test_rescan_unknown_source_errors(tmp_path: Path) -> None:
-    db_path, db, _ = _seed(tmp_path)
-    db.close()
-    # Use absolute path that doesn't exist on disk.
-    result = _run(
-        ["--photos-dir", str(tmp_path), "rescan", str(tmp_path / "nope.jpg")],
-        db_path,
-    )
-    assert result.exit_code != 0
-    assert "File not found" in result.output
+# ── `ritrova analyse <path>` — the single-source re-analysis path ────
+# (replaces the retired `rescan` command)
 
 
-def test_rescan_aborts_on_no(tmp_path: Path) -> None:
-    """Rescan asks before destroying findings — answering 'n' leaves DB intact."""
+def _seed_subjects_scan(tmp_path: Path, *, with_assignment: bool) -> tuple[Path, Path, int, int]:
+    """Set up a DB + on-disk file with one 'subjects' scan and one finding.
+
+    Returns ``(db_path, photo_path, source_id, finding_id)``. When
+    ``with_assignment`` is True, the finding is tagged as manually assigned
+    (non-null ``finding_assignment.subject_id``) — this is what trips the
+    safety prompt on ``analyse <path> --force``.
+    """
     db_path = tmp_path / "test.db"
     photo_path = tmp_path / "fake.jpg"
-    photo_path.write_bytes(b"x")  # has to exist on disk; rescan checks before prompting
+    photo_path.write_bytes(b"x")  # exists on disk; detectors are skipped via --no-*
 
-    # Seed: add source by its eventual stored (relative) path, plus a scan + finding.
     db = FaceDB(db_path, base_dir=tmp_path)
     sid = db.add_source(db.to_relative(str(photo_path)), width=100, height=100)
-    add_findings(db, [(sid, (0, 0, 10, 10), np.ones(512, dtype=np.float32) / 22.6, 0.9)])
+    # Explicit scan_type='subjects' — the default effective_scan_type for
+    # ``analyse`` without --caption. The helper's ``human``/``pet`` scan
+    # rows would not intersect the safety prompt's IN-query.
+    scan_id = db.record_scan(sid, "subjects")
+    db.add_findings_batch(
+        [(sid, (0, 0, 10, 10), np.ones(512, dtype=np.float32) / 22.6, 0.9)],
+        scan_id=scan_id,
+        species="human",
+    )
+    findings = db.get_source_findings(sid)
+    assert len(findings) == 1
+    finding_id = findings[0].id
+
+    if with_assignment:
+        # Create a subject and wire the finding to it — the prompt pivots on
+        # a non-null finding_assignment.subject_id.
+        subj_id = db.create_subject("Test Subject")
+        db.assign_finding_to_subject(finding_id, subj_id)
+    db.close()
+    return db_path, photo_path, sid, finding_id
+
+
+def test_analyse_missing_source_errors(tmp_path: Path) -> None:
+    """Positional [SOURCES] arg uses ``click.Path(exists=True)`` — click rejects it."""
+    db_path, db, _ = _seed(tmp_path)
+    db.close()
+    result = _run(
+        ["--photos-dir", str(tmp_path), "analyse", str(tmp_path / "nope.jpg")],
+        db_path,
+    )
+    # click.Path(exists=True) renders a standard "does not exist" error.
+    assert result.exit_code != 0
+    assert "does not exist" in result.output.lower()
+
+
+def test_analyse_force_assigned_aborts_on_no(tmp_path: Path) -> None:
+    """--force on a source with a manual assignment must prompt; 'n' leaves DB unchanged."""
+    db_path, photo_path, sid, _ = _seed_subjects_scan(tmp_path, with_assignment=True)
+    db = FaceDB(db_path, base_dir=tmp_path)
     findings_before = len(db.get_source_findings(sid))
-    assert findings_before == 1
+    scans_before = len(db.find_scans())
     db.close()
 
     result = _run(
-        ["--photos-dir", str(tmp_path), "rescan", str(photo_path)],
+        [
+            "--photos-dir",
+            str(tmp_path),
+            "analyse",
+            str(photo_path),
+            "--force",
+            "--no-faces",
+            "--no-pets",
+        ],
         db_path,
         input_text="n\n",
     )
     assert result.exit_code == 0, result.output
     assert "Aborted" in result.output
+    assert "manual subject assignments" in result.output
+
+    db = FaceDB(db_path, base_dir=tmp_path)
+    assert len(db.get_source_findings(sid)) == findings_before  # untouched
+    assert len(db.find_scans()) == scans_before
+    db.close()
+
+
+def test_analyse_force_yes_skips_prompt(tmp_path: Path) -> None:
+    """-y must skip the safety prompt even when an assignment would be lost."""
+    db_path, photo_path, _sid, _ = _seed_subjects_scan(tmp_path, with_assignment=True)
+
+    result = _run(
+        [
+            "--photos-dir",
+            str(tmp_path),
+            "analyse",
+            str(photo_path),
+            "--force",
+            "-y",
+            "--no-faces",
+            "--no-pets",
+        ],
+        db_path,
+    )
+    # The invalid-bytes jpg trips OSError inside photo_frames → counted as an
+    # error, pipeline doesn't persist, but the command completes cleanly and
+    # — critically — never showed the confirm prompt.
+    assert result.exit_code == 0, result.output
+    assert "Proceed?" not in result.output
+    assert "Aborted" not in result.output
+
+
+def test_analyse_without_force_skips_already_scanned(tmp_path: Path) -> None:
+    """Without --force, analyse <path> on an already-scanned source is a no-op."""
+    db_path, photo_path, sid, _ = _seed_subjects_scan(tmp_path, with_assignment=False)
+    db = FaceDB(db_path, base_dir=tmp_path)
+    findings_before = len(db.get_source_findings(sid))
+    db.close()
+
+    result = _run(
+        [
+            "--photos-dir",
+            str(tmp_path),
+            "analyse",
+            str(photo_path),
+            "--no-faces",
+            "--no-pets",
+        ],
+        db_path,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Skipping already-scanned source" in result.output
 
     db = FaceDB(db_path, base_dir=tmp_path)
     assert len(db.get_source_findings(sid)) == findings_before  # untouched
     db.close()
 
 
-def test_rescan_no_scans_message(tmp_path: Path) -> None:
-    """If the source exists but has no matching scan, rescan exits cleanly."""
-    db_path = tmp_path / "test.db"
-    photo_path = tmp_path / "x.jpg"
-    photo_path.write_bytes(b"x")
-    db = FaceDB(db_path, base_dir=tmp_path)
-    db.add_source(db.to_relative(str(photo_path)), width=100, height=100)
-    db.close()
-
-    result = _run(
-        ["--photos-dir", str(tmp_path), "rescan", str(photo_path)],
-        db_path,
-    )
+def test_analyse_help_shows_sources_argument() -> None:
+    """`analyse --help` must advertise the positional [SOURCES] argument."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["analyse", "--help"])
     assert result.exit_code == 0, result.output
-    assert "no matching scans" in result.output
+    # click renders variadic args as [SOURCES]... in the usage line.
+    assert "[SOURCES]..." in result.output
 
 
 # ── `ritrova doctor` ──────────────────────────────────────────────────

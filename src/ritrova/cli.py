@@ -47,6 +47,7 @@ def _require_photos_dir(ctx: click.Context) -> str:
 
 
 @cli.command()
+@click.argument("sources", nargs=-1, type=click.Path(exists=True, path_type=str))
 @click.option("--no-faces", is_flag=True, help="Skip human face detection")
 @click.option("--no-pets", is_flag=True, help="Skip pet detection")
 @click.option(
@@ -123,9 +124,17 @@ def _require_photos_dir(ctx: click.Context) -> str:
     help="Longest side (pixels) the image is resized to before the VLM. "
     "Smaller = faster, but may lose fine detail on complex scenes.",
 )
+@click.option(
+    "-y",
+    "--yes",
+    is_flag=True,
+    help="Skip the confirmation prompt when --force would delete manual "
+    "assignments on explicit [SOURCES].",
+)
 @click.pass_context
 def analyse(
     ctx: click.Context,
+    sources: tuple[str, ...],
     no_faces: bool,
     no_pets: bool,
     caption: bool,
@@ -146,8 +155,16 @@ def analyse(
     scan_type: str | None,
     max_tokens: int,
     vlm_max_side: int,
+    yes: bool,
 ) -> None:
-    """Unified source analysis: detect faces, pets, and generate captions in one pass."""
+    """Unified source analysis: detect faces, pets, and generate captions in one pass.
+
+    With no [SOURCES], walks --scan-dir (or --photos-dir) for photos + videos.
+    With one or more [SOURCES] (photo or video paths), processes only those files
+    — this is the single-file re-analysis path (replaces the removed `rescan`
+    command). All flags (--force, --caption, --dry-run, --workers, --sample,
+    --scan-type, --no-faces/pets/videos, ...) apply in both modes.
+    """
     import random
     import warnings
 
@@ -178,7 +195,14 @@ def analyse(
         TranslationStep,
     )
     from .db import FaceDB
-    from .scanner import find_images, find_videos, get_exif_date, get_exif_gps
+    from .scanner import (
+        IMAGE_EXTENSIONS,
+        VIDEO_EXTENSIONS,
+        find_images,
+        find_videos,
+        get_exif_date,
+        get_exif_gps,
+    )
 
     photos_dir = _require_photos_dir(ctx)
     db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
@@ -242,20 +266,84 @@ def analyse(
     builder.add_step(DeduplicationStep())
     pipeline = builder.build()
 
-    # Discover sources: photos + optionally videos
+    # Discover sources: either the explicit [SOURCES] positional args, or a
+    # tree walk of discovery_dir. The single-file mode replaces the retired
+    # `rescan` command (deleted April 2026); see README § analyse.
     candidates: list[tuple[Path, str]] = []  # (path, source_type)
-    for img_path in find_images(Path(discovery_dir)):
-        stored = db.to_relative(str(img_path.resolve()))
-        if not force and db.is_scanned(stored, effective_scan_type):
-            continue
-        candidates.append((img_path, "photo"))
+    if sources:
+        # Explicit sources mode. Validate each as photo-or-video, classify,
+        # and skip already-scanned ones unless --force. The --force safety
+        # prompt (below) only fires in this mode.
+        for raw in sources:
+            abs_path = Path(raw).resolve()
+            ext = abs_path.suffix.lower()
+            if ext in IMAGE_EXTENSIONS:
+                source_type = "photo"
+            elif ext in VIDEO_EXTENSIONS:
+                if no_videos:
+                    # Honour --no-videos even in explicit mode: quietly skip.
+                    continue
+                source_type = "video"
+            else:
+                raise click.UsageError(
+                    f"Unsupported file type: {abs_path} "
+                    f"(expected one of {sorted(IMAGE_EXTENSIONS | VIDEO_EXTENSIONS)})"
+                )
+            stored = db.to_relative(str(abs_path))
+            if not force and db.is_scanned(stored, effective_scan_type):
+                print(f"Skipping already-scanned source: {stored} (use --force to re-analyse)")
+                continue
+            candidates.append((abs_path, source_type))
 
-    if not no_videos:
-        for vid_path in find_videos(Path(discovery_dir)):
-            stored = db.to_relative(str(vid_path.resolve()))
+        # Safety prompt: --force on explicit sources that already have scans
+        # with manual assignments is destructive. Never prompt in tree-walk
+        # mode (that's the expected cadence). Never prompt when --force is off
+        # (existing scans are simply skipped).
+        if force and not yes and candidates:
+            stored_paths = [db.to_relative(str(p.resolve())) for p, _ in candidates]
+            placeholders = ",".join("?" * len(stored_paths))
+            existing_rows = db.conn.execute(
+                f"SELECT sc.id FROM scans sc "  # noqa: S608 -- placeholders only
+                f"JOIN sources s ON s.id = sc.source_id "
+                f"WHERE s.file_path IN ({placeholders}) AND sc.scan_type = ?",
+                (*stored_paths, effective_scan_type),
+            ).fetchall()
+            if existing_rows:
+                scan_ids = [r[0] for r in existing_rows]
+                id_placeholders = ",".join("?" * len(scan_ids))
+                n_findings = db.conn.execute(
+                    f"SELECT COUNT(*) FROM findings WHERE scan_id IN ({id_placeholders})",  # noqa: S608
+                    tuple(scan_ids),
+                ).fetchone()[0]
+                n_assigned = db.conn.execute(
+                    f"SELECT COUNT(*) FROM findings f "  # noqa: S608
+                    f"JOIN finding_assignment fa ON fa.finding_id = f.id "
+                    f"WHERE fa.subject_id IS NOT NULL AND f.scan_id IN ({id_placeholders})",
+                    tuple(scan_ids),
+                ).fetchone()[0]
+                if n_assigned > 0:
+                    click.echo(
+                        f"About to reprocess {len(candidates)} source(s). "
+                        f"This will delete {n_findings} finding(s), of which "
+                        f"{n_assigned} have manual subject assignments."
+                    )
+                    if not click.confirm("Proceed?", default=False):
+                        click.echo("Aborted.")
+                        db.close()
+                        return
+    else:
+        for img_path in find_images(Path(discovery_dir)):
+            stored = db.to_relative(str(img_path.resolve()))
             if not force and db.is_scanned(stored, effective_scan_type):
                 continue
-            candidates.append((vid_path, "video"))
+            candidates.append((img_path, "photo"))
+
+        if not no_videos:
+            for vid_path in find_videos(Path(discovery_dir)):
+                stored = db.to_relative(str(vid_path.resolve()))
+                if not force and db.is_scanned(stored, effective_scan_type):
+                    continue
+                candidates.append((vid_path, "video"))
 
     if sample > 0 and len(candidates) > sample:
         # Sort first so --sample-seed is reproducible regardless of filesystem order.
@@ -1173,130 +1261,6 @@ def scans_prune(
     for t in targets:
         db.delete_scan(t["id"])
     click.echo(f"Pruned {len(targets)} scan(s) ({n_findings} findings).")
-    db.close()
-
-
-@cli.command()
-@click.argument("source")
-@click.option(
-    "--faces/--no-faces",
-    default=True,
-    help="Include human face detection (default on).",
-)
-@click.option(
-    "--pets/--no-pets",
-    default=True,
-    help="Include pet detection (default on).",
-)
-@click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
-@click.pass_context
-def rescan(ctx: click.Context, source: str, faces: bool, pets: bool, yes: bool) -> None:
-    """Rescan a single source: delete existing scans + findings, run fresh detection.
-
-    ADR-012 §M3 step 4: this command now routes through ``AnalysisPipeline``
-    + ``AnalysisPersister`` — the same persistence path ``ritrova analyse``
-    uses. The legacy pre-composite ``human`` / ``pet`` scan types are
-    retired; a rescan always produces a ``subjects`` scan row.
-    """
-    from .analysis import (
-        AnalysisPersister,
-        AnalysisPipelineBuilder,
-        SourceAnalysis,
-        photo_frames,
-        video_frames,
-    )
-    from .analysis_steps import DeduplicationStep, FaceDetectionStep, PetDetectionStep
-    from .db import FaceDB
-    from .scanner import get_exif_date, get_exif_gps
-
-    if not faces and not pets:
-        raise click.UsageError("Nothing to do — pass --faces and/or --pets.")
-
-    photos_dir = _require_photos_dir(ctx)
-    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
-
-    # Resolve to a stored path (relative to PHOTOS_DIR) and the absolute path.
-    abs_path = Path(source)
-    if not abs_path.is_absolute():
-        abs_path = (Path(photos_dir) / source).resolve()
-    if not abs_path.exists():
-        raise click.UsageError(f"File not found: {abs_path}")
-    stored_path = db.to_relative(str(abs_path))
-    src = db.get_source_by_path(stored_path)
-    if src is None:
-        raise click.UsageError(
-            f"Source not in DB: {stored_path}\nRun `ritrova analyse` to ingest new files first."
-        )
-
-    existing = [s for s in db.find_scans() if s["source_id"] == src.id]
-    if not existing:
-        click.echo(f"(no matching scans on {stored_path})")
-        db.close()
-        return
-
-    n_findings = sum(t["finding_count"] for t in existing)
-    n_assigned = db.query(
-        f"SELECT COUNT(*) FROM findings f "  # noqa: S608
-        f"JOIN finding_assignment fa ON fa.finding_id = f.id "
-        f"WHERE fa.subject_id IS NOT NULL AND f.scan_id IN "
-        f"({','.join(str(t['id']) for t in existing)})"
-    )[0][0]
-
-    click.echo(
-        f"About to rescan {stored_path}\n"
-        f"Replacing {len(existing)} scan(s): {sorted({t['scan_type'] for t in existing})}\n"
-        f"This will delete {n_findings} finding(s), of which "
-        f"{n_assigned} have manual subject assignments."
-    )
-    if not yes and not click.confirm("Proceed?", default=False):
-        click.echo("Aborted.")
-        db.close()
-        return
-
-    for t in existing:
-        db.delete_scan(t["id"])
-
-    # Build the pipeline matching the selected detectors.
-    builder = AnalysisPipelineBuilder()
-    if faces:
-        from .detector import FaceDetector
-
-        builder.add_step(FaceDetectionStep(FaceDetector(), min_confidence=0.65))
-    if pets:
-        from .pet_detector import PetDetector
-
-        builder.add_step(PetDetectionStep(PetDetector(), min_confidence=0.5))
-    builder.add_step(DeduplicationStep())
-    pipeline = builder.build()
-
-    frames_dir = Path(ctx.obj["db_path"]).parent / "tmp" / "frames"
-    persister = AnalysisPersister(db, frames_dir=frames_dir)
-
-    initial = SourceAnalysis(source_path=stored_path, source_type=src.type)
-    if src.type == "photo":
-        initial.taken_at = get_exif_date(abs_path)
-        gps = get_exif_gps(abs_path)
-        if gps:
-            initial.latitude, initial.longitude = gps
-        frame_iter = photo_frames(abs_path)
-    else:
-        frame_iter = video_frames(abs_path)
-
-    try:
-        result = pipeline.analyse_source(
-            abs_path,
-            source_type=src.type,
-            frames=frame_iter,
-            initial_state=initial,
-        )
-    except OSError as e:
-        click.echo(f"  rescan FAILED: {e}")
-        db.close()
-        return
-
-    persister.persist(result, strategy_id=pipeline.strategy_id, scan_type="subjects")
-    click.echo(f"  rescan: {len(result.findings)} finding(s) via {pipeline.strategy_id}")
-
     db.close()
 
 

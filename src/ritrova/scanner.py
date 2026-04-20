@@ -3,8 +3,10 @@
 The single-source scanning helpers (``scan_one_photo_for_human`` et al)
 were retired in ADR-012 §M3 step 4 — every write path now goes through
 ``AnalysisPipeline`` + ``AnalysisPersister`` in ``analysis.py``. What
-remains here: walking the photo tree for ``ritrova analyse`` +
-``rescan``, and the EXIF readers used by the ingest side.
+remains here: walking the photo tree for ``ritrova analyse`` (both the
+tree-walk mode and the explicit-paths single-file mode that replaced the
+retired ``rescan`` command), and the EXIF readers used by the ingest
+side.
 """
 
 import logging
