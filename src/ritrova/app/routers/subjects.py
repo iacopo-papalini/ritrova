@@ -49,8 +49,18 @@ def subject_faces_api(subject_id: int, offset: int = 0, limit: int = 200) -> JSO
 
 @router.get("/api/subjects/{subject_id}/findings-html", response_class=HTMLResponse)
 def subject_faces_html(
-    request: Request, subject_id: int, offset: int = 0, limit: int = 200
+    request: Request,
+    subject_id: int,
+    offset: int = 0,
+    limit: int = 200,
+    dense: int = 1,
 ) -> HTMLResponse:
+    """HTMX fragment for infinite-scroll pagination of a subject's face grid.
+
+    ``dense=1`` (default) emits one continuous grid with inline month-label
+    cells. ``dense=0`` emits the old ``<h3>`` month headers + a fresh grid
+    per month — kept for the "Group by month" toggle.
+    """
     db = get_db()
     findings_with_paths = db.get_subject_findings_with_paths(subject_id, limit=limit, offset=offset)
     finding_groups = group_by_month(findings_with_paths, key="findings")
@@ -65,13 +75,16 @@ def subject_faces_html(
             "limit": limit,
             "total": total,
             "findings_count": len(findings_with_paths),
+            "dense": bool(dense),
         },
         request=request,
     )
 
 
-@router.post("/api/subjects/{subject_id}/rename")
-def rename_subject(subject_id: int, name: str = Form(...)) -> RedirectResponse:
+@router.post("/api/subjects/{subject_id}/rename", response_model=None)
+def rename_subject(
+    request: Request, subject_id: int, name: str = Form(...)
+) -> RedirectResponse | JSONResponse:
     db = get_db()
     subject = db.get_subject(subject_id)
     if not subject:
@@ -80,6 +93,12 @@ def rename_subject(subject_id: int, name: str = Form(...)) -> RedirectResponse:
     # plural URL kind ("people"/"pets"). Inlined per ADR-012 M0.5.
     kind = "pets" if subject.kind == "pet" else "people"
     get_subject_service().rename_subject(subject_id, name)
+    # HTMX / JSON clients (e.g. inline-rename on subject-detail) get the
+    # new name back and patch the DOM — matches the circle-rename contract.
+    if request.headers.get("hx-request") or request.headers.get("accept", "").startswith(
+        "application/json"
+    ):
+        return JSONResponse({"ok": True, "name": name.strip()})
     return RedirectResponse(f"/{kind}/{subject_id}", status_code=303)
 
 

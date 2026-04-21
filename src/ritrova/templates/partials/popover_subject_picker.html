@@ -1,0 +1,50 @@
+{# Button-opens-popover wrapper around the existing subject_picker typeahead.
+   Lets the subject-detail header show only a button ("Merge…" / "Move to…")
+   instead of a wide inline text input, then reveal the picker below on
+   click. Auto-closes on subject-selected (dispatched by subjectPicker.pick),
+   outside-click, or Escape.
+
+   Required context:
+     button_label    text on the trigger button (string)
+     button_class    Tailwind classes for the trigger (default: ghost)
+     picker_onselect raw JS body (async fn body) for subjectPicker's
+                     onSelect callback. `target` is bound to the picked
+                     subject. Popover closes automatically once the body
+                     returns (via the subject-selected event bubbled by
+                     subjectPicker.pick); the body can noop-return early
+                     and the popover still closes.
+     popover_width   Tailwind width class for the popover panel
+                     (default w-72). The picker expands to fill it.
+     align           'left' | 'right' — which edge of the trigger the
+                     popover aligns against (default 'right').
+#}
+{% set _button_class = button_class|default('rounded-lg border border-gallery-border px-3 py-1.5 text-sm font-medium text-gallery-text transition-colors hover:bg-gallery-card cursor-pointer') %}
+{% set _popover_width = popover_width|default('w-72') %}
+{% set _align = align|default('right') %}
+<div x-data="{ open: false }"
+     @keydown.escape.window="open = false"
+     @click.outside="open = false"
+     @subject-selected.stop="open = false"
+     class="relative">
+  <button type="button"
+          @click="open = !open"
+          class="{{ _button_class }}">
+    {{ button_label }}
+  </button>
+
+  <div x-show="open" x-cloak
+       x-transition:enter="transition ease-out duration-150"
+       x-transition:enter-start="opacity-0 -translate-y-1"
+       x-transition:enter-end="opacity-100 translate-y-0"
+       class="absolute z-50 mt-2 {{ _popover_width }} {% if _align == 'right' %}right-0{% else %}left-0{% endif %}
+              rounded-xl border border-gallery-border bg-gallery-card p-3 shadow-xl">
+    <div x-data="subjectPicker({
+           async onSelect(target) {
+             {{ picker_onselect }}
+           }
+         })"
+         x-init="$nextTick(() => $el.querySelector('input')?.focus())">
+      {% include "partials/subject_picker.html" %}
+    </div>
+  </div>
+</div>

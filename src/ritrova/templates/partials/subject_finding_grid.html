@@ -1,14 +1,35 @@
-{# Subject finding grid fragment -- returned by /api/subjects/{id}/findings-html for htmx infinite scroll #}
-{% for group in finding_groups %}
-<h3 class="mt-4 mb-2 text-sm font-medium text-gallery-muted">{{ group.month }}</h3>
+{# Subject finding grid fragment — returned by /api/subjects/{id}/findings-html.
+
+   Two render modes:
+
+   * dense (default)  — one continuous grid. No month labels at all.
+     Primary use-case: scrubbing a named subject's face samples where
+     chronology is secondary.
+   * group-by-month   — one continuous grid, but each month-run begins
+     with a single small grid cell that holds the month label. A 1-face
+     month costs one tile-width, not a full row. "Unknown" is relabelled
+     to "No date in path" (bare "Unknown" reads like a data-quality bug).
+
+   The infinite-scroll next-page link preserves whichever mode it was
+   loaded with so the user's choice sticks across pages.
+#}
+{% set _dense = dense if dense is defined else True %}
+{% set _unknown_label = 'No date in path' %}
 <div class="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-14 gap-1.5">
-  {% for face in group.findings %}
-  {% include "partials/subject_face_tile.html" %}
+  {% for group in finding_groups %}
+    {% if not _dense %}
+    {% set _month = _unknown_label if group.month == 'Unknown' else group.month %}
+    <span class="aspect-square flex items-center justify-center text-center text-[10px] leading-tight
+                 rounded-lg bg-gallery-card/60 text-gallery-muted px-1"
+          title="{{ _month }}">{{ _month }}</span>
+    {% endif %}
+    {% for face in group.findings %}
+    {% include "partials/subject_face_tile.html" %}
+    {% endfor %}
   {% endfor %}
 </div>
-{% endfor %}
 {% if offset + findings_count < total %}
-<div hx-get="/api/subjects/{{ subject_id }}/findings-html?offset={{ offset + findings_count }}&limit={{ limit }}"
+<div hx-get="/api/subjects/{{ subject_id }}/findings-html?offset={{ offset + findings_count }}&limit={{ limit }}&dense={{ 1 if _dense else 0 }}"
      hx-trigger="revealed"
      hx-swap="outerHTML"
      class="flex justify-center py-8">

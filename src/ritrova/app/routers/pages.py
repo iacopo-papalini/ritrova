@@ -350,6 +350,12 @@ def subject_detail(request: Request, kind: KindType, subject_id: int) -> HTMLRes
             "all_circles": all_circles,
             "has_unclustered": has_unclustered,
             "kind": kind,
+            "rename_url": f"/api/subjects/{subject_id}/rename",
+            "findings_count": len(findings),
+            "subject_id": subject_id,
+            "offset": 0,
+            "limit": 200,
+            "total": subject.face_count,
         },
         request=request,
     )

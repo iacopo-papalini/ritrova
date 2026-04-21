@@ -1,0 +1,50 @@
+{# Unified entity-detail header (executes ui-assessment.md recommendation #4).
+
+   The same shape serves cluster/subject/circle detail pages. This partial
+   reads named context variables so callers can build the header in one
+   `{% include %}` without a macro call chain:
+
+   Required context (all optional except `header_title_html`):
+     header_back_url          URL for the back arrow. Omit to hide it.
+     header_title_html        pre-rendered title block (an <h1>, inline
+                              rename, or plain text) — output with |safe.
+     header_count_html        small muted "(14 members)" meta, next to title.
+     header_actions_primary_html  right-aligned action cluster HTML
+                              (primary button + secondary + overflow menu).
+     header_meta_html         optional second row for chips / circles.
+                              Rendered as-is inside a flex row.
+
+   Row A: back · title · count · actions.
+   Row B: optional meta (circles chips, muted pills, etc.) — single line.
+#}
+<div class="mb-6">
+  <div class="flex items-center gap-3">
+    {% if header_back_url %}
+    <a href="{{ header_back_url }}"
+       class="shrink-0 text-gallery-muted hover:text-gallery-text transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+      </svg>
+    </a>
+    {% endif %}
+
+    <div class="min-w-0 flex-1 flex items-center gap-3 flex-wrap">
+      {{ header_title_html|safe }}
+      {% if header_count_html %}
+      <span class="text-gallery-muted text-sm shrink-0">{{ header_count_html|safe }}</span>
+      {% endif %}
+    </div>
+
+    {% if header_actions_primary_html %}
+    <div class="shrink-0 flex items-center gap-2">
+      {{ header_actions_primary_html|safe }}
+    </div>
+    {% endif %}
+  </div>
+
+  {% if header_meta_html %}
+  <div class="mt-3 flex flex-wrap items-center gap-2">
+    {{ header_meta_html|safe }}
+  </div>
+  {% endif %}
+</div>
