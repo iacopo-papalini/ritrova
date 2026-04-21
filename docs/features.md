@@ -2,6 +2,61 @@
 
 ## Open
 
+### FEAT-29: Manual finding — drag on the photo to create a bbox
+**Reported:** 2026-04-21 | **Priority:** Medium
+The detectors miss faces in hard cases (profile, occlusion, low light, distant subjects). Today the only recourse is to accept the miss. Let the user draw a bounding box manually on the photo viewer to create a new finding, compute its embedding, and either assign it to an existing subject or stash it unassigned for the clusterer to absorb later.
+
+**UI surface (photo page):**
+- When hovering the photo, the cursor becomes a crosshair on modifier-hold (e.g. `Shift`) or when a "new finding" toggle is active — avoid hijacking plain clicks, which are currently the "open bbox overlay" affordance.
+- Press-drag from inside the image draws a live rectangle in SVG/DOM (x-data Alpine component on the `.relative` wrapper).
+- On release: POST `/api/sources/{id}/findings` with `{bbox: [x, y, w, h] in source-pixel coords, species: "human"|"dog"|"cat"}`. The `species` defaults from URL `kind` or is picked in a small popover that appears next to the drawn box.
+- Server crops the bbox, computes the embedding with the matching model (ArcFace for humans, SigLIP for pets), inserts a `findings` row tied to the photo's latest scan, and returns the new finding id.
+- The page reloads (or, better, the new tile appears in the "Faces in this photo" grid via DOM update) showing the unassigned face; user can immediately assign it via the picker.
+
+**Server work:**
+- New endpoint `POST /api/sources/{id}/findings` taking `{bbox, species}`. Validates bbox ⊆ source dimensions, bbox area above a tiny-crop threshold (same crop-quality filter already used by the detectors, or a relaxed version — a manual finding is by definition something the detector declined, so be lenient).
+- Reuses `FaceDetector.embed_crop(image, bbox)` / `PetDetector.embed_crop(image, bbox)`. If those don't exist as isolated methods, extract them from the detectors (they should — detection is `crop → embed`, and embedding alone is a valid internal operation).
+- Writes the finding under the source's most recent `subjects` scan with `detected_at=now`, `confidence=1.0` (user-asserted), `frame_path=None` for photos, or the frame path for video sources.
+- Service-layer addition: a method on `SubjectService` or a new `FindingsService` that orchestrates (crop, embed, insert) in one transaction and registers an undo token that deletes the finding on revert.
+
+**Edge cases:**
+- Manual finding on a video source: needs a frame reference. Either disable the feature on video sources (MVP) or let the user scrub to the frame they want via the lightbox's frame control and manual-find on that exact frame.
+- Overlap with an existing finding: no special handling — they coexist, same-photo dedup is intentional there.
+- Species mismatch with URL kind: same as the existing claim-faces 409 confirm flow.
+
+**MVP scope:**
+1. Server endpoint + `FindingsService.create_manual` with undo.
+2. Photo page: Shift+drag to draw; simple popover with species default + confirm.
+3. Unassigned tile appears in the Faces grid on success.
+4. Videos: explicitly disabled at the URL check with a tooltip explaining why.
+
+**Phase 2:**
+- Video support via frame scrub.
+- Lightbox support (same gesture on the lightbox image).
+- Bulk "add cluster candidate to these findings" from the subject-detail page.
+
+### FEAT-28: Photo-page face tiles — inline re-assign + "Not a face" action
+**Reported:** 2026-04-21 | **Priority:** Medium
+Two related UX gaps on the per-face tile in `/photos/{id}` ("Faces in this photo"):
+
+**(a) Clicking the name currently navigates away instead of re-assigning.**
+An assigned face renders the subject name as a plain `<a>` to `/{kind}/{subject_id}` (`templates/photo.html:93-97`). That navigation is redundant with the global nav links and gets in the way of the frequent workflow "this face is mis-assigned; re-assign it". Today the only way to correct a wrong name is to click the red X to unassign, then open the picker — two steps for a single mental operation.
+
+Desired: clicking the name chip flips the tile into picker mode — the same `subjectPicker` component already used for unassigned faces drops in, pre-filtered, and selecting a name re-assigns the finding via the existing `/api/findings/{id}/assign` flow (which handles 409 cross-species confirm out of the box). To navigate to the subject page, use the global typeahead or the person's avatar elsewhere.
+
+**(b) No "Not a face" action on the tile.**
+When the user is looking at a photo and sees that one of the detected "faces" is actually a doorknob / reflection / background pattern, the only way to dismiss it is to go to `/singletons` (or the cluster it's in) and select it from a bulk action. On the photo itself, where the error is visible, there's no per-tile action for it. Add a small "Not a face" button (trash/forbidden icon, muted colour) on every tile regardless of assignment state — sometimes a mis-assigned "face" is actually not a face at all. Clicking calls `POST /api/findings/dismiss` with a confirm dialog (same copy as the selection bar), with undo.
+
+**Scope:**
+- Photo page only. Other places that render subject chips (subject detail, together page, cluster detail) keep their navigation affordance.
+- Alpine: `x-data="{ editing: false }"` on each face tile. Click on the name toggles `editing = true` and swaps the chip for the `subjectPicker`; `onSelect` POSTs to `/api/findings/{id}/assign` (server-side overwrite of prior assignment). Escape closes without POSTing.
+- "Not a face" button visible on every tile (assigned + unassigned). Confirm dialog, then `POST /api/findings/dismiss` with `{face_ids: [id]}`. On success, the tile animates out and the bbox overlay on the main photo disappears (DOM update, no reload). Undo token surfaces via the existing toast.
+- Small visual cue the name is clickable for editing (e.g. pencil icon on hover) — the loss of navigation shouldn't be a silent surprise.
+
+**Relationship to BUG-19 / claim-faces:** the server-side 409 needs_confirm flow is already in place; (a) is a client-side reshuffle only. `assign_finding_to_subject` already overwrites any prior assignment.
+
+**Effort:** S. One template change in `photo.html`, ~30 lines of Alpine state + a bit of icon markup.
+
 ### FEAT-27: Circles of people/pets for view filtering
 **Reported:** 2026-04-18 | **Priority:** Medium
 A subject (named person or pet) can belong to zero, one, or several **circles** — user-defined labelled groups like `family`, `close-friends`, `acquaintances`, `parenti lontani`, `colleagues`, `strangers`. Circles are filters applied to any view that lists photos or subjects: "exclude members of *acquaintances* and *strangers*", or conversely "only show *family*". Primary use case is **exclusion** — sweeping acquaintances + strangers out of year/together/photo views to keep the archive feeling like a family album without having to delete anything.
