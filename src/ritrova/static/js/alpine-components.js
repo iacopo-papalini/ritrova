@@ -407,7 +407,13 @@ document.addEventListener('alpine:init', () => {
         ? `/api/findings/${it.id}/frame?max_size=1600`
         : `/api/sources/${it.id}/image?max_size=1600`;
     },
-    get detailUrl() { return this.sourceId ? `/photos/${this.sourceId}` : ''; },
+    // Video sources have no meaningful photo-detail page — the /photos/{id}
+    // route renders one extracted frame with bbox overlays from every finding
+    // in the clip, which looks wrong. Hide the button until a dedicated
+    // video-source page exists. See BUG-22.
+    get detailUrl() {
+      return this.sourceId && this.type !== 'video' ? `/photos/${this.sourceId}` : '';
+    },
     get downloadUrl() { return this.sourceId ? `/api/sources/${this.sourceId}/original` : ''; },
     get hasNav() { return this.items.length > 1; },
     get canPrev() { return this.index > 0; },
