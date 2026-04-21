@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,28 @@ from .scans import ScanMixin
 from .sources import SourceMixin
 from .subjects import SubjectMixin
 from .undo_support import UndoMixin
+
+
+class _TransactionalConnection(sqlite3.Connection):
+    """SQLite connection that honours a ``_skip_commit`` flag.
+
+    ``FaceDB.transaction()`` sets the flag for the duration of an outer
+    transaction so that inner ``@_locked`` mixin methods — which each call
+    ``self.conn.commit()`` at the end — do not prematurely commit the
+    enclosing transaction. The outer context manager commits (or rolls
+    back) exactly once on exit.
+
+    Read-only accessors (``_skip_commit`` attribute, ``commit`` method
+    override) live on the connection object itself; callers use
+    ``self.conn.commit()`` unchanged.
+    """
+
+    _skip_commit: bool = False
+
+    def commit(self) -> None:
+        if not self._skip_commit:
+            super().commit()
+
 
 # Logical FK metadata for scans.scan_type — kept in sync with the shipping
 # pipelines via ``_sync_scan_types`` on every DB open. Retire entries by
@@ -101,16 +125,65 @@ class FaceDB(
     UndoMixin,
     MaintenanceMixin,
 ):
+    # Narrower type than _DBAccessor.conn (sqlite3.Connection) so mypy sees
+    # the ``_skip_commit`` flag on our custom subclass.
+    conn: _TransactionalConnection
+
     def __init__(self, db_path: str | Path, base_dir: str | Path | None = None):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.base_dir: Path | None = Path(base_dir).resolve() if base_dir else None
         self._lock = threading.RLock()
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        # Custom connection subclass so ``transaction()`` can neutralise the
+        # per-method ``conn.commit()`` calls the mixins make — without having
+        # to change all 40-odd call sites.
+        self.conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+            factory=_TransactionalConnection,
+        )
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self._create_tables()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Atomic snapshot+mutate: holds the RLock and wraps the body in one
+        SQLite transaction.
+
+        Composes with ``@_locked`` — the RLock is reentrant, and inner
+        ``self.conn.commit()`` calls are suppressed for the duration via the
+        ``_TransactionalConnection._skip_commit`` flag. Nested
+        ``transaction()`` calls reuse the outer transaction (the inner
+        context is a no-op).
+
+        On normal exit: ``COMMIT``. On exception: ``ROLLBACK`` then re-raise.
+        """
+        with self._lock:
+            if self.conn._skip_commit:
+                # Already inside an outer transaction() — reuse it. Nested
+                # BEGIN would error ("cannot start a transaction within a
+                # transaction"), and the outer owns commit/rollback.
+                yield
+                return
+            self.conn._skip_commit = True
+            try:
+                # IMMEDIATE grabs the writer lock upfront, preventing a
+                # reader-then-writer escalation deadlock mid-transaction.
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    yield
+                except BaseException:
+                    # Temporarily re-enable commit so rollback can execute
+                    # against a live connection; rollback is not guarded.
+                    self.conn._skip_commit = False
+                    self.conn.rollback()
+                    raise
+                self.conn._skip_commit = False
+                self.conn.commit()
+            finally:
+                self.conn._skip_commit = False
 
     def _create_tables(self) -> None:
         self.conn.executescript("""

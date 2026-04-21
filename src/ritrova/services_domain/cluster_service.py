@@ -34,8 +34,9 @@ class ClusterService:
         Snapshots the finding ids in the source cluster first so the
         undo can flip them back.
         """
-        moved_ids = self._db.get_cluster_finding_ids(source_id)
-        self._db.merge_clusters(source_id, target_id)
+        with self._db.transaction():
+            moved_ids = self._db.get_cluster_finding_ids(source_id)
+            self._db.merge_clusters(source_id, target_id)
         message = (
             f"Merged cluster #{source_id} into #{target_id} "
             f"({len(moved_ids)} {_noun(len(moved_ids))})"
@@ -59,13 +60,14 @@ class ClusterService:
         if not subject:
             msg = "Subject not found"
             raise ValueError(msg)
-        # Snapshot the findings that assign_cluster_to_subject will mutate
-        # (uncurated only) so the undo deletes exactly those assignment rows.
-        pending_ids = self._db.get_unassigned_cluster_finding_ids(cluster_id)
-        try:
-            self._db.assign_cluster_to_subject(cluster_id, subject_id, force=force)
-        except ValueError as e:
-            raise SpeciesMismatch(str(e)) from e
+        with self._db.transaction():
+            # Snapshot the findings that assign_cluster_to_subject will mutate
+            # (uncurated only) so the undo deletes exactly those assignment rows.
+            pending_ids = self._db.get_unassigned_cluster_finding_ids(cluster_id)
+            try:
+                self._db.assign_cluster_to_subject(cluster_id, subject_id, force=force)
+            except ValueError as e:
+                raise SpeciesMismatch(str(e)) from e
         message = f"Assigned {len(pending_ids)} {_noun(len(pending_ids))} to {subject.name}"
         token = self._undo.put(
             description=message,

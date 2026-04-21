@@ -45,11 +45,12 @@ class CurationService:
         Returns ``None`` when the cluster is already empty — the router
         still emits a 200, just without an undo toast.
         """
-        finding_ids = self._db.get_cluster_finding_ids(cluster_id)
-        if not finding_ids:
-            return None
-        snapshots = self._snapshot_finding_fields(finding_ids)
-        self._db.dismiss_findings(finding_ids)
+        with self._db.transaction():
+            finding_ids = self._db.get_cluster_finding_ids(cluster_id)
+            if not finding_ids:
+                return None
+            snapshots = self._snapshot_finding_fields(finding_ids)
+            self._db.dismiss_findings(finding_ids)
         message = f"Dismissed {len(finding_ids)} {_noun(len(finding_ids))} in cluster #{cluster_id}"
         return self._put(message, DismissPayload(snapshots=snapshots))
 
@@ -59,8 +60,9 @@ class CurationService:
         """Dismiss an arbitrary batch — used by the selection-bar action."""
         if not finding_ids:
             return None
-        snapshots = self._snapshot_finding_fields(finding_ids)
-        self._db.dismiss_findings(finding_ids)
+        with self._db.transaction():
+            snapshots = self._snapshot_finding_fields(finding_ids)
+            self._db.dismiss_findings(finding_ids)
         message = f"Dismissed {len(finding_ids)} {_noun(len(finding_ids))}"
         return self._put(message, DismissPayload(snapshots=snapshots))
 
@@ -70,9 +72,10 @@ class CurationService:
         """Ad-hoc batch mark-stranger (the "I don't know this person/pet" button)."""
         if not finding_ids:
             return None
-        snapshots = self._snapshot_finding_fields(finding_ids)
-        self._db.set_exclusions(finding_ids, "stranger")
-        self._db.remove_cluster_memberships(finding_ids)
+        with self._db.transaction():
+            snapshots = self._snapshot_finding_fields(finding_ids)
+            self._db.set_exclusions(finding_ids, "stranger")
+            self._db.remove_cluster_memberships(finding_ids)
         message = f"Marked {len(finding_ids)} {_noun(len(finding_ids))} as stranger"
         return self._put(message, RestoreFromStrangerBatchPayload(snapshots=snapshots))
 
@@ -83,11 +86,12 @@ class CurationService:
         named / dismissed findings as-is. Returns ``None`` when every
         finding in the cluster is already curated.
         """
-        pending_ids = self._db.get_unassigned_cluster_finding_ids(cluster_id)
-        if not pending_ids:
-            return None
-        self._db.set_exclusions(pending_ids, "stranger")
-        self._db.remove_cluster_memberships(pending_ids)
+        with self._db.transaction():
+            pending_ids = self._db.get_unassigned_cluster_finding_ids(cluster_id)
+            if not pending_ids:
+                return None
+            self._db.set_exclusions(pending_ids, "stranger")
+            self._db.remove_cluster_memberships(pending_ids)
         message = f"Marked {len(pending_ids)} {_noun(len(pending_ids))} as stranger"
         return self._put(
             message,
@@ -100,13 +104,14 @@ class CurationService:
         """Bulk unassign: clear each finding's subject, snapshot the prior one."""
         if not finding_ids:
             return None
-        prior = self._db.snapshot_findings_fields(finding_ids)
-        snapshots = [
-            FindingSubjectSnapshot(finding_id=fid, subject_id=sid)
-            for fid, sid, _cid in prior
-            if sid is not None
-        ]
-        self._db.unassign_findings(finding_ids)
+        with self._db.transaction():
+            prior = self._db.snapshot_findings_fields(finding_ids)
+            snapshots = [
+                FindingSubjectSnapshot(finding_id=fid, subject_id=sid)
+                for fid, sid, _cid in prior
+                if sid is not None
+            ]
+            self._db.unassign_findings(finding_ids)
         message = f"Removed {len(finding_ids)} {_noun(len(finding_ids))}"
         return self._put(message, RestoreSubjectIdsPayload(snapshots=snapshots))
 
@@ -118,11 +123,12 @@ class CurationService:
         face(s)" phrasing). Returns ``None`` when the finding had no
         subject assignment.
         """
-        prior_subject_id = self._db.get_finding_subject_id(finding_id)
-        if prior_subject_id is None:
-            self._db.unassign_finding(finding_id)  # idempotent — keeps state clean
-            return None
-        self._db.unassign_finding(finding_id)
+        with self._db.transaction():
+            prior_subject_id = self._db.get_finding_subject_id(finding_id)
+            if prior_subject_id is None:
+                self._db.unassign_finding(finding_id)  # idempotent — keeps state clean
+                return None
+            self._db.unassign_finding(finding_id)
         subject = self._db.get_subject(prior_subject_id)
         name = subject.name if subject else f"#{prior_subject_id}"
         message = f"Removed face from {name}"
@@ -164,16 +170,17 @@ class CurationService:
         finding used to belong to. When omitted we restore every current
         stranger — only safe immediately after a ``mark_cluster_stranger``.
         """
-        if finding_ids is None:
-            rows = self._db.conn.execute(
-                "SELECT finding_id FROM finding_assignment WHERE exclusion_reason = 'stranger'"
-            ).fetchall()
-            finding_ids = [int(r[0]) for r in rows]
-        if not finding_ids:
-            return None
-        snapshots = self._snapshot_finding_fields(finding_ids)
-        self._db.clear_curations(finding_ids)
-        self._db.set_cluster_memberships({fid: cluster_id for fid in finding_ids})
+        with self._db.transaction():
+            if finding_ids is None:
+                rows = self._db.conn.execute(
+                    "SELECT finding_id FROM finding_assignment WHERE exclusion_reason = 'stranger'"
+                ).fetchall()
+                finding_ids = [int(r[0]) for r in rows]
+            if not finding_ids:
+                return None
+            snapshots = self._snapshot_finding_fields(finding_ids)
+            self._db.clear_curations(finding_ids)
+            self._db.set_cluster_memberships({fid: cluster_id for fid in finding_ids})
         message = f"Restored {len(finding_ids)} {_noun(len(finding_ids))} from stranger"
         return self._put(message, RestoreFromStrangerBatchPayload(snapshots=snapshots))
 

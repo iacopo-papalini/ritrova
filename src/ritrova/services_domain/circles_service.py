@@ -87,12 +87,13 @@ class CirclesService:
 
         Raises ``ValueError`` when the circle doesn't exist.
         """
-        circle = self._db.get_circle(circle_id)
-        if circle is None:
-            msg = "Circle not found"
-            raise ValueError(msg)
-        member_ids = self._db.get_circle_subject_ids(circle_id)
-        self._db.delete_circle(circle_id)
+        with self._db.transaction():
+            circle = self._db.get_circle(circle_id)
+            if circle is None:
+                msg = "Circle not found"
+                raise ValueError(msg)
+            member_ids = self._db.get_circle_subject_ids(circle_id)
+            self._db.delete_circle(circle_id)
         message = f"Deleted circle '{circle.name}' ({len(member_ids)} members)"
         token = self._undo.put(
             description=message,

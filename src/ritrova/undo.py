@@ -125,10 +125,12 @@ class ResurrectSubjectPayload(UndoPayload):
     """Undo subject delete or merge: recreate the destroyed subject row
     and reassign its findings.
 
-    NOTE: recreate + reassign are two separate commits — not atomic.
-    If the process crashes between them the subject exists but its findings
-    are not yet reassigned. Acceptable for a single-user desktop app; a
-    production system would wrap both in a single transaction.
+    NOTE: the two ``db.`` calls below run as independent transactions
+    (the payload's ``undo`` path does not enter a ``db.transaction()``
+    block). If the process crashes between them the subject exists but
+    its findings are not yet reassigned — acceptable for a single-user
+    desktop app, since the user can just re-run undo and the second
+    call is idempotent.
     """
 
     subject: SubjectSnapshot
@@ -241,13 +243,10 @@ class UndoStore:
     Thread-safety: callers may hit this from any request thread; all methods
     serialise on ``_lock``. The DB mutations guarded by an undo entry are
     themselves serialised by FaceDB's own lock, so the happens-before chain
-    (snapshot → mutate → put) is preserved per-request.
-
-    NOTE: the snapshot-then-mutate pattern in each endpoint acquires and
-    releases the DB lock twice (once for snapshot, once for mutation).
-    A concurrent request could theoretically interleave. Acceptable for a
-    single-user desktop app; a production system would hold the lock across
-    both operations.
+    (snapshot → mutate → put) is preserved per-request. Services wrap the
+    snapshot+mutate pair in ``FaceDB.transaction()`` (ADR-012 §M4) so the
+    two DB calls are atomic under one lock acquisition — no interleave
+    window remains between them.
     """
 
     def __init__(self, ttl: float = 60.0) -> None:

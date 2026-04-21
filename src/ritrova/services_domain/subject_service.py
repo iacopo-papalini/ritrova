@@ -51,15 +51,16 @@ class SubjectService:
         """
         if not finding_ids:
             return None
-        prior = self._db.snapshot_findings_fields(finding_ids)
-        snapshots = [
-            FindingSubjectSnapshot(finding_id=fid, subject_id=sid) for fid, sid, _cid in prior
-        ]
-        try:
-            for fid in finding_ids:
-                self._db.assign_finding_to_subject(fid, subject_id, force=force)
-        except ValueError as e:
-            raise SpeciesMismatch(str(e)) from e
+        with self._db.transaction():
+            prior = self._db.snapshot_findings_fields(finding_ids)
+            snapshots = [
+                FindingSubjectSnapshot(finding_id=fid, subject_id=sid) for fid, sid, _cid in prior
+            ]
+            try:
+                for fid in finding_ids:
+                    self._db.assign_finding_to_subject(fid, subject_id, force=force)
+            except ValueError as e:
+                raise SpeciesMismatch(str(e)) from e
         subject = self._db.get_subject(subject_id)
         name = subject.name if subject else f"#{subject_id}"
         message = f"Claimed {len(finding_ids)} {_noun(len(finding_ids))} for {name}"
@@ -89,12 +90,13 @@ class SubjectService:
         return self._swap_batch(finding_ids, target_subject_id)
 
     def _swap_batch(self, finding_ids: list[int], target_subject_id: int) -> UndoReceipt:
-        prior = self._db.snapshot_findings_fields(finding_ids)
-        snapshots = [
-            FindingSubjectSnapshot(finding_id=fid, subject_id=sid) for fid, sid, _cid in prior
-        ]
-        for fid in finding_ids:
-            self._db.assign_finding_to_subject(fid, target_subject_id)
+        with self._db.transaction():
+            prior = self._db.snapshot_findings_fields(finding_ids)
+            snapshots = [
+                FindingSubjectSnapshot(finding_id=fid, subject_id=sid) for fid, sid, _cid in prior
+            ]
+            for fid in finding_ids:
+                self._db.assign_finding_to_subject(fid, target_subject_id)
         subject = self._db.get_subject(target_subject_id)
         name = subject.name if subject else f"#{target_subject_id}"
         message = f"Swapped {len(finding_ids)} {_noun(len(finding_ids))} for {name}"
@@ -130,22 +132,23 @@ class SubjectService:
         if source_id == target_id:
             msg = "Cannot merge subject with themselves"
             raise ValueError(msg)
-        target = self._db.get_subject(target_id)
-        if not target:
-            msg = "Target subject not found"
-            raise ValueError(msg)
-        source_row = self._db.get_subject_row(source_id)
-        if not source_row:
-            msg = "Source subject not found"
-            raise ValueError(msg)
-        moved_ids = self._db.get_subject_finding_ids(source_id)
-        source_snapshot = SubjectSnapshot(
-            id=source_row[0],
-            name=source_row[1],
-            kind=source_row[2],
-            created_at=source_row[3],
-        )
-        self._db.merge_subjects(source_id, target_id)
+        with self._db.transaction():
+            target = self._db.get_subject(target_id)
+            if not target:
+                msg = "Target subject not found"
+                raise ValueError(msg)
+            source_row = self._db.get_subject_row(source_id)
+            if not source_row:
+                msg = "Source subject not found"
+                raise ValueError(msg)
+            moved_ids = self._db.get_subject_finding_ids(source_id)
+            source_snapshot = SubjectSnapshot(
+                id=source_row[0],
+                name=source_row[1],
+                kind=source_row[2],
+                created_at=source_row[3],
+            )
+            self._db.merge_subjects(source_id, target_id)
         message = (
             f"Merged {source_snapshot.name} into {target.name} "
             f"({len(moved_ids)} {_noun(len(moved_ids))})"
@@ -161,15 +164,16 @@ class SubjectService:
 
         Raises ``ValueError`` when the subject is missing.
         """
-        subject = self._db.get_subject(subject_id)
-        if not subject:
-            msg = "Subject not found"
-            raise ValueError(msg)
-        row = self._db.get_subject_row(subject_id)
-        assert row is not None
-        finding_ids = self._db.get_subject_finding_ids(subject_id)
-        snapshot = SubjectSnapshot(id=row[0], name=row[1], kind=row[2], created_at=row[3])
-        self._db.delete_subject(subject_id)
+        with self._db.transaction():
+            subject = self._db.get_subject(subject_id)
+            if not subject:
+                msg = "Subject not found"
+                raise ValueError(msg)
+            row = self._db.get_subject_row(subject_id)
+            assert row is not None
+            finding_ids = self._db.get_subject_finding_ids(subject_id)
+            snapshot = SubjectSnapshot(id=row[0], name=row[1], kind=row[2], created_at=row[3])
+            self._db.delete_subject(subject_id)
         message = (
             f"Deleted {snapshot.name} ({len(finding_ids)} {_noun(len(finding_ids))} unassigned)"
         )
