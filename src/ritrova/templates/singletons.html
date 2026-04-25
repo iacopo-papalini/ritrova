@@ -48,7 +48,7 @@
     <div class="flex-1"></div>
 
     <!-- Assign to person (typeahead) -->
-    <div class="w-56" x-data="subjectPicker()">
+    <div class="w-56" x-data="subjectPicker({ createKind: '{{ 'pet' if kind == 'pets' else 'person' }}' })">
       {% include "partials/subject_picker.html" %}
     </div>
     {% set stranger_s = 'pet' if kind == 'pets' else 'person' %}

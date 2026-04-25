@@ -39,6 +39,7 @@
        class="absolute z-50 mt-2 {{ _popover_width }} {% if _align == 'right' %}right-0{% else %}left-0{% endif %}
               rounded-xl border border-gallery-border bg-gallery-card p-3 shadow-xl">
     <div x-data="subjectPicker({
+           createKind: '{{ 'pet' if kind == 'pets' else 'person' }}',
            async onSelect(target) {
              {{ picker_onselect }}
            }

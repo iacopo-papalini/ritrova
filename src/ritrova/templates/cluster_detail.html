@@ -24,6 +24,7 @@
   <!-- Assign via typeahead -->
   <div class="mb-6 flex flex-wrap items-start gap-3"
        x-data="subjectPicker({
+         createKind: '{{ 'pet' if kind == 'pets' else 'person' }}',
          onSelect(subject) {
            const fd = new FormData();
            fd.append('subject_id', subject.id);
