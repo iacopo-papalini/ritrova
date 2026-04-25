@@ -433,6 +433,35 @@ def auto_merge_clusters(
     return {"merged": merged, "faces_moved": faces_moved, "remaining_clusters": remaining}
 
 
+def nearest_named_subject(
+    db: FaceDB,
+    embedding: np.ndarray,
+    species: str,
+    min_similarity: float = 0.55,
+) -> tuple[int, str, float] | None:
+    """Return ``(subject_id, name, similarity_pct)`` of the single nearest
+    named subject whose kind matches ``species`` and whose centroid cosine
+    similarity exceeds ``min_similarity``. Returns ``None`` otherwise.
+
+    Generalisation of the ``rank_subjects_for_cluster`` path that takes a
+    raw normalized embedding instead of a cluster centroid (FEAT-29).
+    """
+    kind = "pet" if species in FaceDB.PET_SPECIES or species == "pet" else "person"
+    dim = EMBEDDING_DIMS.get(kind, 512)
+    subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
+    if not subject_centroids:
+        return None
+    query = normalize(embedding.astype(np.float32))
+    centroid_matrix = np.array([sc[2] for sc in subject_centroids])
+    sims = centroid_matrix @ query
+    best_idx = int(sims.argmax())
+    best_sim = float(sims[best_idx])
+    if best_sim < min_similarity:
+        return None
+    sid, name, _ = subject_centroids[best_idx]
+    return sid, name, round(best_sim * 100, 1)
+
+
 def rank_subjects_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, str, int, float]]:
     """Rank existing subjects by similarity to a cluster.
 

@@ -23,15 +23,25 @@ from __future__ import annotations
 from .circles_service import CirclesService
 from .cluster_service import ClusterService
 from .curation_service import CurationService
+from .findings_service import (
+    CreateManualResult,
+    FindingsService,
+    ManualFindingError,
+    Suggestion,
+)
 from .receipts import SpeciesMismatch, UndoReceipt, UndoToken
 from .subject_service import SubjectService
 
 __all__ = [
     "CirclesService",
     "ClusterService",
+    "CreateManualResult",
     "CurationService",
+    "FindingsService",
+    "ManualFindingError",
     "SpeciesMismatch",
     "SubjectService",
+    "Suggestion",
     "UndoReceipt",
     "UndoToken",
 ]

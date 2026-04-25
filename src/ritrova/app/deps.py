@@ -25,6 +25,7 @@ from ..services_domain import (
     CirclesService,
     ClusterService,
     CurationService,
+    FindingsService,
     SubjectService,
 )
 from ..undo import UndoStore
@@ -37,6 +38,7 @@ _curation_service: CurationService | None = None
 _subject_service: SubjectService | None = None
 _cluster_service: ClusterService | None = None
 _circles_service: CirclesService | None = None
+_findings_service: FindingsService | None = None
 
 
 def configure(
@@ -49,6 +51,7 @@ def configure(
     """Called once from ``create_app`` at startup."""
     global _db, _undo_store, _templates, _thumbnails_dir
     global _curation_service, _subject_service, _cluster_service, _circles_service
+    global _findings_service
     _db = db
     _undo_store = undo_store
     _templates = templates
@@ -59,6 +62,7 @@ def configure(
     _subject_service = SubjectService(db, undo_store)
     _cluster_service = ClusterService(db, undo_store)
     _circles_service = CirclesService(db, undo_store)
+    _findings_service = FindingsService(db, undo_store)
 
 
 def get_db() -> FaceDB:
@@ -107,3 +111,9 @@ def get_circles_service() -> CirclesService:
     if _circles_service is None:
         raise RuntimeError("deps.configure(...) has not been called — use create_app()")
     return _circles_service
+
+
+def get_findings_service() -> FindingsService:
+    if _findings_service is None:
+        raise RuntimeError("deps.configure(...) has not been called — use create_app()")
+    return _findings_service

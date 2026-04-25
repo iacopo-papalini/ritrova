@@ -2,38 +2,58 @@
 
 ## Open
 
-### FEAT-29: Manual finding — drag on the photo to create a bbox
+### FEAT-29: Manual finding — Shift+drag on the photo to create a bbox, with nearest-subject suggestion
 **Reported:** 2026-04-21 | **Priority:** Medium
-The detectors miss faces in hard cases (profile, occlusion, low light, distant subjects). Today the only recourse is to accept the miss. Let the user draw a bounding box manually on the photo viewer to create a new finding, compute its embedding, and either assign it to an existing subject or stash it unassigned for the clusterer to absorb later.
+Detectors miss faces in hard cases (profile, occlusion, low light, distant subjects). Today the only recourse is accepting the miss. Let the user draw a bounding box manually on the photo viewer to create a new finding, have the server compute its embedding AND suggest the nearest named subject based on centroid similarity, then confirm or override in one keystroke.
+
+**Shipped (MVP, 2026-04-20):** `POST /api/sources/{id}/findings` with body `{bbox, species}`; `FindingsService.create_manual` wires embedding + nearest-named-subject suggestion + `DeleteManualFindingPayload` undo; photo.html gains a Shift+drag Alpine component (`manualFinding`) with a species popover and suggestion-prefilled picker on page reload. Videos are rejected at 422. Phase 2 (video frame scrubber, lightbox gesture, cluster-scope bulk) remains open.
 
 **UI surface (photo page):**
-- When hovering the photo, the cursor becomes a crosshair on modifier-hold (e.g. `Shift`) or when a "new finding" toggle is active — avoid hijacking plain clicks, which are currently the "open bbox overlay" affordance.
-- Press-drag from inside the image draws a live rectangle in SVG/DOM (x-data Alpine component on the `.relative` wrapper).
-- On release: POST `/api/sources/{id}/findings` with `{bbox: [x, y, w, h] in source-pixel coords, species: "human"|"dog"|"cat"}`. The `species` defaults from URL `kind` or is picked in a small popover that appears next to the drawn box.
-- Server crops the bbox, computes the embedding with the matching model (ArcFace for humans, SigLIP for pets), inserts a `findings` row tied to the photo's latest scan, and returns the new finding id.
-- The page reloads (or, better, the new tile appears in the "Faces in this photo" grid via DOM update) showing the unassigned face; user can immediately assign it via the picker.
+- On the photo viewer's `.relative` wrapper: hold **Shift** and press-drag to draw a live rectangle (SVG/DOM via an Alpine component). Plain clicks stay reserved for the existing bbox-overlay jump-to-tile affordance.
+- On release: small popover near the drawn box — species radio (default from URL `kind`, but user can override for a human-in-a-pets page or vice versa), confirm button, escape cancels.
+- POST `/api/sources/{id}/findings {bbox, species}` with bbox in source-pixel coordinates.
+- On success: a new tile is appended to the "Faces in this photo" grid in **Pending** state (FEAT-28 vocabulary), and a new bbox overlay appears on the main image (red, like any pending finding).
+
+**Two-keystroke common case:**
+- Shift-drag → popover → Enter (accept default species).
+- The server returns `suggestion: {subject_id, name, similarity_pct}` based on nearest named-subject centroid (reuse `rank_subjects_for_cluster` semantics, top-1 above ~55% cosine sim). The new tile's subject picker is **prefilled** with the suggested name.
+- User presses **Enter** in the picker → assigns. Total: Shift-drag, species Enter, name Enter. Three keystrokes for a full manual find + assign. Backspace/type to override.
 
 **Server work:**
-- New endpoint `POST /api/sources/{id}/findings` taking `{bbox, species}`. Validates bbox ⊆ source dimensions, bbox area above a tiny-crop threshold (same crop-quality filter already used by the detectors, or a relaxed version — a manual finding is by definition something the detector declined, so be lenient).
-- Reuses `FaceDetector.embed_crop(image, bbox)` / `PetDetector.embed_crop(image, bbox)`. If those don't exist as isolated methods, extract them from the detectors (they should — detection is `crop → embed`, and embedding alone is a valid internal operation).
-- Writes the finding under the source's most recent `subjects` scan with `detected_at=now`, `confidence=1.0` (user-asserted), `frame_path=None` for photos, or the frame path for video sources.
-- Service-layer addition: a method on `SubjectService` or a new `FindingsService` that orchestrates (crop, embed, insert) in one transaction and registers an undo token that deletes the finding on revert.
+- New endpoint `POST /api/sources/{id}/findings` — body `{bbox: [x, y, w, h], species: "human"|"dog"|"cat"}`. Validates bbox ⊆ source dimensions and above a small area threshold. 401/403 not applicable (single-user desktop).
+- New service method `FindingsService.create_manual(source_id, bbox, species) → CreateManualResult` (or extend `SubjectService` — pick whichever is cleanest). Returns `{finding_id, suggestion, receipt}` where `receipt` is an `UndoReceipt` whose payload deletes the created finding on undo.
+- Inside the service: load the image once, crop to bbox, embed using the correct model (ArcFace for human, SigLIP for pet), insert a `findings` row tied to the source's most-recent `subjects` scan, `detected_at=now`, `confidence=1.0` (user-asserted), `frame_path=None` for photo sources. All inside `db.transaction()` so the insert+undo-snapshot are atomic.
+- New helper `nearest_named_subject(db, embedding, species, min_similarity=0.55) -> (subject_id, name, similarity_pct) | None` in `cluster.py`. Small generalization of the existing `rank_subjects_for_cluster` path — takes a raw normalized embedding instead of a cluster-centroid.
+- Extract `embed_crop(image: PIL.Image, bbox) → np.ndarray` on `FaceDetector` / `PetDetector` if not already exposed (detection is internally `crop → embed`; expose just the embed step).
+- New undo payload `DeleteManualFindingPayload(finding_id)` in `undo.py` — on undo, delete the created finding row (CASCADE takes care of finding_assignment / cluster_findings).
+
+**API shape (response):**
+```json
+{
+  "ok": true,
+  "finding_id": 12345,
+  "suggestion": {"subject_id": 7, "name": "Caterina", "similarity_pct": 78.4},  // or null
+  "undo_token": "...",
+  "message": "Added manual face"
+}
+```
 
 **Edge cases:**
-- Manual finding on a video source: needs a frame reference. Either disable the feature on video sources (MVP) or let the user scrub to the frame they want via the lightbox's frame control and manual-find on that exact frame.
-- Overlap with an existing finding: no special handling — they coexist, same-photo dedup is intentional there.
-- Species mismatch with URL kind: same as the existing claim-faces 409 confirm flow.
+- **Video sources:** disabled at the endpoint (422) — a single-frame JPG isn't what the user's looking at; proper support needs a frame scrubber (Phase 2). The photo page for a video source today renders a single extracted frame (see BUG-22); don't compound that.
+- **Overlap with an existing finding:** allowed. Dedup happens at clustering time, not at the per-photo layer.
+- **Suggestion species mismatch with URL kind:** none — suggestions are filtered to subjects whose kind matches the manually-picked species.
+- **No subjects of the matching kind exist yet:** `suggestion: null`. User picks from scratch, same as any Pending tile.
 
 **MVP scope:**
-1. Server endpoint + `FindingsService.create_manual` with undo.
-2. Photo page: Shift+drag to draw; simple popover with species default + confirm.
-3. Unassigned tile appears in the Faces grid on success.
-4. Videos: explicitly disabled at the URL check with a tooltip explaining why.
+1. Server endpoint + `FindingsService.create_manual` with nearest-subject suggestion + undo token.
+2. Photo page: Shift+drag component, species popover, appended tile + overlay with prefilled picker.
+3. Videos explicitly disabled at the endpoint with a clear error message.
+4. Tests: round-trip create → suggestion correctness → undo deletes the row.
 
 **Phase 2:**
-- Video support via frame scrub.
+- Video support via frame scrubber.
 - Lightbox support (same gesture on the lightbox image).
-- Bulk "add cluster candidate to these findings" from the subject-detail page.
+- Cluster-scope bulk: "for every manual finding I just added, find the nearest subject in one pass".
 
 ### FEAT-28: Photo-page face tiles — inline re-assign + "Not a face" action
 **Reported:** 2026-04-21 | **Priority:** Medium

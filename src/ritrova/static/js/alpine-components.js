@@ -200,18 +200,215 @@ document.addEventListener('alpine:init', () => {
     get ids() { return [...this.selected]; }
   }));
 
+  // --------------- Alpine: manual-finding (FEAT-29) ---------------
+  // Shift+drag on the photo viewer to draw a bbox, species popover,
+  // POST /api/sources/{sourceId}/findings, reload on success so the
+  // newly-rendered photo page picks up the finding plus its prefilled
+  // subject picker.
+  //
+  // Usage: x-data="manualFinding({ sourceId, defaultSpecies })" on the
+  // <div class="relative inline-block ..."> photo wrapper.
+  Alpine.data('manualFinding', (opts = {}) => ({
+    sourceId: opts.sourceId,
+    // Real source pixel dimensions (from the DB-stored source row). The
+    // served /api/sources/{id}/image is downscaled to max_size=1600, so
+    // img.naturalWidth is NOT the source size — we must scale the drawn
+    // bbox against the real source dims, not the served image dims.
+    sourceWidth: opts.sourceWidth || 0,
+    sourceHeight: opts.sourceHeight || 0,
+    // Default species for the popover; can be overridden by the user.
+    // 'human' on /people/, 'dog' on /pets/ (cat toggle available).
+    defaultSpecies: opts.defaultSpecies || 'human',
+    species: opts.defaultSpecies || 'human',
+
+    // Drag state — all in rendered-image pixels relative to the img element.
+    dragging: false,
+    startX: 0,
+    startY: 0,
+    curX: 0,
+    curY: 0,
+
+    // Popover state.
+    popoverOpen: false,
+    popoverX: 0,
+    popoverY: 0,
+
+    // Busy flag (suppresses double-submit while fetch is inflight).
+    submitting: false,
+
+    init() {
+      this._img = this.$root.querySelector('img#photo-img');
+      if (!this._img) return;
+      this._onDown = (e) => this._onMouseDown(e);
+      this._onMove = (e) => this._onMouseMove(e);
+      this._onUp = (e) => this._onMouseUp(e);
+      this._img.addEventListener('mousedown', this._onDown);
+      window.addEventListener('mousemove', this._onMove);
+      window.addEventListener('mouseup', this._onUp);
+    },
+
+    destroy() {
+      if (this._img) this._img.removeEventListener('mousedown', this._onDown);
+      window.removeEventListener('mousemove', this._onMove);
+      window.removeEventListener('mouseup', this._onUp);
+    },
+
+    _imgRect() {
+      return this._img.getBoundingClientRect();
+    },
+
+    _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); },
+
+    _localXY(clientX, clientY) {
+      const r = this._imgRect();
+      return {
+        x: this._clamp(clientX - r.left, 0, r.width),
+        y: this._clamp(clientY - r.top, 0, r.height),
+      };
+    },
+
+    _onMouseDown(e) {
+      // Block new drags while a previous submit is still in flight — the
+      // server-side ArcFace/SigLIP pass takes 1-3s; dragging again during
+      // that window would just queue a second popover with no benefit.
+      if (this.submitting) return;
+      if (!e.shiftKey || e.button !== 0) return;
+      // Prevent native image-drag and text selection.
+      e.preventDefault();
+      const { x, y } = this._localXY(e.clientX, e.clientY);
+      this.dragging = true;
+      this.startX = x;
+      this.startY = y;
+      this.curX = x;
+      this.curY = y;
+      this.popoverOpen = false;
+    },
+
+    _onMouseMove(e) {
+      if (!this.dragging) return;
+      const { x, y } = this._localXY(e.clientX, e.clientY);
+      this.curX = x;
+      this.curY = y;
+    },
+
+    _onMouseUp(e) {
+      if (!this.dragging) return;
+      this.dragging = false;
+      // If release happened outside the image bounds, the local coords
+      // are already clamped — but we also veto drags smaller than a few
+      // pixels (probably an accidental shift-click).
+      const rect = this.rect;
+      if (rect.w < 5 || rect.h < 5) {
+        return;
+      }
+      // Position the popover just below the bottom-right of the rect,
+      // falling back upward if it would clip the viewport.
+      const imgRect = this._imgRect();
+      const px = imgRect.left + rect.x + rect.w + 8;
+      const py = imgRect.top + rect.y + rect.h + 8;
+      this.popoverX = px + window.scrollX;
+      this.popoverY = py + window.scrollY;
+      // Reset species to the default each time — avoids stale state.
+      this.species = this.defaultSpecies;
+      this.popoverOpen = true;
+    },
+
+    // Rendered-pixel rectangle (for the live SVG / DOM overlay).
+    get rect() {
+      const x = Math.min(this.startX, this.curX);
+      const y = Math.min(this.startY, this.curY);
+      const w = Math.abs(this.curX - this.startX);
+      const h = Math.abs(this.curY - this.startY);
+      return { x, y, w, h };
+    },
+
+    // Translate rendered-pixel rect to *source* pixels. Use the DB-stored
+    // source dims (not img.naturalWidth/Height) because the served image
+    // may have been downscaled by /api/sources/{id}/image (max_size=1600).
+    // Fall back to naturalWidth/Height only if the server didn't provide
+    // source dims (very old source rows with width=0).
+    _sourceBbox() {
+      const img = this._img;
+      const srcW = this.sourceWidth > 0 ? this.sourceWidth : img.naturalWidth;
+      const srcH = this.sourceHeight > 0 ? this.sourceHeight : img.naturalHeight;
+      const scaleX = srcW / img.clientWidth;
+      const scaleY = srcH / img.clientHeight;
+      const { x, y, w, h } = this.rect;
+      return [
+        Math.round(x * scaleX),
+        Math.round(y * scaleY),
+        Math.round(w * scaleX),
+        Math.round(h * scaleY),
+      ];
+    },
+
+    cancel() {
+      this.popoverOpen = false;
+    },
+
+    async confirm() {
+      if (this.submitting) return;
+      const bbox = this._sourceBbox();
+      if (bbox[2] < 20 || bbox[3] < 20) {
+        if (window.Alpine && Alpine.store('toast')) {
+          Alpine.store('toast').error('Drag a larger rectangle — minimum 20×20 source pixels.');
+        }
+        this.popoverOpen = false;
+        return;
+      }
+      this.submitting = true;
+      // Close the popover immediately — ArcFace/SigLIP takes 1-3s and the
+      // user needs feedback that their click registered. A persistent info
+      // toast takes the popover's place as the "something's happening"
+      // signal and is dismissed when the response comes back (or the page
+      // navigates away on success).
+      this.popoverOpen = false;
+      const toastStore = window.Alpine && Alpine.store('toast');
+      const busyToastId = toastStore
+        ? toastStore.show({ message: 'Adding face…', level: 'info', duration: 0 })
+        : null;
+      try {
+        const resp = await fetch(`/api/sources/${this.sourceId}/findings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bbox, species: this.species }),
+        });
+        if (!resp.ok) return; // fetch-wrapper surfaces the error toast.
+        const data = await resp.json();
+        if (data.undo_token) {
+          window.showUndoToast({ message: data.message, token: data.undo_token });
+        }
+        // Reload so the server-rendered face grid + overlays include the
+        // new finding. Hash focuses the new tile; query hint prefills
+        // the subject picker via the server-rendered photo page. See
+        // FEAT-29 spec — acceptable to reload for MVP.
+        const suggest = data.suggestion ? `&suggest=${encodeURIComponent(data.suggestion.name)}` : '';
+        const url = `${window.location.pathname}?focus=${data.finding_id}${suggest}#face-${data.finding_id}`;
+        window.location.href = url;
+      } finally {
+        this.submitting = false;
+        if (busyToastId !== null && toastStore) toastStore.dismiss(busyToastId);
+      }
+    },
+  }));
+
   // --------------- Alpine: subject picker (typeahead) ---------------
   // Usage: x-data="subjectPicker({ multi: false, onSelect(subject) { ... } })"
   //   or:  x-data="subjectPicker({ multi: true })"  then read .selected
   let _subjectsCache = null;
 
   Alpine.data('subjectPicker', (opts = {}) => ({
-    query: '',
+    query: opts.initialQuery || '',
     items: [],
     open: false,
     loading: true,
     selected: [],        // multi-select: array of {id, name}
     multi: opts.multi || false,
+    // DB-side subject kind ('person'/'pet') used when creating a new subject
+    // from the picker. Defaults to 'person' to match the server default.
+    // Caller must pass 'pet' on /pets/* pages to avoid a species mismatch
+    // 409 when the new subject is then assigned.
+    createKind: opts.createKind || 'person',
     allowCreate: opts.allowCreate !== false, // default true, set false to disable
     hi: -1,              // highlighted index in dropdown
 
@@ -222,6 +419,12 @@ document.addEventListener('alpine:init', () => {
       }
       this.items = _subjectsCache;
       this.loading = false;
+      // FEAT-29 prefill: if caller passed initialQuery, open the dropdown
+      // so the suggested match is visible and Enter confirms immediately.
+      if (this.query) {
+        this.open = true;
+        this.hi = 0;
+      }
     },
 
     get filtered() {
@@ -298,7 +501,7 @@ document.addEventListener('alpine:init', () => {
       const r = await fetch('/api/subjects/create', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name})
+        body: JSON.stringify({name, kind: this.createKind})
       });
       if (!r.ok) return;
       const subject = await r.json();

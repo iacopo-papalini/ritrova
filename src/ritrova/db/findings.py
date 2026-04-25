@@ -124,6 +124,71 @@ class FindingMixin(_DBAccessor):
         return int(row[0]) if row else 0
 
     @_locked
+    def add_manual_finding(
+        self,
+        source_id: int,
+        bbox: tuple[int, int, int, int],
+        embedding: np.ndarray,
+        *,
+        scan_id: int,
+        species: str,
+        confidence: float = 1.0,
+    ) -> int:
+        """Insert a single manually-drawn finding (FEAT-29) and return its id.
+
+        Separate entry point from ``add_findings_batch`` because the caller is a
+        user gesture — one row at a time, needs the row id back to wire up the
+        undo payload, and never carries a ``frame_path`` (photo sources only
+        for the MVP).
+        """
+        cur = self.conn.execute(
+            "INSERT INTO findings (source_id, bbox_x, bbox_y, bbox_w, bbox_h, "
+            "embedding, confidence, detected_at, species, frame_path, "
+            "embedding_dim, scan_id, frame_number) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 0)",
+            (
+                source_id,
+                *bbox,
+                embedding.tobytes(),
+                confidence,
+                self._now(),
+                species,
+                len(embedding),
+                scan_id,
+            ),
+        )
+        self.conn.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    @_locked
+    def delete_finding(self, finding_id: int) -> None:
+        """Delete a single finding row. ON DELETE CASCADE clears
+        ``finding_assignment`` and ``cluster_findings`` entries.
+
+        Used by the ``DeleteManualFindingPayload`` undo path — no
+        no-op / not-found error handling, since the payload is only
+        ever registered with a freshly-created finding id.
+        """
+        self.conn.execute("DELETE FROM findings WHERE id = ?", (finding_id,))
+        self.conn.commit()
+
+    @_locked
+    def get_latest_scan_id(self, source_id: int, scan_type: str) -> int | None:
+        """Return the newest ``scans.id`` for ``(source_id, scan_type)`` or None.
+
+        Added for FEAT-29: manual findings attach to the most recent
+        ``subjects`` scan on the source. ``scans`` has a UNIQUE
+        (source_id, scan_type) constraint so "newest" is also "only",
+        but we order by id for future-proofing.
+        """
+        row = self.conn.execute(
+            "SELECT id FROM scans WHERE source_id = ? AND scan_type = ? ORDER BY id DESC LIMIT 1",
+            (source_id, scan_type),
+        ).fetchone()
+        return int(row[0]) if row else None
+
+    @_locked
     def get_all_embeddings(
         self, species: str = "human", embedding_dim: int | None = None
     ) -> list[tuple[int, np.ndarray]]:

@@ -48,11 +48,24 @@
 
   {# ── Photo viewer with face box overlays ─────────────────── #}
   <div class="mb-8">
-    <div class="relative inline-block max-w-full">
+    {# FEAT-29: Shift+drag on the image draws a manual bbox. The wrapper
+       owns the drag state + the live rectangle + the species popover.
+       Default species: 'human' on /people/, 'dog' on /pets/ (user can
+       switch to 'cat' in the popover).
+       #}
+    <div class="relative inline-block max-w-full"
+         x-data="manualFinding({
+           sourceId: {{ source.id }},
+           sourceWidth: {{ source.width }},
+           sourceHeight: {{ source.height }},
+           defaultSpecies: '{{ 'dog' if kind == 'pets' else 'human' }}'
+         })"
+         @keydown.escape.window="cancel()">
       <img src="/api/sources/{{ source.id }}/image"
            id="photo-img"
            alt="photo"
-           class="max-h-[70vh] w-auto rounded-xl shadow-lg">
+           draggable="false"
+           class="max-h-[70vh] w-auto rounded-xl shadow-lg select-none">
 
       {% for face in findings_data %}{% if face.bbox_x_pct is not none %}
       <a href="#face-{{ face.id }}"
@@ -74,7 +87,59 @@
         </span>
       </a>
       {% endif %}{% endfor %}
+
+      {# Live drag rectangle (rendered while the user is shift-dragging) #}
+      <div x-show="dragging" x-cloak
+           :style="`left:${rect.x}px; top:${rect.y}px; width:${rect.w}px; height:${rect.h}px;`"
+           class="absolute pointer-events-none border-2 border-dashed border-gallery-accent bg-gallery-accent/10 rounded-sm">
+      </div>
+
+      {# Species popover (fixed-positioned via viewport coords) #}
+      <div x-show="popoverOpen" x-cloak
+           @click.outside="popoverOpen && cancel()"
+           :style="`position:fixed; left:${popoverX}px; top:${popoverY}px;`"
+           class="z-50 rounded-lg border border-gallery-border bg-gallery-card p-3 shadow-xl min-w-[14rem]"
+           @keydown.escape.stop="cancel()"
+           @keydown.enter.prevent="confirm()">
+        <div class="mb-2 text-xs font-medium text-gallery-muted">What is this?</div>
+        <div class="mb-3 flex flex-wrap gap-1.5">
+          <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors"
+                 :class="species === 'human' ? 'bg-gallery-accent text-gallery-bg' : 'bg-gallery-bg/60 text-gallery-muted hover:text-gallery-text'">
+            <input type="radio" name="manual-species" value="human" x-model="species" class="sr-only">
+            Person
+          </label>
+          <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors"
+                 :class="species === 'dog' ? 'bg-gallery-accent text-gallery-bg' : 'bg-gallery-bg/60 text-gallery-muted hover:text-gallery-text'">
+            <input type="radio" name="manual-species" value="dog" x-model="species" class="sr-only">
+            Dog
+          </label>
+          <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors"
+                 :class="species === 'cat' ? 'bg-gallery-accent text-gallery-bg' : 'bg-gallery-bg/60 text-gallery-muted hover:text-gallery-text'">
+            <input type="radio" name="manual-species" value="cat" x-model="species" class="sr-only">
+            Cat
+          </label>
+        </div>
+        <div class="flex items-center justify-end gap-1.5">
+          <button @click="cancel()"
+                  type="button"
+                  class="rounded-lg px-2.5 py-1 text-xs font-medium text-gallery-muted transition-colors hover:bg-gallery-muted/15 hover:text-gallery-text cursor-pointer">
+            Cancel
+          </button>
+          <button @click="confirm()"
+                  type="button"
+                  :disabled="submitting"
+                  class="rounded-lg bg-gallery-accent px-3 py-1 text-xs font-semibold text-gallery-bg transition-opacity disabled:opacity-60 hover:opacity-90 cursor-pointer">
+            Add face
+          </button>
+        </div>
+      </div>
     </div>
+
+    {# Hint the first time the user lands on the page. Kept tiny on purpose. #}
+    <p class="mt-2 text-xs text-gallery-muted">
+      Tip: hold <kbd class="rounded border border-gallery-border bg-gallery-card px-1 text-[0.65rem]">Shift</kbd>
+      and drag on the photo to add a missed face.
+    </p>
   </div>
 
   {# ── Faces in this photo ─────────────────────────────────── #}
@@ -86,7 +151,10 @@
       {% for face in findings_data %}
       {% set state = 'assigned' if face.subject_name else ('stranger' if face.is_stranger else 'pending') %}
       {% set kind_s = 'pet' if kind == 'pets' else 'person' %}
-      <div class="rounded-xl bg-gallery-card p-3 transition-colors" id="face-{{ face.id }}"
+      {% set is_focus = focus_finding_id is not none and face.id == focus_finding_id %}
+      <div class="rounded-xl bg-gallery-card p-3 transition-colors {% if is_focus %}ring-2 ring-gallery-accent{% endif %}"
+           id="face-{{ face.id }}"
+           {% if is_focus and suggest_name %}data-suggest-name="{{ suggest_name }}"{% endif %}
            x-data="{ editing: {{ 'true' if state == 'pending' else 'false' }} }">
         <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
              alt="face"
@@ -154,7 +222,13 @@
         {# ── Picker (always for pending; toggles for assigned / stranger) ── #}
         <div x-show="editing" x-cloak
              @keydown.escape.stop="editing = {{ 'true' if state == 'pending' else 'false' }}">
+          {# BUG-21: ``|tojson`` emits quotes that close the enclosing
+             x-data attribute. Read the prefilled name from the tile's
+             ``data-suggest-name`` dataset (set on the #face-X div) — the
+             browser HTML-decodes that safely. #}
           <div x-data="subjectPicker({
+                 initialQuery: document.getElementById('face-{{ face.id }}')?.dataset.suggestName || '',
+                 createKind: '{{ 'pet' if kind == 'pets' else 'person' }}',
                  onSelect(subject) {
                    const fd = new FormData();
                    fd.append('subject_id', subject.id);

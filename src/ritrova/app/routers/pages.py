@@ -119,12 +119,21 @@ def singletons_faces_html(
 
 
 @router.get("/photos/{photo_id}", response_class=HTMLResponse)
-def photo_page(request: Request, photo_id: int) -> HTMLResponse:
+def photo_page(
+    request: Request,
+    photo_id: int,
+    focus: int | None = None,
+    suggest: str | None = None,
+) -> HTMLResponse:
     db = get_db()
     source = db.get_source(photo_id)
     if not source:
         raise HTTPException(404, "Photo not found")
     findings = db.get_source_findings(photo_id)
+    # Hide findings the user has explicitly dismissed as non-faces —
+    # otherwise /api/findings/dismiss succeeds but they reappear on every
+    # reload. Strangers stay visible (gray dashed bbox, per FEAT-28).
+    findings = [f for f in findings if f.exclusion_reason != "not_a_face"]
     subjects = db.get_subjects()
     findings_data = []
     # Some older source rows were written with width/height=0 because the
@@ -158,6 +167,12 @@ def photo_page(request: Request, photo_id: int) -> HTMLResponse:
             "findings_data": findings_data,
             "subjects": subjects,
             "kind": kind,
+            # FEAT-29: when the user just shift-dragged to add a face and the
+            # page has reloaded, ``focus`` is that finding's id and
+            # ``suggest`` is the nearest-subject name (may be empty). The
+            # template uses them to prefill the picker on the matching tile.
+            "focus_finding_id": focus,
+            "suggest_name": suggest,
         },
         request=request,
     )

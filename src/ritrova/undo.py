@@ -208,6 +208,22 @@ class DeleteCirclePayload(UndoPayload):
 
 
 @dataclass
+class DeleteManualFindingPayload(UndoPayload):
+    """Undo a manual-finding create (FEAT-29): delete the freshly-inserted row.
+
+    ``ON DELETE CASCADE`` on the ``finding_assignment`` / ``cluster_findings``
+    child tables takes care of any side rows the user may have created between
+    the manual insert and the undo (e.g. assigned the finding to a subject
+    before hitting undo).
+    """
+
+    finding_id: int
+
+    def undo(self, db: FaceDB) -> None:
+        db.delete_finding(self.finding_id)
+
+
+@dataclass
 class RecreateCirclePayload(UndoPayload):
     """Undo circle deletion: recreate the circle and all its memberships.
 

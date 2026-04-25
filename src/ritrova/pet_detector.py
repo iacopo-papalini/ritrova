@@ -115,6 +115,29 @@ class PetDetector:
 
         return DetectionResult(detections=pets, width=w_img, height=h_img)
 
+    def embed_crop(self, image: Image.Image, bbox: tuple[int, int, int, int]) -> np.ndarray:
+        """Compute a SigLIP embedding for a user-drawn bbox (FEAT-29).
+
+        ``image`` is the EXIF-oriented source (RGB). ``bbox`` is
+        ``(x, y, w, h)`` in source pixels. Returns a 768-dim L2-normalized
+        vector in the same embedding space used by ``detect``.
+
+        Unlike the face path, there is no "detection" step to run inside
+        the crop — SigLIP embeds whatever is handed to it, and the user's
+        bbox is the ground truth. We just clamp and delegate to ``_embed``.
+        """
+        x, y, w, h = bbox
+        w_img, h_img = image.size
+        x0 = max(0, min(x, w_img))
+        y0 = max(0, min(y, h_img))
+        x1 = max(0, min(x + w, w_img))
+        y1 = max(0, min(y + h, h_img))
+        if x1 <= x0 or y1 <= y0:
+            msg = "bbox has zero area inside the image"
+            raise ValueError(msg)
+        crop = image.crop((x0, y0, x1, y1))
+        return self._embed(crop)
+
     def _embed(self, crop: Image.Image) -> np.ndarray:
         """Get SigLIP embedding for a cropped pet image."""
         inputs = self.processor(images=crop, return_tensors="pt")

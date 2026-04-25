@@ -14,9 +14,60 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Form
 from fastapi.responses import JSONResponse
 
-from ..deps import get_curation_service, get_db, get_subject_service
+from ...services_domain import ManualFindingError
+from ..deps import (
+    get_curation_service,
+    get_db,
+    get_findings_service,
+    get_subject_service,
+)
 
 router = APIRouter()
+
+
+@router.post("/api/sources/{source_id}/findings")
+def create_manual_finding(
+    source_id: int,
+    bbox: list[int] = Body(..., embed=True),
+    species: str = Body(..., embed=True),
+) -> JSONResponse:
+    """Create a manually-drawn finding on a photo source (FEAT-29).
+
+    Body::
+
+        {"bbox": [x, y, w, h], "species": "human" | "dog" | "cat"}
+
+    The service computes an embedding for the bbox crop, inserts the
+    finding row, and ranks it against every named subject's centroid.
+    The response carries the top-1 suggestion (if any) so the client
+    can prefill the subject picker. Undoable — the token's payload
+    deletes the created row.
+    """
+    if len(bbox) != 4:
+        return JSONResponse({"error": "bbox must be [x, y, w, h]"}, status_code=422)
+    bbox_tuple = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+    try:
+        result = get_findings_service().create_manual(
+            source_id=source_id, bbox=bbox_tuple, species=species
+        )
+    except ManualFindingError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+    body: dict[str, object] = {
+        "ok": True,
+        "finding_id": result.finding_id,
+        "suggestion": (
+            {
+                "subject_id": result.suggestion.subject_id,
+                "name": result.suggestion.name,
+                "similarity_pct": result.suggestion.similarity_pct,
+            }
+            if result.suggestion is not None
+            else None
+        ),
+        "undo_token": result.receipt.token,
+        "message": result.receipt.message,
+    }
+    return JSONResponse(body)
 
 
 @router.post("/api/findings/swap")
