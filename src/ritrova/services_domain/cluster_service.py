@@ -47,6 +47,31 @@ class ClusterService:
         )
         return UndoReceipt(token=token, message=message)
 
+    def split_cluster(
+        self, source_id: int, finding_ids: list[int]
+    ) -> tuple[int, int, UndoReceipt] | None:
+        """Move selected findings from ``source_id`` into a fresh cluster.
+
+        The inverse is the same shape as merge/exclude undo: put the
+        moved findings back into the original cluster.
+        """
+        if not finding_ids:
+            return None
+        with self._db.transaction():
+            result = self._db.split_cluster_findings(source_id, finding_ids)
+        if result is None:
+            return None
+        new_cluster_id, moved_ids = result
+        message = (
+            f"Split {len(moved_ids)} {_noun(len(moved_ids))} "
+            f"from cluster #{source_id} into #{new_cluster_id}"
+        )
+        token = self._undo.put(
+            description=message,
+            payload=RestoreClusterPayload(cluster_id=source_id, finding_ids=moved_ids),
+        )
+        return new_cluster_id, len(moved_ids), UndoReceipt(token=token, message=message)
+
     def assign_cluster(
         self, cluster_id: int, subject_id: int, *, force: bool = False
     ) -> UndoReceipt:

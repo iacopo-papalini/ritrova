@@ -11,7 +11,8 @@
   ];
 </script>
 
-<div x-data="{
+<div data-filter-query="{{ filter_query|default('') }}"
+  x-data="{
   filter: '',
   orphansOnly: localStorage.getItem('subjects.{{ kind }}.orphansOnly') === '1',
   index: window._subjectIndex,
@@ -23,7 +24,10 @@
     ).length;
   }
 }"
-  x-init="$watch('orphansOnly', v => localStorage.setItem('subjects.{{ kind }}.orphansOnly', v ? '1' : '0'))">
+  x-init="
+    filter = $el.dataset.filterQuery || '';
+    $watch('orphansOnly', v => localStorage.setItem('subjects.{{ kind }}.orphansOnly', v ? '1' : '0'));
+  ">
   <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
     <h1 class="font-display text-2xl font-bold tracking-tight text-gallery-text shrink-0">
       {% if kind == 'pets' %}Pets{% else %}Persons{% endif %}

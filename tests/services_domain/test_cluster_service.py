@@ -35,6 +35,38 @@ class TestMergeClusters(TestCase):
         assert self.db.get_cluster_membership(self.fx.finding_b_id) == 9
 
 
+class TestSplitCluster(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup(self, db: FaceDB) -> None:
+        self.fx: Fixture = build_fixture(db)
+        self.db = db
+        self.svc = ClusterService(db, self.fx.undo)
+        db.update_cluster_ids({self.fx.finding_a_id: 5, self.fx.finding_b_id: 5})
+
+    def test_split_moves_selected_findings_into_new_cluster(self) -> None:
+        result = self.svc.split_cluster(5, [self.fx.finding_a_id])
+        assert result is not None
+        new_cluster_id, moved_count, receipt = result
+        assert moved_count == 1
+        assert self.db.get_cluster_membership(self.fx.finding_a_id) == new_cluster_id
+        assert self.db.get_cluster_membership(self.fx.finding_b_id) == 5
+        assert f"into #{new_cluster_id}" in receipt.message
+
+    def test_split_undo_restores_source_cluster(self) -> None:
+        result = self.svc.split_cluster(5, [self.fx.finding_a_id])
+        assert result is not None
+        _new_cluster_id, _moved_count, receipt = result
+        entry = self.fx.undo.pop(receipt.token)
+        assert entry is not None
+        entry.payload.undo(self.db)
+        assert self.db.get_cluster_membership(self.fx.finding_a_id) == 5
+        assert self.db.get_cluster_membership(self.fx.finding_b_id) == 5
+
+    def test_split_ignores_stale_selection_outside_source_cluster(self) -> None:
+        assert self.svc.split_cluster(99, [self.fx.finding_a_id]) is None
+        assert self.db.get_cluster_membership(self.fx.finding_a_id) == 5
+
+
 class TestAssignCluster(TestCase):
     @pytest.fixture(autouse=True)
     def _setup(self, db: FaceDB) -> None:

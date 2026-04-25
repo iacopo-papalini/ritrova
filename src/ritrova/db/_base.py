@@ -92,6 +92,9 @@ class _DBAccessor:
     def get_cluster_findings(self, cluster_id: int, limit: int = 200) -> list[Finding]:
         raise NotImplementedError
 
+    def get_unnamed_cluster_count(self, species: str = "human") -> int:
+        raise NotImplementedError
+
     # ── SubjectMixin stubs ───────────────────────────────────────────
 
     def get_subject(self, subject_id: int) -> Subject | None:

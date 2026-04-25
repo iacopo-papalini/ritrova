@@ -9,6 +9,7 @@ _memberships`). Reads JOIN cluster_findings.
 from __future__ import annotations
 
 import re
+import sqlite3
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -78,22 +79,7 @@ class ClusterMixin(_DBAccessor):
         with ``sources.taken_at`` (EXIF) as a fallback. Clusters with no
         datable source sink to the bottom. Tiebreaker = total face area.
         """
-        clause, params = self.species_filter(species)
-        rows = self.conn.execute(
-            f"""
-            SELECT cf.cluster_id,
-                   COUNT(*) AS face_count,
-                   SUM(CAST(f.bbox_w AS INTEGER) * CAST(f.bbox_h AS INTEGER)) AS total_area,
-                   GROUP_CONCAT(f.id || ':' || (f.bbox_w * f.bbox_h)) AS finding_area_pairs
-            FROM cluster_findings cf
-            JOIN findings f ON f.id = cf.finding_id
-            LEFT JOIN finding_assignment fa ON fa.finding_id = f.id
-            WHERE fa.finding_id IS NULL AND {clause}
-            GROUP BY cf.cluster_id
-            HAVING COUNT(*) >= 2
-            """,
-            params,
-        ).fetchall()
+        rows = self._unnamed_cluster_summary_rows(species)
         if not rows:
             return []
         cluster_ids = [r["cluster_id"] for r in rows]
@@ -137,6 +123,35 @@ class ClusterMixin(_DBAccessor):
             reverse=True,
         )
         return result
+
+    @_locked
+    def get_unnamed_cluster_count(self, species: str = "human") -> int:
+        """Count clusters shown by ``get_unnamed_clusters``.
+
+        This is the reviewable unnamed-cluster count used by the dashboard
+        and the cluster list; keep it tied to the same summary query so the
+        UI cannot drift into different definitions.
+        """
+        return len(self._unnamed_cluster_summary_rows(species))
+
+    def _unnamed_cluster_summary_rows(self, species: str) -> list[sqlite3.Row]:
+        """Shared source of truth for reviewable unnamed clusters."""
+        clause, params = self.species_filter(species)
+        return self.conn.execute(
+            f"""
+            SELECT cf.cluster_id,
+                   COUNT(*) AS face_count,
+                   SUM(CAST(f.bbox_w AS INTEGER) * CAST(f.bbox_h AS INTEGER)) AS total_area,
+                   GROUP_CONCAT(f.id || ':' || (f.bbox_w * f.bbox_h)) AS finding_area_pairs
+            FROM cluster_findings cf
+            JOIN findings f ON f.id = cf.finding_id
+            LEFT JOIN finding_assignment fa ON fa.finding_id = f.id
+            WHERE fa.finding_id IS NULL AND {clause}
+            GROUP BY cf.cluster_id
+            HAVING COUNT(*) >= 2
+            """,
+            params,
+        ).fetchall()
 
     @_locked
     def get_singleton_findings(
@@ -236,3 +251,43 @@ class ClusterMixin(_DBAccessor):
     def merge_clusters(self, source_id: int, target_id: int) -> None:
         """Move all findings from source cluster to target cluster."""
         self.merge_cluster_memberships(source_id, target_id)  # type: ignore[attr-defined]
+
+    @_locked
+    def split_cluster_findings(
+        self, source_cluster_id: int, finding_ids: list[int]
+    ) -> tuple[int, list[int]] | None:
+        """Move selected findings from one cluster into a fresh cluster id.
+
+        Returns ``(new_cluster_id, moved_finding_ids)``. Findings that are
+        no longer in ``source_cluster_id`` are ignored so stale client
+        selections cannot move unrelated rows.
+        """
+        if not finding_ids:
+            return None
+        placeholders = ",".join("?" * len(finding_ids))
+        rows = self.conn.execute(
+            f"""
+            SELECT finding_id
+            FROM cluster_findings
+            WHERE cluster_id = ? AND finding_id IN ({placeholders})
+            """,
+            (source_cluster_id, *finding_ids),
+        ).fetchall()
+        moved_ids = [int(r[0]) for r in rows]
+        if not moved_ids:
+            return None
+        row = self.conn.execute(
+            "SELECT COALESCE(MAX(cluster_id), -1) + 1 FROM cluster_findings"
+        ).fetchone()
+        new_cluster_id = int(row[0]) if row else 0
+        moved_placeholders = ",".join("?" * len(moved_ids))
+        self.conn.execute(
+            f"""
+            UPDATE cluster_findings
+            SET cluster_id = ?
+            WHERE cluster_id = ? AND finding_id IN ({moved_placeholders})
+            """,
+            (new_cluster_id, source_cluster_id, *moved_ids),
+        )
+        self.conn.commit()
+        return new_cluster_id, moved_ids

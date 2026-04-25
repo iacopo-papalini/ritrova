@@ -10,9 +10,10 @@ of their own.
 from __future__ import annotations
 
 import json
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from ...cluster import (
     compare_subjects,
@@ -75,6 +76,17 @@ def cluster_detail(
     ranked = rank_subjects_for_cluster(db, cluster_id)
     species = findings[0].species if findings else "human"
     kind = kind_for_species(species)
+    queue = db.get_unnamed_clusters(species=species)
+    queue_ids = [int(c["cluster_id"]) for c in queue]
+    queue_index = queue_ids.index(cluster_id) if cluster_id in queue_ids else None
+    previous_cluster_id = (
+        queue_ids[queue_index - 1] if queue_index is not None and queue_index > 0 else None
+    )
+    next_cluster_id = (
+        queue_ids[queue_index + 1]
+        if queue_index is not None and queue_index < len(queue_ids) - 1
+        else None
+    )
     return get_templates().TemplateResponse(
         name="cluster_detail.html",
         context={
@@ -85,6 +97,10 @@ def cluster_detail(
             "ranked_subjects": ranked,
             "kind": kind,
             "species": species,
+            "queue_position": queue_index + 1 if queue_index is not None else None,
+            "queue_count": len(queue_ids),
+            "previous_cluster_id": previous_cluster_id,
+            "next_cluster_id": next_cluster_id,
         },
         request=request,
     )
@@ -178,27 +194,14 @@ def photo_page(
     )
 
 
-@router.get("/search", response_class=HTMLResponse)
-def search_page(request: Request, q: str = "") -> HTMLResponse:
-    db = get_db()
-    results = db.search_subjects(q) if q else []
-    # Each search result redirects to /{plural-url-kind}/{subject_id}; pick
-    # the plural URL kind from each subject's singular DB kind at the
-    # HTTP-boundary. The conversion is a one-liner dict lookup — keeping
-    # it inline avoids holding a helper that encodes singular in HTTP.
-    result_kinds = {s.id: ("pets" if s.kind == "pet" else "people") for s in results}
-    avatars = db.get_random_avatars([s.id for s in results])
-    return get_templates().TemplateResponse(
-        name="search.html",
-        context={
-            "query": q,
-            "results": results,
-            "result_kinds": result_kinds,
-            "avatars": avatars,
-            "kind": "people",
-        },
-        request=request,
-    )
+@router.get("/search", response_class=RedirectResponse)
+def search_page(q: str = "") -> RedirectResponse:
+    """Legacy redirect for the removed standalone search page."""
+    query = q.strip()
+    target = "/people"
+    if query:
+        target = f"{target}?{urlencode({'filter': query})}"
+    return RedirectResponse(target, status_code=303)
 
 
 # ── Circles pages ─────────────────────────────────────────────────────
@@ -377,7 +380,7 @@ def subject_detail(request: Request, kind: KindType, subject_id: int) -> HTMLRes
 
 
 @router.get("/{kind}", response_class=HTMLResponse)
-def subjects_page(request: Request, kind: KindType) -> HTMLResponse:
+def subjects_page(request: Request, kind: KindType, filter: str = "") -> HTMLResponse:
     db = get_db()
     species = species_for_kind(kind)
     subjects = db.get_subjects_by_species(species)
@@ -393,6 +396,7 @@ def subjects_page(request: Request, kind: KindType) -> HTMLResponse:
             "kind": kind,
             "avatars": avatars,
             "in_circle": in_circle,
+            "filter_query": filter,
         },
         request=request,
     )

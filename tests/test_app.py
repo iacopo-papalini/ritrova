@@ -325,6 +325,57 @@ class TestMergeSuggestionsAPI(TestCase):
         assert data["total"] == 0
 
 
+class TestClusterDetailPage(TestCase):
+    """Cluster detail should orient the user within the unnamed queue."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path: Path) -> None:
+        self.db = FaceDB(tmp_path / "test.db")
+        self.app = create_app(str(tmp_path / "test.db"))
+        self.client = TestClient(self.app)
+
+    def test_cluster_detail_shows_queue_context_and_navigation(self) -> None:
+        _, old_a = _add_finding(self.db, "/archive/2023-01/old-a.jpg", seed=1)
+        _, old_b = _add_finding(self.db, "/archive/2023-01/old-b.jpg", seed=2)
+        _, new_a = _add_finding(self.db, "/archive/2024-01/new-a.jpg", seed=3)
+        _, new_b = _add_finding(self.db, "/archive/2024-01/new-b.jpg", seed=4)
+        self.db.update_cluster_ids({old_a: 10, old_b: 10, new_a: 20, new_b: 20})
+
+        resp = self.client.get("/clusters/20")
+
+        assert resp.status_code == 200
+        assert "1 of 2 unnamed" in resp.text
+        assert 'href="/clusters/10"' in resp.text
+        assert "Dismiss entire cluster" in resp.text
+
+
+class TestSearchConsolidation(TestCase):
+    """Legacy /search should fold into the scoped subjects filter."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path: Path) -> None:
+        self.db = FaceDB(tmp_path / "test.db")
+        self.app = create_app(str(tmp_path / "test.db"))
+        self.client = TestClient(self.app)
+
+    def test_legacy_search_redirects_to_people_filter(self) -> None:
+        resp = self.client.get("/search?q=Alice Smith", follow_redirects=False)
+
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/people?filter=Alice+Smith"
+
+    def test_subjects_page_seeds_filter_from_query_param(self) -> None:
+        self.db.create_subject("Alice")
+
+        resp = self.client.get("/people?filter=Ali")
+
+        assert resp.status_code == 200
+        assert 'action="/people"' in resp.text
+        assert 'name="filter"' in resp.text
+        assert 'value="Ali"' in resp.text
+        assert 'data-filter-query="Ali"' in resp.text
+
+
 class TestSubjectsAPI(TestCase):
     """Test /api/subjects/* endpoints used by the typeahead picker."""
 

@@ -1,25 +1,82 @@
 {% extends "base.html" %}
 {% block title %}Cluster #{{ cluster_id }}{% endblock %}
 {% block content %}
-<div x-data="faceSelection()">
+<div x-data="faceSelection()"
+     @keydown.s.window="
+       const t = $event.target;
+       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+       $event.preventDefault();
+       location.href = '{% if next_cluster_id %}/clusters/{{ next_cluster_id }}{% else %}/{{ kind }}/clusters{% endif %}';
+     ">
 
-  <!-- Page heading -->
-  <div class="mb-6">
-    <div class="flex items-center gap-3">
-      <a href="/{{ kind }}/clusters"
-         class="text-gallery-muted hover:text-gallery-text transition-colors">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
-        </svg>
+  {# ── Header (unified entity_header: back · title · queue controls · overflow danger) ──── #}
+  {% set header_title_html %}
+    <h1 class="text-2xl font-bold font-display text-gallery-text">Cluster #{{ cluster_id }}</h1>
+  {% endset %}
+
+  {% set header_count_html %}
+    {% if queue_position %}
+      {{ queue_position }} of {{ queue_count }} unnamed ·
+    {% endif %}
+    {{ total }} face{{ 's' if total != 1 else '' }}{% if total > findings|length %}, showing {{ findings|length }}{% endif %}
+  {% endset %}
+
+  {% set header_actions_primary_html %}
+    {% if queue_position %}
+    <div class="flex items-center gap-1 rounded-lg border border-gallery-border bg-gallery-card p-1">
+      <a href="{% if previous_cluster_id %}/clusters/{{ previous_cluster_id }}{% else %}#{% endif %}"
+         aria-disabled="{{ 'false' if previous_cluster_id else 'true' }}"
+         class="rounded-md px-3 py-1.5 text-sm font-medium transition-colors
+                {% if previous_cluster_id %}text-gallery-text hover:bg-gallery-bg{% else %}pointer-events-none text-gallery-muted/40{% endif %}">
+        Previous
       </a>
-      <h1 class="text-2xl font-bold font-display text-gallery-text">
-        Cluster #{{ cluster_id }}
-      </h1>
-      <span class="text-gallery-muted text-sm">
-        ({{ total }} face{{ 's' if total != 1 else '' }}{% if total > findings|length %}, showing {{ findings|length }}{% endif %})
-      </span>
+      <a href="{% if next_cluster_id %}/clusters/{{ next_cluster_id }}{% else %}/{{ kind }}/clusters{% endif %}"
+         class="rounded-md px-3 py-1.5 text-sm font-medium text-gallery-text transition-colors hover:bg-gallery-bg">
+        Skip
+      </a>
+      <a href="{% if next_cluster_id %}/clusters/{{ next_cluster_id }}{% else %}/{{ kind }}/clusters{% endif %}"
+         class="rounded-md bg-gallery-accent px-3 py-1.5 text-sm font-medium text-gallery-bg transition-colors hover:bg-gallery-accent/90">
+        Next
+      </a>
     </div>
-  </div>
+    {% endif %}
+
+    <div class="relative" x-data="{ open: false }"
+         @keydown.escape.window="open = false"
+         @click.outside="open = false">
+      <button type="button" @click="open = !open" title="More actions"
+              class="rounded-lg border border-gallery-border px-2 py-1.5 text-sm font-medium text-gallery-text
+                     transition-colors hover:bg-gallery-card cursor-pointer">
+        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M10 3a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm0 5.5a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm0 5.5a1.5 1.5 0 100 3 1.5 1.5 0 000-3z"/>
+        </svg>
+      </button>
+      <div x-show="open" x-cloak
+           x-transition:enter="transition ease-out duration-150"
+           x-transition:enter-start="opacity-0 -translate-y-1"
+           x-transition:enter-end="opacity-100 translate-y-0"
+           class="absolute right-0 z-50 mt-2 w-56 rounded-xl border border-gallery-border bg-gallery-card p-1 shadow-xl">
+        <button type="button"
+                @click="open = false;
+                  (await confirmDialog({
+                    title: 'Dismiss entire cluster?',
+                    message: 'All {{ total }} faces in this cluster will be marked as non-faces.',
+                    confirmLabel: 'Dismiss cluster',
+                    danger: true
+                  })) &&
+                    fetch('/api/clusters/{{ cluster_id }}/dismiss', { method: 'POST' })
+                      .then(r => r.ok && r.json())
+                      .then(d => { if (d) location.href = d.next_url || '/{{ kind }}/clusters'; })"
+                class="block w-full rounded-md px-3 py-2 text-left text-sm text-gallery-danger
+                       transition-colors hover:bg-gallery-danger/10 cursor-pointer">
+          Dismiss entire cluster
+        </button>
+      </div>
+    </div>
+  {% endset %}
+
+  {% set header_back_url = '/' ~ kind ~ '/clusters' %}
+  {% include "partials/entity_header.html" %}
 
   <!-- Assign via typeahead -->
   <div class="mb-6 flex flex-wrap items-start gap-3"
@@ -75,16 +132,6 @@
         I don't know this {{ species_label }}
       </button>
     </form>
-
-    <!-- Dismiss entire cluster -->
-    <button @click="(await confirmDialog({title: 'Dismiss entire cluster?', message: 'All {{ total }} faces in this cluster will be marked as non-faces. This is permanent.', confirmLabel: 'Dismiss cluster', danger: true})) &&
-                      fetch('/api/clusters/{{ cluster_id }}/dismiss', { method: 'POST' })
-                        .then(r => r.ok && r.json())
-                        .then(d => { if (d) location.href = d.next_url || '/{{ kind }}/clusters'; })"
-            class="rounded-lg border border-gallery-danger/30 px-4 py-2 text-sm font-medium text-gallery-danger
-                   transition-colors hover:bg-gallery-danger/10 cursor-pointer">
-      Dismiss entire cluster
-    </button>
   </div>
 
   <!-- Selection bar (sticky, amber-themed) -->
@@ -108,11 +155,42 @@
     <button @click="
               const faceIds = ids;
               if (!faceIds.length) return;
+              fetch('/api/clusters/{{ cluster_id }}/split', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ face_ids: faceIds })
+              })
+                .then(r => r.ok ? r.json() : null)
+                .then(d => {
+                  if (!d || !d.new_cluster_id) return;
+                  if (d.undo_token) window.showUndoToast({ message: d.message, token: d.undo_token });
+                  faceIds.forEach(id => $root.querySelector(`[data-finding-id='${id}']`)?.remove());
+                  clear();
+                  $store.toast.info(`Created cluster #${d.new_cluster_id}`, {
+                    duration: 15000,
+                    action: { label: 'Open', onClick: () => { location.href = d.new_url; } }
+                  });
+                })"
+            class="rounded-lg bg-gallery-accent px-3 py-1.5 text-sm font-medium text-gallery-bg
+                   transition-colors hover:bg-gallery-accent/90 cursor-pointer">
+      Split into new cluster
+    </button>
+
+    <button @click="
+              const faceIds = ids;
+              if (!faceIds.length) return;
               fetch('/api/findings/exclude', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ face_ids: faceIds, cluster_id: {{ cluster_id }} })
-              }).then(r => { if (r.ok) location.reload(); })"
+              })
+                .then(r => r.ok ? r.json() : null)
+                .then(d => {
+                  if (!d) return;
+                  if (d.undo_token) window.showUndoToast({ message: d.message, token: d.undo_token });
+                  faceIds.forEach(id => $root.querySelector(`[data-finding-id='${id}']`)?.remove());
+                  clear();
+                })"
             class="rounded-lg bg-gallery-danger/20 px-3 py-1.5 text-sm font-medium text-gallery-danger
                    transition-colors hover:bg-gallery-danger/30 cursor-pointer">
       Exclude from cluster
@@ -125,7 +203,14 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ face_ids: faceIds })
-              }).then(r => { if (r.ok) location.reload(); })"
+              })
+                .then(r => r.ok ? r.json() : null)
+                .then(d => {
+                  if (!d) return;
+                  if (d.undo_token) window.showUndoToast({ message: d.message, token: d.undo_token });
+                  faceIds.forEach(id => $root.querySelector(`[data-finding-id='${id}']`)?.remove());
+                  clear();
+                })"
             class="rounded-lg bg-gallery-card px-3 py-1.5 text-sm font-medium text-gallery-muted
                    transition-colors hover:bg-gallery-card/80 hover:text-gallery-text cursor-pointer">
       Not a face
@@ -170,7 +255,13 @@
                 fetch('/api/findings/exclude', {
                   method: 'POST', headers: {'Content-Type': 'application/json'},
                   body: JSON.stringify({face_ids: [{{ face.id }}], cluster_id: {{ cluster_id }}})
-                }).then(r => { if(r.ok) $el.closest('.group').remove() })"
+                })
+                  .then(r => r.ok ? r.json() : null)
+                  .then(d => {
+                    if (!d) return;
+                    if (d.undo_token) window.showUndoToast({ message: d.message, token: d.undo_token });
+                    $el.closest('.group').remove();
+                  })"
               class="absolute top-1 right-1 z-10 hidden group-hover:flex h-6 w-6 items-center justify-center
                      rounded-full bg-black/60 text-gallery-text transition-colors hover:bg-gallery-danger hover:text-white"
               title="Remove from cluster">

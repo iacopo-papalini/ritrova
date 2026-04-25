@@ -11,7 +11,7 @@ Mutating endpoints forward to the domain-service layer
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Body, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from ...cluster import find_similar_cluster, suggest_merges
@@ -278,3 +278,25 @@ def merge_clusters_api(
     if request.headers.get("HX-Request"):
         return HTMLResponse("", headers=undo_hx_trigger(receipt.message, receipt.token))
     return JSONResponse({"ok": True, "undo_token": receipt.token, "message": receipt.message})
+
+
+@router.post("/api/clusters/{cluster_id}/split")
+def split_cluster_api(
+    cluster_id: int,
+    face_ids: list[int] = Body(..., embed=True),
+) -> JSONResponse:
+    """Move selected findings into a freshly-created cluster."""
+    result = get_cluster_service().split_cluster(cluster_id, face_ids)
+    if result is None:
+        return JSONResponse({"ok": True, "split": 0})
+    new_cluster_id, moved_count, receipt = result
+    return JSONResponse(
+        {
+            "ok": True,
+            "split": moved_count,
+            "new_cluster_id": new_cluster_id,
+            "new_url": f"/clusters/{new_cluster_id}",
+            "undo_token": receipt.token,
+            "message": receipt.message,
+        }
+    )

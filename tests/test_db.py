@@ -323,6 +323,18 @@ class TestFindingOperations(TestCase):
         assert finding is not None
         assert finding.cluster_id == 1
 
+    def test_split_cluster_findings(self) -> None:
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
+        self.db.update_cluster_ids({fid1: 1, fid2: 1})
+
+        result = self.db.split_cluster_findings(1, [fid1])
+        assert result is not None
+        new_cluster_id, moved_ids = result
+        assert moved_ids == [fid1]
+        assert self.db.get_cluster_membership(fid1) == new_cluster_id
+        assert self.db.get_cluster_membership(fid2) == 1
+
 
 class TestSubjectOperations(TestCase):
     @pytest.fixture(autouse=True)
@@ -702,6 +714,18 @@ class TestStats(TestCase):
         assert stats["named_findings"] == 1
         assert stats["unnamed_clusters"] == 1
         assert stats["unclustered_findings"] == 1  # fid1 assigned but unclustered
+
+    def test_stats_unnamed_clusters_matches_reviewable_cluster_count(self) -> None:
+        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
+        _, fid3 = _add_source_with_finding(self.db, path="/c.jpg")
+
+        self.db.update_cluster_ids({fid1: 1, fid2: 1, fid3: 2})
+
+        stats = self.db.get_stats()
+        assert stats["unnamed_clusters"] == self.db.get_unnamed_cluster_count()
+        assert stats["unnamed_clusters"] == len(self.db.get_unnamed_clusters())
+        assert stats["unnamed_clusters"] == 1
 
 
 class TestGetUnclusteredEmbeddings(TestCase):

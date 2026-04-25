@@ -77,13 +77,7 @@ class MaintenanceMixin(_DBAccessor):
                 f"WHERE fa.subject_id IS NOT NULL AND {clause}",
                 params,
             ),
-            "unnamed_clusters": self._count(
-                f"SELECT COUNT(DISTINCT cf.cluster_id) FROM cluster_findings cf "
-                f"JOIN findings f ON f.id = cf.finding_id "
-                f"LEFT JOIN finding_assignment fa ON fa.finding_id = f.id "
-                f"WHERE fa.finding_id IS NULL AND {clause}",
-                params,
-            ),
+            "unnamed_clusters": self.get_unnamed_cluster_count(species),
             "unclustered_findings": self._count(
                 f"SELECT COUNT(*) FROM findings f "
                 f"LEFT JOIN cluster_findings cf ON cf.finding_id = f.id "

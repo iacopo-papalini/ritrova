@@ -2,6 +2,31 @@
 
 ## Open
 
+### FEAT-30: Split selected cluster faces into a new cluster
+**Reported:** 2026-04-25 | **Closed:** 2026-04-25
+**Shipped:**
+- Cluster detail selection bar now includes **Split into new cluster**.
+- Selected findings are moved to a fresh `cluster_id`; stale selections outside the current cluster are ignored.
+- The action is undoable via the existing FEAT-5 toast path, restoring moved findings to the original cluster.
+- After splitting, the original cluster page removes the selected tiles in place and shows an "Open" toast for the new cluster.
+
+### FEAT-31: Cluster detail queue header
+**Reported:** 2026-04-25 | **Closed:** 2026-04-25
+**Shipped:**
+- Cluster detail now uses the shared `partials/entity_header.html` shape.
+- Header shows unnamed-queue position (`N of M unnamed`) when the cluster is in the review queue.
+- Previous / Skip / Next controls are available in the header; `s` skips to the next cluster when focus is not in an input.
+- "Dismiss entire cluster" moved out of the primary assignment row into the header overflow menu to reduce destructive-action adjacency.
+- Cluster selected-face Exclude / Not-a-face actions now patch the grid in place and show undo toasts instead of reloading the page.
+
+### FEAT-32: Fold standalone search into scoped names filter
+**Reported:** 2026-04-25 | **Closed:** 2026-04-25
+**Shipped:**
+- Top-nav search now submits to the current scoped names page (`/{kind}?filter=...`) instead of `/search`.
+- `/{kind}` seeds its live client-side filter from the `filter` query param.
+- Legacy `/search?q=...` redirects to `/people?filter=...`.
+- Removed the redundant `search.html` standalone page.
+
 ### FEAT-29: Manual finding — Shift+drag on the photo to create a bbox, with nearest-subject suggestion
 **Reported:** 2026-04-21 | **Priority:** Medium
 Detectors miss faces in hard cases (profile, occlusion, low light, distant subjects). Today the only recourse is accepting the miss. Let the user draw a bounding box manually on the photo viewer to create a new finding, have the server compute its embedding AND suggest the nearest named subject based on centroid similarity, then confirm or override in one keystroke.
@@ -188,7 +213,7 @@ const ok = await confirmDialog({ title, message, confirmLabel, cancelLabel, dang
 
 ### FEAT-13: Inline search/filter on subjects list page
 **Reported:** 2026-04-11 | **Closed:** 2026-04-11
-**Shipped:** Filter input on `/{kind}` page, client-side Alpine filtering over the subjects grid. Count updates live. "No matches" message when filter yields nothing. `/search` route kept for now as fallback.
+**Shipped:** Filter input on `/{kind}` page, client-side Alpine filtering over the subjects grid. Count updates live. "No matches" message when filter yields nothing. `/{kind}?filter=...` seeds the filter from navigation search; legacy `/search` redirects there.
 
 ### FEAT-7: Generic search/filter across all metadata
 **Reported:** 2026-04-10 | **Priority:** Medium

@@ -84,9 +84,9 @@
       <div class="flex-1"></div>
 
       <!-- Search -->
-      <form action="/search" method="get" class="relative hidden sm:block">
-        <input type="text" name="q" placeholder="Search faces..."
-               value="{{ query|default('') }}"
+      <form action="/{{ k }}" method="get" class="relative hidden sm:block">
+        <input type="text" name="filter" placeholder="Search names..."
+               value="{{ filter_query|default('') }}"
                class="w-48 rounded-lg border border-gallery-border bg-gallery-card px-3 py-1.5 text-sm text-gallery-text
                       placeholder-gallery-muted outline-none transition-all
                       focus:w-64 focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
