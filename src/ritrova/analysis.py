@@ -204,26 +204,37 @@ class AnalysisPipeline:
             if frame_count == 0:
                 state.width = frame.width
                 state.height = frame.height
-            findings_before = len(state.findings)
+
+            # Cache the frame image as soon as ANY step adds a finding to a
+            # video frame — checking only after all steps would miss frames
+            # whose net length didn't grow because DeduplicationStep
+            # compressed the additions. Without a cached image, the
+            # surviving finding's row would have ``frame_path=None`` and the
+            # thumbnail endpoint would try to PIL-open the .mp4.
             if step_times is None:
                 for step in self.steps:
+                    before = len(state.findings)
                     state = step.analyse(frame, state)
+                    if (
+                        len(state.findings) > before
+                        and state.source_type == "video"
+                        and frame.frame_number not in state.frame_images
+                    ):
+                        state.frame_images[frame.frame_number] = frame.image
             else:
                 import time
 
                 for step in self.steps:
+                    before = len(state.findings)
                     t0 = time.monotonic()
                     state = step.analyse(frame, state)
                     step_times[step.name] = step_times.get(step.name, 0.0) + time.monotonic() - t0
-            # Cache the frame image if new findings were produced on a video frame.
-            # Frame 0 is valid for videos (first sampled frame); photos use source_type
-            # to opt out so the source file itself is rendered directly.
-            if (
-                len(state.findings) > findings_before
-                and state.source_type == "video"
-                and frame.frame_number not in state.frame_images
-            ):
-                state.frame_images[frame.frame_number] = frame.image
+                    if (
+                        len(state.findings) > before
+                        and state.source_type == "video"
+                        and frame.frame_number not in state.frame_images
+                    ):
+                        state.frame_images[frame.frame_number] = frame.image
 
         return state
 
