@@ -42,7 +42,7 @@
 </div>{# /data-lightbox-group #}
 {% if offset + page_count < total %}
 <div hx-get="/api/together-html?subject_ids={{ subject_ids }}&alone={{ alone|lower }}&source_type={{ source_type }}&offset={{ offset + page_count }}&limit={{ limit }}"
-     hx-trigger="revealed"
+     hx-trigger="intersect once"
      hx-swap="outerHTML"
      class="flex justify-center py-8">
   <div class="flex items-center gap-2 text-gallery-muted text-sm">

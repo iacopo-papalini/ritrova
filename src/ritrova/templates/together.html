@@ -24,7 +24,14 @@
                   const url = `/api/together-html?subject_ids=${ids}&alone=${alone}&source_type=${sourceType}`;
                   fetch(url)
                     .then(r => r.text())
-                    .then(html => { document.getElementById('results').innerHTML = html; })
+                    .then(html => {
+                      const el = document.getElementById('results');
+                      el.innerHTML = html;
+                      // htmx only processes nodes it swapped in; we set innerHTML
+                      // directly, so ask it to scan the new subtree or the
+                      // infinite-scroll sentinel's hx-trigger is never registered.
+                      window.htmx && window.htmx.process(el);
+                    })
                     .finally(() => { searching = false; });
                 "
                 :disabled="selected.length < 2 || searching"

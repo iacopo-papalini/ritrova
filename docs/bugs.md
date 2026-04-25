@@ -2,6 +2,14 @@
 
 ## Open
 
+### BUG-23: /together infinite scroll doesn't load more pages
+**Reported:** 2026-04-21 | **Closed:** 2026-04-21
+**Repro:** Open `/together`, select 1-2 subjects, scroll past the first page worth of results.
+**Observed:** Sentinel spinner stays on screen; no network request to `/api/together-html` is made; no console / server error. Second page never arrives.
+**Root cause:** `templates/together.html:27` was swapping the search results into `#results` with `el.innerHTML = html;`. htmx only wires up `hx-*` attributes on nodes it **processes itself** (via `hx-get`, `hx-swap`, or `htmx.process()`). Plain `innerHTML` bypasses htmx, so the infinite-scroll sentinel's `hx-trigger` was never registered — neither `revealed` nor `intersect once` could fire because htmx wasn't watching. Initial diagnosis blamed `revealed` misfiring; the real cause is upstream.
+**Fix:** after `el.innerHTML = html;`, call `window.htmx.process(el)` so htmx scans the swapped-in subtree and binds the sentinel's trigger. Also kept the earlier `revealed → intersect once` tweak on `partials/together_results.html:45` as a best-practice hardening (more reliable when the sentinel is already in the viewport at render time), though the primary fix is `htmx.process`.
+**Not at risk:** other pages using `hx-trigger="revealed"` (`subject_finding_grid`, `cluster_detail`, `face_grid`, `singleton_grid`, `singletons`) go through htmx-driven routes, so their sentinels are htmx-processed at swap time. No fix needed there.
+
 ### BUG-22: "Go to photo" from video-frame lightbox renders the frame JPG with bbox overlays for every finding
 **Reported:** 2026-04-20 | **Closed:** 2026-04-21 (short-term fix)
 **Fix:** Lightbox store's `detailUrl` getter returns empty when the current item's source `type === 'video'`, which hides the "Open details" button (`x-show="$store.lightbox.detailUrl"` already gated on the URL). Users can no longer land on a misrendered `/photo/{id}` for video sources. Bumped `app.js?v=16` to bust the cached module.
