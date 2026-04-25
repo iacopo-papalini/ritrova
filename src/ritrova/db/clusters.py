@@ -8,11 +8,34 @@ _memberships`). Reads JOIN cluster_findings.
 
 from __future__ import annotations
 
+import re
+from pathlib import PurePosixPath
 from typing import Any
 
 from ._base import _DBAccessor, _locked
 from .findings import _FINDING_COLUMNS, _FINDING_FROM, _row_to_finding
 from .models import Finding
+
+# YYYY-MM in any path component is the project's source-of-truth date
+# (CLAUDE.md). Inlined here rather than importing from app/helpers.py so
+# the DB layer keeps a clean dependency surface.
+_PATH_DATE_RE = re.compile(r"(\d{4})-(\d{2})")
+
+
+def _photo_month_index(file_path: str, taken_at: str | None) -> int | None:
+    """Return ``year*12 + month`` for sort comparisons. Path date wins;
+    ``taken_at`` (EXIF) is the fallback. Returns ``None`` when neither
+    is parseable so the caller can sink such clusters to the bottom."""
+    for part in reversed(PurePosixPath(file_path).parts):
+        m = _PATH_DATE_RE.search(part)
+        if m:
+            return int(m.group(1)) * 12 + int(m.group(2))
+    if taken_at and len(taken_at) >= 7:
+        try:
+            return int(taken_at[:4]) * 12 + int(taken_at[5:7])
+        except ValueError:
+            return None
+    return None
 
 
 class ClusterMixin(_DBAccessor):
@@ -40,14 +63,20 @@ class ClusterMixin(_DBAccessor):
 
     @_locked
     def get_unnamed_clusters(self, species: str = "human") -> list[dict[str, Any]]:
-        """Clusters where every finding is uncurated, ordered by total face
-        area (biggest first).
+        """Clusters where every finding is uncurated, ordered by the
+        average *photo age* of the cluster (newest first).
 
         "Uncurated" = no finding_assignment row. Clusters containing even
         one named or excluded finding are filtered out — the user is
         mid-curation there or has already told us that blob is done.
         Sample faces are returned biggest-first so the thumbnail preview
         shows the cluster's largest crops.
+
+        Sort key per cluster: average ``year*12 + month`` over its
+        sources, where the month comes from the path (``YYYY-MM`` in any
+        directory component — the project's date-of-truth per CLAUDE.md)
+        with ``sources.taken_at`` (EXIF) as a fallback. Clusters with no
+        datable source sink to the bottom. Tiebreaker = total face area.
         """
         clause, params = self.species_filter(species)
         rows = self.conn.execute(
@@ -62,10 +91,32 @@ class ClusterMixin(_DBAccessor):
             WHERE fa.finding_id IS NULL AND {clause}
             GROUP BY cf.cluster_id
             HAVING COUNT(*) >= 2
-            ORDER BY total_area DESC
             """,
             params,
         ).fetchall()
+        if not rows:
+            return []
+        cluster_ids = [r["cluster_id"] for r in rows]
+        # Second query feeds the photo-age sort. Done separately so we can
+        # keep the path / taken_at parsing in Python (no GROUP_CONCAT-of-
+        # paths shenanigans, no SQL date parsing on a TEXT column).
+        placeholders = ",".join("?" * len(cluster_ids))
+        age_rows = self.conn.execute(
+            f"""
+            SELECT cf.cluster_id, s.file_path, s.taken_at
+            FROM cluster_findings cf
+            JOIN findings f ON f.id = cf.finding_id
+            JOIN sources s ON s.id = f.source_id
+            WHERE cf.cluster_id IN ({placeholders})
+            """,
+            tuple(cluster_ids),
+        ).fetchall()
+        per_cluster_months: dict[int, list[int]] = {}
+        for ar in age_rows:
+            month_idx = _photo_month_index(ar["file_path"], ar["taken_at"])
+            if month_idx is not None:
+                per_cluster_months.setdefault(ar["cluster_id"], []).append(month_idx)
+        avg_month = {cid: sum(months) / len(months) for cid, months in per_cluster_months.items()}
         result = []
         for row in rows:
             pairs = [p.split(":") for p in row["finding_area_pairs"].split(",")]
@@ -79,6 +130,12 @@ class ClusterMixin(_DBAccessor):
                     "sample_face_ids": finding_ids[:12],
                 }
             )
+        # Newest first; clusters with no datable sources go to the bottom.
+        # Tiebreaker = total face area (the previous default).
+        result.sort(
+            key=lambda r: (avg_month.get(r["cluster_id"], -1.0), r["total_area"]),
+            reverse=True,
+        )
         return result
 
     @_locked
