@@ -49,6 +49,42 @@ document.addEventListener('alpine:init', () => {
       .catch(() => { /* network blip — no toast is fine */ });
   }
 
+  // --------------- Alpine store: print selection ---------------
+  Alpine.store('printSelection', {
+    ids: new Set(),
+    total: 0,
+    loaded: false,
+
+    async load() {
+      const r = await fetch('/api/print-selection');
+      if (!r.ok) return;
+      const data = await r.json();
+      this.ids = new Set(data.source_ids || []);
+      this.total = data.total || 0;
+      this.loaded = true;
+    },
+
+    has(sourceId) {
+      if (!this.loaded) this.load();
+      return this.ids.has(Number(sourceId));
+    },
+
+    async toggle(sourceId) {
+      sourceId = Number(sourceId);
+      const selected = this.ids.has(sourceId);
+      const r = await fetch(`/api/print-selection/${sourceId}`, {
+        method: selected ? 'DELETE' : 'POST',
+      });
+      if (!r.ok) return;
+      const data = await r.json();
+      this.ids = new Set(data.source_ids || []);
+      this.total = data.total || 0;
+      this.loaded = true;
+      Alpine.store('toast').success(selected ? 'Removed from print list' : 'Added to print list');
+    },
+  });
+  Alpine.store('printSelection').load();
+
   // --------------- Alpine store: confirmation dialog ---------------
   // Promise-based replacement for browser confirm(). API:
   //   const ok = await $store.dialog.confirm({
@@ -618,6 +654,10 @@ document.addEventListener('alpine:init', () => {
       return this.sourceId && this.type !== 'video' ? `/photos/${this.sourceId}` : '';
     },
     get downloadUrl() { return this.sourceId ? `/api/sources/${this.sourceId}/original` : ''; },
+    get canSelectForPrint() { return this.sourceId && this.type === 'photo'; },
+    get selectedForPrint() {
+      return this.canSelectForPrint && Alpine.store('printSelection').has(this.sourceId);
+    },
     get hasNav() { return this.items.length > 1; },
     get canPrev() { return this.index > 0; },
     get canNext() { return this.index < this.items.length - 1; },
@@ -652,6 +692,9 @@ document.addEventListener('alpine:init', () => {
     next() { if (this.canNext) this._goto(this.index + 1); },
     prev() { if (this.canPrev) this._goto(this.index - 1); },
     rotate() { this.rotation = (this.rotation + 90) % 360; },
+    togglePrintSelection() {
+      if (this.canSelectForPrint) Alpine.store('printSelection').toggle(this.sourceId);
+    },
 
     close() {
       this.open = false;

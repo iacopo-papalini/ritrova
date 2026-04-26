@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from ritrova.db import FaceDB
+from ritrova.db.path_metadata import parse_source_path_metadata
 
 
 def _seed_legacy_db(
@@ -138,6 +139,84 @@ class TestSourceOperations(TestCase):
             self.db.add_source("/test/photo.jpg", width=200, height=200)
 
 
+class TestPathMetadata(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_db(self, db: FaceDB) -> None:
+        self.db = db
+
+    def test_parser_prefers_directory_when_filename_date_is_placeholder_conflict(self) -> None:
+        meta = parse_source_path_metadata("2004/2004-07.Laurea/2002_01_01_14_04_46.jpg")
+
+        assert meta.date_text == "2004-07"
+        assert meta.date_precision == "month"
+        assert meta.date_source == "directory"
+        assert meta.date_conflict is True
+        assert meta.filename_date == "2002-01-01"
+        assert meta.directory_date == "2004-07"
+        assert meta.path_tags == {"laurea"}
+
+    def test_parser_uses_precise_filename_when_it_agrees_with_directory(self) -> None:
+        meta = parse_source_path_metadata("2021/2021-06-19.Stiappa/2021_06_19_12_00_00.jpg")
+
+        assert meta.date_text == "2021-06-19"
+        assert meta.date_precision == "day"
+        assert meta.date_source == "filename"
+        assert meta.date_conflict is False
+        assert "stiappa" in meta.path_tags
+
+    def test_parser_uses_filename_year_when_no_directory_date_exists(self) -> None:
+        meta = parse_source_path_metadata("_preistoria/Michele - Foto/2006 - BiscioVSmostro.jpg")
+
+        assert meta.date_text == "2006"
+        assert meta.date_precision == "year"
+        assert meta.date_source == "filename"
+        assert {"preistoria", "michele", "bisciovsmostro"} <= meta.path_tags
+
+    def test_parser_uses_compact_directory_date_for_legacy_video_paths(self) -> None:
+        meta = parse_source_path_metadata(
+            "_preistoria/Michele - foto 'nuove'/20081226 - Cena Pizzeria Castella/MVI_7904.AVI"
+        )
+
+        assert meta.date_text == "2008-12-26"
+        assert meta.date_precision == "day"
+        assert meta.date_source == "directory"
+        assert {"preistoria", "michele", "nuove", "cena", "pizzeria", "castella"} <= (
+            meta.path_tags
+        )
+        assert "mvi" not in meta.path_tags
+
+    def test_parser_falls_back_to_exif_when_path_has_no_date(self) -> None:
+        meta = parse_source_path_metadata("Domotz/portrait.jpg", taken_at="2018:04:03 10:11:12")
+
+        assert meta.date_text == "2018-04-03"
+        assert meta.date_source == "exif"
+        assert meta.path_tags == {"domotz", "portrait"}
+
+    def test_add_source_caches_path_metadata(self) -> None:
+        source_id = self.db.add_source("2022/2022-10_LuccaComics/PXL_20221031_120000000.jpg")
+
+        meta = self.db.get_source_path_metadata(source_id)
+
+        assert meta is not None
+        assert meta.date_text == "2022-10-31"
+        assert meta.date_source == "filename"
+        assert "luccacomics" in meta.path_tags
+        assert "pxl" not in meta.path_tags
+
+    def test_backfill_source_path_metadata(self) -> None:
+        source_id = self.db.add_source("varie/nonni_1.jpeg", taken_at="2010-05-01")
+        self.db.conn.execute("DELETE FROM source_path_metadata WHERE source_id = ?", (source_id,))
+        self.db.conn.commit()
+
+        assert self.db.backfill_source_path_metadata(source_type="photo") == 1
+        meta = self.db.get_source_path_metadata(source_id)
+
+        assert meta is not None
+        assert meta.date_text == "2010-05-01"
+        assert meta.date_source == "exif"
+        assert meta.path_tags == {"varie", "nonni"}
+
+
 def _make_embedding(dim: int = 512) -> np.ndarray:
     """Create a random normalized embedding."""
     v = np.random.default_rng(42).standard_normal(dim).astype(np.float32)
@@ -159,6 +238,85 @@ def _add_source_with_finding(
     add_findings(db, [(pid, (10, 10, 50, 50), emb, 0.95)], species=species)
     findings = db.get_source_findings(pid)
     return pid, findings[0].id
+
+
+class TestSourceSearch(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_db(self, db: FaceDB) -> None:
+        self.db = db
+
+    def test_search_sources_filters_by_path_tags_and_path_date(self) -> None:
+        matching = self.db.add_source("2022/2022-10_LuccaComics/PXL_20221031_120000000.jpg")
+        self.db.add_source("2022/2022-11_Roma/IMG_20221102.jpg")
+        self.db.add_source("2021/2021-10_LuccaComics/IMG_20211031.jpg")
+
+        sources = self.db.search_sources(
+            path_tags={"luccaComics"},
+            date_from="2022-01-01",
+            date_to="2022-12-31",
+        )
+
+        assert [s.id for s in sources] == [matching]
+        assert (
+            self.db.count_search_sources(
+                path_tags={"luccaComics"},
+                date_from="2022-01-01",
+                date_to="2022-12-31",
+            )
+            == 1
+        )
+
+    def test_search_sources_sorts_unknown_dates_last(self) -> None:
+        unknown = self.db.add_source("varie/nonni_1.jpeg")
+        newest = self.db.add_source("2026/2026-04-25_Yuki/PXL_20260425_083901244.jpg")
+        older = self.db.add_source("2020/2020-12-29.Libera/20201229_165654.jpg")
+
+        sources = self.db.search_sources()
+
+        assert [s.id for s in sources] == [newest, older, unknown]
+
+    def test_search_sources_combines_subject_and_path_tag_filters(self) -> None:
+        alice = self.db.create_subject("Alice")
+        matching_source, matching_finding = _add_source_with_finding(
+            self.db, "2023/2023-08_Amsterdam/IMG_20230801.jpg"
+        )
+        other_source, other_finding = _add_source_with_finding(
+            self.db, "2023/2023-08_Roma/IMG_20230802.jpg"
+        )
+        self.db.assign_finding_to_subject(matching_finding, alice)
+        self.db.assign_finding_to_subject(other_finding, alice)
+
+        sources = self.db.search_sources(subject_ids=[alice], path_tags={"amsterdam"})
+
+        assert [s.id for s in sources] == [matching_source]
+
+
+class TestPrintSelection(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_db(self, db: FaceDB) -> None:
+        self.db = db
+
+    def test_add_remove_and_reorder_print_selection(self) -> None:
+        first = self.db.add_source("2024/2024-01-01.A/a.jpg")
+        second = self.db.add_source("2024/2024-01-02.B/b.jpg")
+
+        assert self.db.add_to_print_selection(first) == 1
+        assert self.db.add_to_print_selection(second) == 2
+        assert self.db.add_to_print_selection(first) == 1
+        assert self.db.get_print_selection_ids() == [first, second]
+
+        self.db.reorder_print_selection([second, first])
+        assert self.db.get_print_selection_ids() == [second, first]
+
+        self.db.remove_from_print_selection(second)
+        assert self.db.get_print_selection_ids() == [first]
+        assert self.db.list_print_selection()[0].position == 1
+
+    def test_print_selection_rejects_videos(self) -> None:
+        video = self.db.add_source("2024/video.mp4", source_type="video")
+
+        with pytest.raises(ValueError, match="Only photos"):
+            self.db.add_to_print_selection(video)
 
 
 class TestFindingOperations(TestCase):

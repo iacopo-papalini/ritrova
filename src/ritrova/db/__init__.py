@@ -8,7 +8,15 @@ Public API — import from ``ritrova.db`` as before::
 from .circles import Circle
 from .connection import FaceDB
 from .curation import PruneReport
-from .models import Description, Finding, OrphanReport, Source, Subject
+from .models import (
+    Description,
+    Finding,
+    OrphanReport,
+    PrintSelectionItem,
+    Source,
+    SourcePathMetadata,
+    Subject,
+)
 
 __all__ = [
     "Circle",
@@ -16,7 +24,9 @@ __all__ = [
     "FaceDB",
     "Finding",
     "OrphanReport",
+    "PrintSelectionItem",
     "PruneReport",
     "Source",
+    "SourcePathMetadata",
     "Subject",
 ]

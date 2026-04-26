@@ -1,7 +1,9 @@
 """Tests for ritrova.app routes and API endpoints."""
 
+import io
 from pathlib import Path
 from unittest import TestCase
+from zipfile import ZipFile
 
 import numpy as np
 import pytest
@@ -593,6 +595,115 @@ class TestTogetherAPI(TestCase):
         ids = self._seed_mixed_media(sid_a, sid_b)
         resp = self.client.get(f"/api/together?subject_ids={sid_a},{sid_b}&source_type=bogus")
         assert {s["id"] for s in resp.json()["sources"]} == {ids["photo"], ids["video"]}
+
+
+class TestBrowsePage(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path: Path) -> None:
+        self.db = FaceDB(tmp_path / "test.db")
+        self.app = create_app(str(tmp_path / "test.db"))
+        self.client = TestClient(self.app)
+
+    def test_browse_page_renders(self) -> None:
+        resp = self.client.get("/browse")
+
+        assert resp.status_code == 200
+        assert "Path tags" in resp.text
+
+    def test_browse_html_filters_by_path_tag(self) -> None:
+        matching = self.db.add_source("2022/2022-10_LuccaComics/IMG_20221031.jpg")
+        self.db.add_source("2022/2022-11_Roma/IMG_20221102.jpg")
+
+        resp = self.client.get("/api/browse-html?path_tags=luccacomics")
+
+        assert resp.status_code == 200
+        assert f'data-source-id="{matching}"' in resp.text
+        assert "1 source found" in resp.text
+
+    def test_browse_html_backfills_missing_path_metadata(self) -> None:
+        matching = self.db.add_source("2020/2020-12-29.Libera/20201229_165654.jpg")
+        self.db.conn.execute("DELETE FROM source_path_metadata")
+        self.db.conn.commit()
+
+        resp = self.client.get("/api/browse-html?path_tags=libera")
+
+        assert resp.status_code == 200
+        assert f'data-source-id="{matching}"' in resp.text
+        assert self.db.conn.execute("SELECT COUNT(*) FROM source_path_metadata").fetchone()[0] == 1
+
+    def test_browse_html_combines_subject_and_path_tag(self) -> None:
+        alice = self.db.create_subject("Alice")
+        matching_source, matching_finding = _add_finding(
+            self.db, "2023/2023-08_Amsterdam/IMG_20230801.jpg"
+        )
+        _, other_finding = _add_finding(self.db, "2023/2023-08_Roma/IMG_20230802.jpg")
+        self.db.assign_finding_to_subject(matching_finding, alice)
+        self.db.assign_finding_to_subject(other_finding, alice)
+
+        resp = self.client.get(f"/api/browse-html?subject_ids={alice}&path_tags=amsterdam")
+
+        assert resp.status_code == 200
+        assert f'data-source-id="{matching_source}"' in resp.text
+        assert "1 source found" in resp.text
+
+
+class TestPrintSelectionPage(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path: Path) -> None:
+        self.db = FaceDB(tmp_path / "test.db", base_dir=tmp_path)
+        self.app = create_app(str(tmp_path / "test.db"), photos_dir=str(tmp_path))
+        self.client = TestClient(self.app)
+        self.tmp = tmp_path
+        (tmp_path / "prints").mkdir()
+        self.first_path = tmp_path / "prints" / "z first.jpg"
+        self.second_path = tmp_path / "prints" / "a_second.jpg"
+        self.first_path.write_bytes(b"first")
+        self.second_path.write_bytes(b"second")
+
+    def test_add_remove_and_list_print_selection(self) -> None:
+        first = self.db.add_source("prints/z first.jpg")
+        second = self.db.add_source("prints/a_second.jpg")
+
+        resp = self.client.post(f"/api/print-selection/{first}")
+        assert resp.status_code == 200
+        assert resp.json()["source_ids"] == [first]
+
+        resp = self.client.post(f"/api/print-selection/{second}")
+        assert resp.status_code == 200
+        assert resp.json()["source_ids"] == [first, second]
+
+        resp = self.client.delete(f"/api/print-selection/{first}")
+        assert resp.status_code == 200
+        assert resp.json()["source_ids"] == [second]
+
+    def test_print_selection_rejects_video_sources(self) -> None:
+        video = self.db.add_source("prints/video.mp4", source_type="video")
+
+        resp = self.client.post(f"/api/print-selection/{video}")
+
+        assert resp.status_code == 400
+        assert "Only photos" in resp.json()["detail"]
+
+    def test_export_print_selection_zip_preserves_order_and_original_bytes(self) -> None:
+        first = self.db.add_source("prints/z first.jpg")
+        second = self.db.add_source("prints/a_second.jpg")
+        self.db.add_to_print_selection(first)
+        self.db.add_to_print_selection(second)
+
+        resp = self.client.post("/api/print-selection/export")
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/zip"
+        assert "attachment" in resp.headers["content-disposition"]
+        with ZipFile(io.BytesIO(resp.content)) as archive:
+            assert archive.namelist() == ["0001_z_first.jpg", "0002_a_second.jpg"]
+            assert archive.read("0001_z_first.jpg") == b"first"
+            assert archive.read("0002_a_second.jpg") == b"second"
+
+    def test_export_empty_print_selection_400(self) -> None:
+        resp = self.client.post("/api/print-selection/export")
+
+        assert resp.status_code == 400
 
 
 class TestNamespaceCollision(TestCase):

@@ -20,6 +20,27 @@ class Source:
     longitude: float | None = None
 
 
+@dataclass(frozen=True)
+class SourcePathMetadata:
+    source_id: int
+    date_text: str | None
+    date_precision: Literal["day", "month", "year", "unknown"]
+    date_source: Literal["filename", "directory", "exif", "unknown"]
+    date_conflict: bool
+    filename_date: str | None
+    directory_date: str | None
+    exif_date: str | None
+    path_tags: set[str]
+    indexed_at: str
+
+
+@dataclass(frozen=True)
+class PrintSelectionItem:
+    source: Source
+    position: int
+    added_at: str
+
+
 # ── Curation union ────────────────────────────────────────────────────
 #
 # The XOR invariant on finding_assignment (CHECK constraint: exactly one of

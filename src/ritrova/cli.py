@@ -1294,6 +1294,25 @@ def backfill_gps(ctx: click.Context) -> None:
     db.close()
 
 
+@cli.command("backfill-path-metadata")
+@click.option(
+    "--source-type",
+    type=click.Choice(["photo", "video"]),
+    default=None,
+    help="Limit backfill to one source type.",
+)
+@click.pass_context
+def backfill_path_metadata(ctx: click.Context, source_type: str | None) -> None:
+    """Extract path dates and tags for existing sources."""
+    from .db import FaceDB
+
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    count = db.backfill_source_path_metadata(source_type=source_type)
+    qualifier = f" {source_type}" if source_type else ""
+    print(f"Indexed path metadata for {count}{qualifier} source(s).")
+    db.close()
+
+
 @cli.command("migrate-paths")
 @click.pass_context
 def migrate_paths(ctx: click.Context) -> None:

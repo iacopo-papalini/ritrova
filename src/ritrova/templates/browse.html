@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Ritrova — Browse{% endblock %}
+{% block content %}
+<div class="space-y-6">
+
+  <div>
+    <h1 class="font-display text-2xl font-bold tracking-tight">Browse</h1>
+    <p class="text-gallery-muted text-sm mt-1">Filter sources by people, path tags, and archive dates.</p>
+  </div>
+
+  <div x-data="Object.assign(subjectPicker({ multi: true, allowCreate: false }), { searching: false, alone: false, sourceType: 'photo' })"
+       class="rounded-xl border border-gallery-border bg-gallery-card p-4 space-y-4">
+    <div class="grid gap-4 lg:grid-cols-3">
+      <div class="min-w-0">
+        <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-gallery-muted">People</label>
+        {% include "partials/subject_picker.html" %}
+      </div>
+
+      <div>
+        <label for="path-tags" class="mb-1 block text-xs font-medium uppercase tracking-wide text-gallery-muted">Path tags</label>
+        <input id="path-tags" type="text" x-ref="pathTags" placeholder="roma matrimonio bambine"
+               class="w-full rounded-lg border border-gallery-border bg-gallery-bg px-3 py-2 text-sm text-gallery-text
+                      placeholder-gallery-muted outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label for="date-from" class="mb-1 block text-xs font-medium uppercase tracking-wide text-gallery-muted">From</label>
+          <input id="date-from" type="date" x-ref="dateFrom"
+                 class="w-full rounded-lg border border-gallery-border bg-gallery-bg px-3 py-2 text-sm text-gallery-text
+                        outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+        </div>
+        <div>
+          <label for="date-to" class="mb-1 block text-xs font-medium uppercase tracking-wide text-gallery-muted">To</label>
+          <input id="date-to" type="date" x-ref="dateTo"
+                 class="w-full rounded-lg border border-gallery-border bg-gallery-bg px-3 py-2 text-sm text-gallery-text
+                        outline-none focus:border-gallery-accent focus:ring-1 focus:ring-gallery-accent/30">
+        </div>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-4">
+      <button @click="
+                searching = true;
+                const params = new URLSearchParams({
+                  subject_ids: selected.map(s => s.id).join(','),
+                  path_tags: $refs.pathTags.value,
+                  date_from: $refs.dateFrom.value,
+                  date_to: $refs.dateTo.value,
+                  source_type: sourceType,
+                  alone: alone,
+                });
+                fetch(`/api/browse-html?${params}`)
+                  .then(r => r.text())
+                  .then(html => {
+                    const el = document.getElementById('results');
+                    el.innerHTML = html;
+                    window.htmx && window.htmx.process(el);
+                  })
+                  .finally(() => { searching = false; });
+              "
+              :disabled="searching"
+              class="inline-flex items-center gap-2 rounded-lg bg-gallery-accent px-5 py-2 text-sm font-medium text-gallery-bg
+                     transition-colors hover:bg-gallery-accent/80 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">
+        <svg x-show="searching" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+        <span x-text="searching ? 'Filtering...' : 'Apply filters'"></span>
+      </button>
+
+      <div class="flex items-center rounded-full bg-gallery-bg border border-gallery-border p-1 text-xs">
+        <template x-for="opt in [
+          {val: 'photo',  label: 'Photos'},
+          {val: 'video',  label: 'Videos'},
+          {val: 'either', label: 'Either'},
+        ]" :key="opt.val">
+          <button type="button"
+                  @click="sourceType = opt.val"
+                  :class="sourceType === opt.val
+                            ? 'bg-gallery-accent text-gallery-bg'
+                            : 'text-gallery-muted hover:text-gallery-text'"
+                  class="rounded-full px-3 py-1 font-medium transition-colors cursor-pointer"
+                  x-text="opt.label"></button>
+        </template>
+      </div>
+
+      <label class="flex items-center gap-2 text-sm text-gallery-muted cursor-pointer select-none">
+        <input type="checkbox" x-model="alone"
+               class="rounded border-gallery-border bg-gallery-card text-gallery-accent
+                      focus:ring-gallery-accent/30 cursor-pointer">
+        Just selected people
+      </label>
+    </div>
+  </div>
+
+  <div id="results"
+       hx-get="/api/browse-html"
+       hx-trigger="load"
+       hx-swap="innerHTML"></div>
+</div>
+{% endblock %}
