@@ -21,6 +21,7 @@ from .findings import FindingMixin
 from .maintenance import MaintenanceMixin
 from .path_metadata import PathMetadataMixin
 from .paths import PathMixin
+from .print_selection import PrintSelectionMixin
 from .scans import ScanMixin
 from .source_search import SourceSearchMixin
 from .sources import SourceMixin
@@ -124,6 +125,7 @@ class FaceDB(
     DescriptionMixin,
     PathMetadataMixin,
     SourceSearchMixin,
+    PrintSelectionMixin,
     CirclesMixin,
     AssignmentMixin,
     UndoMixin,
@@ -278,6 +280,15 @@ class FaceDB(
                 ON source_path_metadata(date_text);
             CREATE INDEX IF NOT EXISTS idx_source_path_metadata_tags
                 ON source_path_metadata(path_tags);
+
+            -- FEAT-34: ordered worklist for print exports.
+            CREATE TABLE IF NOT EXISTS print_selection (
+                source_id INTEGER PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+                position  INTEGER NOT NULL,
+                added_at  TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_print_selection_position
+                ON print_selection(position);
 
             -- Documentation-only table. `scans.scan_type` is a logical FK to
             -- `scan_types.name` (no hard FK, so historic scan_type strings

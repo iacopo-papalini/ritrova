@@ -1,7 +1,9 @@
 """Tests for ritrova.app routes and API endpoints."""
 
+import io
 from pathlib import Path
 from unittest import TestCase
+from zipfile import ZipFile
 
 import numpy as np
 import pytest
@@ -643,6 +645,65 @@ class TestBrowsePage(TestCase):
         assert resp.status_code == 200
         assert f'data-source-id="{matching_source}"' in resp.text
         assert "1 source found" in resp.text
+
+
+class TestPrintSelectionPage(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path: Path) -> None:
+        self.db = FaceDB(tmp_path / "test.db", base_dir=tmp_path)
+        self.app = create_app(str(tmp_path / "test.db"), photos_dir=str(tmp_path))
+        self.client = TestClient(self.app)
+        self.tmp = tmp_path
+        (tmp_path / "prints").mkdir()
+        self.first_path = tmp_path / "prints" / "z first.jpg"
+        self.second_path = tmp_path / "prints" / "a_second.jpg"
+        self.first_path.write_bytes(b"first")
+        self.second_path.write_bytes(b"second")
+
+    def test_add_remove_and_list_print_selection(self) -> None:
+        first = self.db.add_source("prints/z first.jpg")
+        second = self.db.add_source("prints/a_second.jpg")
+
+        resp = self.client.post(f"/api/print-selection/{first}")
+        assert resp.status_code == 200
+        assert resp.json()["source_ids"] == [first]
+
+        resp = self.client.post(f"/api/print-selection/{second}")
+        assert resp.status_code == 200
+        assert resp.json()["source_ids"] == [first, second]
+
+        resp = self.client.delete(f"/api/print-selection/{first}")
+        assert resp.status_code == 200
+        assert resp.json()["source_ids"] == [second]
+
+    def test_print_selection_rejects_video_sources(self) -> None:
+        video = self.db.add_source("prints/video.mp4", source_type="video")
+
+        resp = self.client.post(f"/api/print-selection/{video}")
+
+        assert resp.status_code == 400
+        assert "Only photos" in resp.json()["detail"]
+
+    def test_export_print_selection_zip_preserves_order_and_original_bytes(self) -> None:
+        first = self.db.add_source("prints/z first.jpg")
+        second = self.db.add_source("prints/a_second.jpg")
+        self.db.add_to_print_selection(first)
+        self.db.add_to_print_selection(second)
+
+        resp = self.client.post("/api/print-selection/export")
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/zip"
+        assert "attachment" in resp.headers["content-disposition"]
+        with ZipFile(io.BytesIO(resp.content)) as archive:
+            assert archive.namelist() == ["0001_z_first.jpg", "0002_a_second.jpg"]
+            assert archive.read("0001_z_first.jpg") == b"first"
+            assert archive.read("0002_a_second.jpg") == b"second"
+
+    def test_export_empty_print_selection_400(self) -> None:
+        resp = self.client.post("/api/print-selection/export")
+
+        assert resp.status_code == 400
 
 
 class TestNamespaceCollision(TestCase):

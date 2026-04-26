@@ -31,6 +31,7 @@ from .routers import (
     findings,
     images,
     pages,
+    print_selection,
     subjects,
     together,
     undo,
@@ -64,6 +65,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     app.include_router(subjects.router)
     app.include_router(circles.router)
     app.include_router(browse.router)
+    app.include_router(print_selection.router)
     app.include_router(together.router)
     app.include_router(undo.router)
     app.include_router(pages.router)

@@ -34,6 +34,13 @@ class SourcePathMetadata:
     indexed_at: str
 
 
+@dataclass(frozen=True)
+class PrintSelectionItem:
+    source: Source
+    position: int
+    added_at: str
+
+
 # ── Curation union ────────────────────────────────────────────────────
 #
 # The XOR invariant on finding_assignment (CHECK constraint: exactly one of

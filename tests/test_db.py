@@ -291,6 +291,34 @@ class TestSourceSearch(TestCase):
         assert [s.id for s in sources] == [matching_source]
 
 
+class TestPrintSelection(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_db(self, db: FaceDB) -> None:
+        self.db = db
+
+    def test_add_remove_and_reorder_print_selection(self) -> None:
+        first = self.db.add_source("2024/2024-01-01.A/a.jpg")
+        second = self.db.add_source("2024/2024-01-02.B/b.jpg")
+
+        assert self.db.add_to_print_selection(first) == 1
+        assert self.db.add_to_print_selection(second) == 2
+        assert self.db.add_to_print_selection(first) == 1
+        assert self.db.get_print_selection_ids() == [first, second]
+
+        self.db.reorder_print_selection([second, first])
+        assert self.db.get_print_selection_ids() == [second, first]
+
+        self.db.remove_from_print_selection(second)
+        assert self.db.get_print_selection_ids() == [first]
+        assert self.db.list_print_selection()[0].position == 1
+
+    def test_print_selection_rejects_videos(self) -> None:
+        video = self.db.add_source("2024/video.mp4", source_type="video")
+
+        with pytest.raises(ValueError, match="Only photos"):
+            self.db.add_to_print_selection(video)
+
+
 class TestFindingOperations(TestCase):
     @pytest.fixture(autouse=True)
     def _setup_db(self, db: FaceDB) -> None:

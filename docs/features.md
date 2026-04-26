@@ -41,6 +41,15 @@
 - Date-confidence indicators in the browse grid for conflict / EXIF-fallback cases.
 - Optional folding of Together into Browse once filter ergonomics cover that workflow cleanly.
 
+### FEAT-34: Persistent print selection and zip export
+**Reported:** 2026-04-26 | **Closed:** 2026-04-26
+**Shipped:**
+- Added a persistent ordered `print_selection` worklist for photo sources only.
+- Added Print toggles on source grids, the lightbox toolbar, and photo detail pages.
+- Added `/print` review page with remove / clear actions.
+- Added `/api/print-selection/export`, which returns an ordered zip of original photo files with stable `0001_...` filenames.
+- Videos are rejected at selection time; printing-service API integration remains out of scope.
+
 ### FEAT-29: Manual finding — Shift+drag on the photo to create a bbox, with nearest-subject suggestion
 **Reported:** 2026-04-21 | **Priority:** Medium
 Detectors miss faces in hard cases (profile, occlusion, low light, distant subjects). Today the only recourse is accepting the miss. Let the user draw a bounding box manually on the photo viewer to create a new finding, have the server compute its embedding AND suggest the nearest named subject based on centroid similarity, then confirm or override in one keystroke.
