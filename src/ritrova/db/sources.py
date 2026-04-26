@@ -25,7 +25,9 @@ class SourceMixin(_DBAccessor):
         )
         self.conn.commit()
         assert cur.lastrowid is not None
-        return cur.lastrowid
+        source_id = int(cur.lastrowid)
+        self.upsert_source_path_metadata(source_id)
+        return source_id
 
     @_locked
     def get_or_create_source(

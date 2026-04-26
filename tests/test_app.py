@@ -595,6 +595,56 @@ class TestTogetherAPI(TestCase):
         assert {s["id"] for s in resp.json()["sources"]} == {ids["photo"], ids["video"]}
 
 
+class TestBrowsePage(TestCase):
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path: Path) -> None:
+        self.db = FaceDB(tmp_path / "test.db")
+        self.app = create_app(str(tmp_path / "test.db"))
+        self.client = TestClient(self.app)
+
+    def test_browse_page_renders(self) -> None:
+        resp = self.client.get("/browse")
+
+        assert resp.status_code == 200
+        assert "Path tags" in resp.text
+
+    def test_browse_html_filters_by_path_tag(self) -> None:
+        matching = self.db.add_source("2022/2022-10_LuccaComics/IMG_20221031.jpg")
+        self.db.add_source("2022/2022-11_Roma/IMG_20221102.jpg")
+
+        resp = self.client.get("/api/browse-html?path_tags=luccacomics")
+
+        assert resp.status_code == 200
+        assert f'data-source-id="{matching}"' in resp.text
+        assert "1 source found" in resp.text
+
+    def test_browse_html_backfills_missing_path_metadata(self) -> None:
+        matching = self.db.add_source("2020/2020-12-29.Libera/20201229_165654.jpg")
+        self.db.conn.execute("DELETE FROM source_path_metadata")
+        self.db.conn.commit()
+
+        resp = self.client.get("/api/browse-html?path_tags=libera")
+
+        assert resp.status_code == 200
+        assert f'data-source-id="{matching}"' in resp.text
+        assert self.db.conn.execute("SELECT COUNT(*) FROM source_path_metadata").fetchone()[0] == 1
+
+    def test_browse_html_combines_subject_and_path_tag(self) -> None:
+        alice = self.db.create_subject("Alice")
+        matching_source, matching_finding = _add_finding(
+            self.db, "2023/2023-08_Amsterdam/IMG_20230801.jpg"
+        )
+        _, other_finding = _add_finding(self.db, "2023/2023-08_Roma/IMG_20230802.jpg")
+        self.db.assign_finding_to_subject(matching_finding, alice)
+        self.db.assign_finding_to_subject(other_finding, alice)
+
+        resp = self.client.get(f"/api/browse-html?subject_ids={alice}&path_tags=amsterdam")
+
+        assert resp.status_code == 200
+        assert f'data-source-id="{matching_source}"' in resp.text
+        assert "1 source found" in resp.text
+
+
 class TestNamespaceCollision(TestCase):
     """Verify subject IDs and cluster IDs don't collide in merge suggestions."""
 

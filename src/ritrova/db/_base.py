@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 if TYPE_CHECKING:
-    from .models import Finding, Source, Subject
+    from .models import Finding, Source, SourcePathMetadata, Subject
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -60,6 +60,9 @@ class _DBAccessor:
     def _count(self, sql: str, params: tuple[str, ...] = ()) -> int:
         raise NotImplementedError
 
+    def transaction(self) -> Any:
+        raise NotImplementedError
+
     # ── PathMixin stubs ──────────────────────────────────────────────
 
     def species_filter(self, species: str) -> tuple[str, tuple[str, ...]]:
@@ -82,6 +85,9 @@ class _DBAccessor:
     def get_source(self, source_id: int) -> Source | None:
         raise NotImplementedError
 
+    def upsert_source_path_metadata(self, source_id: int) -> SourcePathMetadata | None:
+        raise NotImplementedError
+
     # ── FindingMixin stubs ───────────────────────────────────────────
 
     def get_finding(self, finding_id: int) -> Finding | None:
@@ -93,6 +99,13 @@ class _DBAccessor:
         raise NotImplementedError
 
     def get_unnamed_cluster_count(self, species: str = "human") -> int:
+        raise NotImplementedError
+
+    # ── CurationMixin stubs ─────────────────────────────────────────
+
+    def _together_query(
+        self, subject_ids: list[int], alone: bool = False
+    ) -> tuple[str, tuple[int | str, ...]]:
         raise NotImplementedError
 
     # ── SubjectMixin stubs ───────────────────────────────────────────

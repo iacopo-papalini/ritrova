@@ -19,8 +19,10 @@ from .curation import CurationMixin
 from .descriptions import DescriptionMixin
 from .findings import FindingMixin
 from .maintenance import MaintenanceMixin
+from .path_metadata import PathMetadataMixin
 from .paths import PathMixin
 from .scans import ScanMixin
+from .source_search import SourceSearchMixin
 from .sources import SourceMixin
 from .subjects import SubjectMixin
 from .undo_support import UndoMixin
@@ -120,6 +122,8 @@ class FaceDB(
     ClusterMixin,
     CurationMixin,
     DescriptionMixin,
+    PathMetadataMixin,
+    SourceSearchMixin,
     CirclesMixin,
     AssignmentMixin,
     UndoMixin,
@@ -256,6 +260,24 @@ class FaceDB(
             CREATE INDEX IF NOT EXISTS idx_descriptions_source ON descriptions(source_id);
             CREATE INDEX IF NOT EXISTS idx_descriptions_scan ON descriptions(scan_id);
             CREATE INDEX IF NOT EXISTS idx_descriptions_tags ON descriptions(tags);
+
+            -- FEAT-33: deterministic date/tags extracted from source paths.
+            CREATE TABLE IF NOT EXISTS source_path_metadata (
+                source_id      INTEGER PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+                date_text      TEXT,
+                date_precision TEXT NOT NULL,
+                date_source    TEXT NOT NULL,
+                date_conflict  INTEGER NOT NULL DEFAULT 0,
+                filename_date  TEXT,
+                directory_date TEXT,
+                exif_date      TEXT,
+                path_tags      TEXT NOT NULL,
+                indexed_at     TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_source_path_metadata_date
+                ON source_path_metadata(date_text);
+            CREATE INDEX IF NOT EXISTS idx_source_path_metadata_tags
+                ON source_path_metadata(path_tags);
 
             -- Documentation-only table. `scans.scan_type` is a logical FK to
             -- `scan_types.name` (no hard FK, so historic scan_type strings

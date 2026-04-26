@@ -25,6 +25,7 @@ from ..db import FaceDB
 from ..undo import UndoStore
 from . import deps
 from .routers import (
+    browse,
     circles,
     clusters,
     findings,
@@ -62,6 +63,7 @@ def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
     app.include_router(clusters.router)
     app.include_router(subjects.router)
     app.include_router(circles.router)
+    app.include_router(browse.router)
     app.include_router(together.router)
     app.include_router(undo.router)
     app.include_router(pages.router)

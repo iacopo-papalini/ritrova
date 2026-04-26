@@ -1,0 +1,34 @@
+{# Reusable source thumbnail grid. Expects source_groups = [{month, sources}]. #}
+<div data-lightbox-group>
+{% for group in source_groups %}
+<h3 class="mt-4 mb-2 text-sm font-medium text-gallery-muted">{{ group.month }}</h3>
+<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+  {% for source in group.sources %}
+  <div data-source-id="{{ source.id }}"
+       @click="$store.lightbox.openFromGrid($el, 'source')"
+       class="group relative cursor-pointer overflow-hidden rounded-xl bg-gallery-card transition-all duration-200
+              hover:ring-2 hover:ring-gallery-accent/40 hover:ring-offset-2 hover:ring-offset-gallery-bg">
+    <img src="/api/sources/{{ source.id }}/image?max_size=400"
+         loading="lazy"
+         alt="{{ 'video frame' if source.type == 'video' else 'photo' }}"
+         class="aspect-[4/3] w-full object-cover">
+    {% if source.type == 'video' %}
+    <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+      <div class="rounded-full bg-black/55 p-2.5 transition-transform duration-200 group-hover:scale-110">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gallery-text" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7.5 6.75a.75.75 0 01.75-.75h.5l4.5 3a.75.75 0 010 1.5l-4.5 3h-.5a.75.75 0 01-.75-.75v-6z" clip-rule="evenodd"/>
+        </svg>
+      </div>
+    </div>
+    {% endif %}
+    {% if source.taken_at %}
+    <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent
+                px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+      <span class="text-xs text-gallery-text/90">{{ source.taken_at[:10] }}</span>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endfor %}
+</div>

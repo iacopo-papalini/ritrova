@@ -1,13 +1,14 @@
-{# Together results — photo grid grouped by month, with infinite scroll #}
 {% if total == 0 and offset == 0 %}
-<p class="text-gallery-muted text-sm py-8 text-center">No photos found with all selected people/pets together.</p>
+<p class="text-gallery-muted text-sm py-8 text-center">No sources match these filters.</p>
 {% else %}
 {% if offset == 0 %}
-<p class="text-gallery-muted text-sm mb-4">{{ total }} photo{{ 's' if total != 1 else '' }} found</p>
+<p class="text-gallery-muted text-sm mb-4">{{ total }} source{{ 's' if total != 1 else '' }} found</p>
 {% endif %}
+
 {% include "partials/source_grid.html" %}
+
 {% if offset + page_count < total %}
-<div hx-get="/api/together-html?subject_ids={{ subject_ids }}&alone={{ alone|lower }}&source_type={{ source_type }}&offset={{ offset + page_count }}&limit={{ limit }}"
+<div hx-get="/api/browse-html?{{ next_query }}"
      hx-trigger="intersect once"
      hx-swap="outerHTML"
      class="flex justify-center py-8">
@@ -16,7 +17,7 @@
       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
       <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
     </svg>
-    <span>Loading more photos...</span>
+    <span>Loading more sources...</span>
   </div>
 </div>
 {% endif %}

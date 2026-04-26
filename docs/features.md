@@ -27,6 +27,20 @@
 - Legacy `/search?q=...` redirects to `/people?filter=...`.
 - Removed the redundant `search.html` standalone page.
 
+### FEAT-33: Browse sources by people, path tags, and archive dates
+**Reported:** 2026-04-25 | **Status:** In progress
+**Shipped (foundation, 2026-04-25):**
+- Added `source_path_metadata` as the canonical cache for path-derived `date_text`, date precision/source, conflict flags, and normalized path tags.
+- Added a pure parser for archive paths. Directory dates win filename conflicts and bogus filename placeholders; EXIF is fallback only.
+- New sources populate path metadata automatically; existing archives can run `ritrova backfill-path-metadata`.
+- Added shared `SourceSearchMixin` for composable source browsing filters: subject IDs, path tags, path date range, source type, and "just selected people".
+- Added `/browse` and `/api/browse-html`, using the same reusable source grid partial as Together.
+
+**Still open:**
+- Autocomplete / suggestion UI for high-value path tags.
+- Date-confidence indicators in the browse grid for conflict / EXIF-fallback cases.
+- Optional folding of Together into Browse once filter ergonomics cover that workflow cleanly.
+
 ### FEAT-29: Manual finding — Shift+drag on the photo to create a bbox, with nearest-subject suggestion
 **Reported:** 2026-04-21 | **Priority:** Medium
 Detectors miss faces in hard cases (profile, occlusion, low light, distant subjects). Today the only recourse is accepting the miss. Let the user draw a bounding box manually on the photo viewer to create a new finding, have the server compute its embedding AND suggest the nearest named subject based on centroid similarity, then confirm or override in one keystroke.
