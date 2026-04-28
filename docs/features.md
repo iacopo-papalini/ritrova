@@ -28,7 +28,7 @@
 - Removed the redundant `search.html` standalone page.
 
 ### FEAT-33: Browse sources by people, path tags, and archive dates
-**Reported:** 2026-04-25 | **Status:** In progress
+**Reported:** 2026-04-25 | **Closed:** 2026-04-28
 **Shipped (foundation, 2026-04-25):**
 - Added `source_path_metadata` as the canonical cache for path-derived `date_text`, date precision/source, conflict flags, and normalized path tags.
 - Added a pure parser for archive paths. Directory dates win filename conflicts and bogus filename placeholders; EXIF is fallback only.
@@ -36,10 +36,17 @@
 - Added shared `SourceSearchMixin` for composable source browsing filters: subject IDs, path tags, path date range, source type, and "just selected people".
 - Added `/browse` and `/api/browse-html`, using the same reusable source grid partial as Together.
 
-**Still open:**
+**Follow-up improvements moved out:** tag suggestions and date-confidence indicators are tracked as FEAT-35. Folding Together into Browse is tracked as FEAT-36.
+
+### FEAT-35: Browse polish — path-tag suggestions and date confidence
+**Reported:** 2026-04-28 | **Priority:** Low
+Browse is functionally complete, but can be faster and more transparent:
 - Autocomplete / suggestion UI for high-value path tags.
 - Date-confidence indicators in the browse grid for conflict / EXIF-fallback cases.
-- Optional folding of Together into Browse once filter ergonomics cover that workflow cleanly.
+
+### FEAT-36: Fold Together into Browse when filter ergonomics are strong enough
+**Reported:** 2026-04-28 | **Priority:** Low
+Together and Browse now share the same source-grid and search foundations. Keep Together as the focused workflow until Browse has equally fast subject selection, "just selected people", source-type, and saved/replayable filter ergonomics.
 
 ### FEAT-34: Persistent print selection and zip export
 **Reported:** 2026-04-26 | **Closed:** 2026-04-26
@@ -51,10 +58,10 @@
 - Videos are rejected at selection time; printing-service API integration remains out of scope.
 
 ### FEAT-29: Manual finding — Shift+drag on the photo to create a bbox, with nearest-subject suggestion
-**Reported:** 2026-04-21 | **Priority:** Medium
+**Reported:** 2026-04-21 | **Closed:** 2026-04-28
 Detectors miss faces in hard cases (profile, occlusion, low light, distant subjects). Today the only recourse is accepting the miss. Let the user draw a bounding box manually on the photo viewer to create a new finding, have the server compute its embedding AND suggest the nearest named subject based on centroid similarity, then confirm or override in one keystroke.
 
-**Shipped (MVP, 2026-04-20):** `POST /api/sources/{id}/findings` with body `{bbox, species}`; `FindingsService.create_manual` wires embedding + nearest-named-subject suggestion + `DeleteManualFindingPayload` undo; photo.html gains a Shift+drag Alpine component (`manualFinding`) with a species popover and suggestion-prefilled picker on page reload. Videos are rejected at 422. Phase 2 (video frame scrubber, lightbox gesture, cluster-scope bulk) remains open.
+**Shipped (MVP, 2026-04-20):** `POST /api/sources/{id}/findings` with body `{bbox, species}`; `FindingsService.create_manual` wires embedding + nearest-named-subject suggestion + `DeleteManualFindingPayload` undo; photo.html gains a Shift+drag Alpine component (`manualFinding`) with a species popover and suggestion-prefilled picker on page reload. Videos are rejected at 422. Phase 2 moved to FEAT-37.
 
 **UI surface (photo page):**
 - On the photo viewer's `.relative` wrapper: hold **Shift** and press-drag to draw a live rectangle (SVG/DOM via an Alpine component). Plain clicks stay reserved for the existing bbox-overlay jump-to-tile affordance.
@@ -98,13 +105,16 @@ Detectors miss faces in hard cases (profile, occlusion, low light, distant subje
 3. Videos explicitly disabled at the endpoint with a clear error message.
 4. Tests: round-trip create → suggestion correctness → undo deletes the row.
 
-**Phase 2:**
+**Phase 2 moved out:** video frame scrubber support, lightbox gesture support, and cluster-scope bulk assignment are now tracked separately as FEAT-37.
+
+### FEAT-37: Manual finding phase 2 — video, lightbox, and bulk nearest-subject flow
+**Reported:** 2026-04-28 | **Priority:** Low
 - Video support via frame scrubber.
-- Lightbox support (same gesture on the lightbox image).
-- Cluster-scope bulk: "for every manual finding I just added, find the nearest subject in one pass".
+- Lightbox support using the same Shift+drag gesture on the lightbox image.
+- Cluster-scope bulk flow: "for every manual finding I just added, find the nearest subject in one pass".
 
 ### FEAT-28: Photo-page face tiles — inline re-assign + "Not a face" action
-**Reported:** 2026-04-21 | **Priority:** Medium
+**Reported:** 2026-04-21 | **Closed:** 2026-04-28
 Two related UX gaps on the per-face tile in `/photos/{id}` ("Faces in this photo"):
 
 **(a) Clicking the name currently navigates away instead of re-assigning.**
@@ -125,8 +135,13 @@ When the user is looking at a photo and sees that one of the detected "faces" is
 
 **Effort:** S. One template change in `photo.html`, ~30 lines of Alpine state + a bit of icon markup.
 
+**Shipped:**
+- Assigned and stranger chips on `/photos/{id}` flip into the existing search-based subject picker.
+- Reassign, unassign, mark-stranger, and "Not a face" update the tile in place instead of reloading.
+- "Not a face" removes the tile and bbox overlay and surfaces the undo toast.
+
 ### FEAT-27: Circles of people/pets for view filtering
-**Reported:** 2026-04-18 | **Priority:** Medium
+**Reported:** 2026-04-18 | **Status:** Open | **Priority:** Medium
 A subject (named person or pet) can belong to zero, one, or several **circles** — user-defined labelled groups like `family`, `close-friends`, `acquaintances`, `parenti lontani`, `colleagues`, `strangers`. Circles are filters applied to any view that lists photos or subjects: "exclude members of *acquaintances* and *strangers*", or conversely "only show *family*". Primary use case is **exclusion** — sweeping acquaintances + strangers out of year/together/photo views to keep the archive feeling like a family album without having to delete anything.
 
 **Schema (new tables, minimal):**

@@ -11,7 +11,8 @@ from pathlib import Path
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from ..deps import get_db, get_templates
+from ...undo import RestorePrintSelectionPayload
+from ..deps import get_db, get_templates, get_undo_store
 
 router = APIRouter()
 
@@ -100,8 +101,23 @@ def export_print_selection() -> StreamingResponse:
 
 @router.post("/api/print-selection/clear")
 def clear_print_selection() -> JSONResponse:
-    get_db().clear_print_selection()
-    return JSONResponse({"ok": True, "total": 0, "source_ids": [], "items": []})
+    db = get_db()
+    prior = db.get_print_selection_ids()
+    db.clear_print_selection()
+    token = get_undo_store().put(
+        "Cleared print selection",
+        RestorePrintSelectionPayload(source_ids=prior),
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "total": 0,
+            "source_ids": [],
+            "items": [],
+            "undo_token": token,
+            "message": "Cleared print selection",
+        }
+    )
 
 
 @router.post("/api/print-selection/reorder")
@@ -113,20 +129,35 @@ def reorder_print_selection(source_ids: list[int] = Body(..., embed=True)) -> JS
 
 
 @router.post("/api/print-selection/{source_id}")
-def add_print_selection(source_id: int) -> JSONResponse:
+def add_print_selection(source_id: int, undo: bool = False) -> JSONResponse:
     db = get_db()
+    prior = db.get_print_selection_ids()
     try:
         position = db.add_to_print_selection(source_id)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     payload = _payload()
+    if undo and source_id not in prior:
+        token = get_undo_store().put(
+            "Added photo to print selection",
+            RestorePrintSelectionPayload(source_ids=prior),
+        )
+        payload.update({"undo_token": token, "message": "Added photo to print selection"})
     payload.update({"ok": True, "source_id": source_id, "position": position})
     return JSONResponse(payload)
 
 
 @router.delete("/api/print-selection/{source_id}")
-def remove_print_selection(source_id: int) -> JSONResponse:
-    get_db().remove_from_print_selection(source_id)
+def remove_print_selection(source_id: int, undo: bool = False) -> JSONResponse:
+    db = get_db()
+    prior = db.get_print_selection_ids()
+    db.remove_from_print_selection(source_id)
     payload = _payload()
+    if undo and source_id in prior:
+        token = get_undo_store().put(
+            "Removed photo from print selection",
+            RestorePrintSelectionPayload(source_ids=prior),
+        )
+        payload.update({"undo_token": token, "message": "Removed photo from print selection"})
     payload.update({"ok": True, "source_id": source_id})
     return JSONResponse(payload)

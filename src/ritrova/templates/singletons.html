@@ -6,7 +6,7 @@
        const subject = $event.detail;
        const faceIds = ids;
        if (!faceIds.length) return;
-       claimFaces(subject.id, faceIds).then(ok => { if (ok) location.reload(); })"
+       claimFaces(subject.id, faceIds).then(ok => { if (ok) removeTiles(faceIds); })">
 
   <!-- Page heading -->
   <div class="mb-6">
@@ -62,8 +62,7 @@
                 body: JSON.stringify({ face_ids: faceIds })
               }).then(r => r.ok && r.json()).then(d => {
                 if (!d) return;
-                faceIds.forEach(id => document.querySelector(`[data-finding-id=&quot;${id}&quot;]`)?.remove());
-                clear();
+                removeTiles(faceIds);
                 if (d.undo_token) window.showUndoToast({ message: d.message, token: d.undo_token });
               })"
             class="rounded-lg border border-gallery-border px-3 py-1.5 text-sm font-medium text-gallery-text
@@ -79,7 +78,11 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ face_ids: faceIds })
-              }).then(r => { if (r.ok) location.reload(); })"
+              }).then(r => r.ok && r.json()).then(d => {
+                if (!d) return;
+                removeTiles(faceIds);
+                if (d.undo_token) window.showUndoToast({ message: d.message, token: d.undo_token });
+              })"
             class="rounded-lg bg-gallery-danger/20 px-3 py-1.5 text-sm font-medium text-gallery-danger
                    transition-colors hover:bg-gallery-danger/30 cursor-pointer">
       Not a face

@@ -169,29 +169,30 @@
       <div class="rounded-xl bg-gallery-card p-3 transition-colors {% if is_focus %}ring-2 ring-gallery-accent{% endif %}"
            id="face-{{ face.id }}"
            {% if is_focus and suggest_name %}data-suggest-name="{{ suggest_name }}"{% endif %}
-           x-data="{ editing: {{ 'true' if state == 'pending' else 'false' }} }">
+           x-data='photoFaceTile({
+             findingId: {{ face.id }},
+             initialState: "{{ state }}",
+             initialSubjectName: {{ (face.subject_name or '')|tojson }}
+           })'>
         <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
              alt="face"
              class="aspect-square w-full rounded-lg object-cover mb-3">
 
-        {% if state == 'assigned' %}
         {# ── Assigned: named chip (hidden while editing) ────── #}
-        <div x-show="!editing" class="flex items-center gap-2">
+        <div x-show="state === 'assigned' && !editing" x-cloak class="flex items-center gap-2">
           <button @click="editing = true"
                   class="group/chip flex-1 flex items-center justify-between gap-1 truncate rounded-lg
                          bg-gallery-accent/15 px-2.5 py-1.5 text-sm font-medium text-gallery-accent
                          hover:bg-gallery-accent/25 transition-colors cursor-pointer"
                   title="Click to re-assign">
-            <span class="truncate">{{ face.subject_name }}</span>
+            <span class="truncate" x-text="subjectName"></span>
             <svg class="w-3.5 h-3.5 shrink-0 opacity-0 group-hover/chip:opacity-70 transition-opacity"
                  fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                     d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
             </svg>
           </button>
-          <button @click="
-                    fetch('/api/findings/{{ face.id }}/unassign', { method: 'POST' })
-                      .then(r => { if (r.ok) location.reload(); })"
+          <button @click="unassign()"
                   class="rounded-lg px-2 py-1.5 text-sm text-gallery-muted/70
                          transition-colors cursor-pointer
                          hover:bg-gallery-danger/15 hover:text-gallery-danger"
@@ -201,9 +202,8 @@
             </svg>
           </button>
         </div>
-        {% elif state == 'stranger' %}
         {# ── Stranger (acknowledged): quiet chip (hidden while editing) ── #}
-        <div x-show="!editing" class="flex items-center gap-2">
+        <div x-show="state === 'stranger' && !editing" x-cloak class="flex items-center gap-2">
           <button @click="editing = true"
                   class="group/chip flex-1 flex items-center justify-between gap-1 truncate rounded-lg
                          bg-gallery-muted/10 px-2.5 py-1.5 text-sm font-medium text-gallery-muted
@@ -219,9 +219,7 @@
                     d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
             </svg>
           </button>
-          <button @click="
-                    fetch('/api/findings/{{ face.id }}/unassign', { method: 'POST' })
-                      .then(r => { if (r.ok) location.reload(); })"
+          <button @click="unassign()"
                   class="rounded-lg px-2 py-1.5 text-sm text-gallery-muted/70
                          transition-colors cursor-pointer
                          hover:bg-gallery-danger/15 hover:text-gallery-danger"
@@ -231,42 +229,18 @@
             </svg>
           </button>
         </div>
-        {% endif %}
 
         {# ── Picker (always for pending; toggles for assigned / stranger) ── #}
         <div x-show="editing" x-cloak
-             @keydown.escape.stop="editing = {{ 'true' if state == 'pending' else 'false' }}">
+             @keydown.escape.stop="editing = state === 'pending'"
+             @subject-selected.stop="assignSubject($event.detail)">
           {# BUG-21: ``|tojson`` emits quotes that close the enclosing
              x-data attribute. Read the prefilled name from the tile's
              ``data-suggest-name`` dataset (set on the #face-X div) — the
              browser HTML-decodes that safely. #}
           <div x-data="subjectPicker({
                  initialQuery: document.getElementById('face-{{ face.id }}')?.dataset.suggestName || '',
-                 createKind: '{{ 'pet' if kind == 'pets' else 'person' }}',
-                 onSelect(subject) {
-                   const fd = new FormData();
-                   fd.append('subject_id', subject.id);
-                   fetch('/api/findings/{{ face.id }}/assign', { method: 'POST', body: fd })
-                     .then(r => {
-                       if (r.ok) { location.reload(); return; }
-                       if (r.status === 409) {
-                         return r.json().then(async data => {
-                           if (!data.needs_confirm) return;
-                           const ok = await confirmDialog({
-                             title: 'Different species',
-                             message: data.error + '\n\nAssign anyway and correct the species?',
-                             confirmLabel: 'Assign'
-                           });
-                           if (!ok) return;
-                           const fd2 = new FormData();
-                           fd2.append('subject_id', subject.id);
-                           fd2.append('force', 'true');
-                           fetch('/api/findings/{{ face.id }}/assign', { method: 'POST', body: fd2 })
-                             .then(r2 => { if (r2.ok) location.reload(); });
-                         });
-                       }
-                     });
-                 }
+                 createKind: '{{ 'pet' if kind == 'pets' else 'person' }}'
                })">
             {% include "partials/subject_picker.html" %}
           </div>
@@ -274,13 +248,8 @@
 
         {# ── Footer row: "I don't know" (pending only) + "Not a face" (always) ── #}
         <div class="mt-2 flex items-center justify-end gap-1">
-          {% if state == 'pending' %}
-          <button @click="
-                    fetch('/api/findings/mark-stranger', {
-                      method: 'POST',
-                      headers: {'Content-Type': 'application/json'},
-                      body: JSON.stringify({face_ids: [{{ face.id }}]})
-                    }).then(r => { if (r.ok) location.reload(); })"
+          <button x-show="state === 'pending'" x-cloak
+                  @click="markStranger()"
                   class="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium
                          text-gallery-muted/70 transition-colors cursor-pointer
                          hover:bg-gallery-muted/15 hover:text-gallery-text"
@@ -291,24 +260,7 @@
             </svg>
             <span>I don't know</span>
           </button>
-          {% endif %}
-          <button @click="
-                    (await confirmDialog({
-                      title: 'Mark as non-face?',
-                      message: 'Remove this finding — it is not actually a face (e.g. doorknob, reflection, pattern).',
-                      confirmLabel: 'Not a face',
-                      danger: true
-                    })) &&
-                    fetch('/api/findings/dismiss', {
-                      method: 'POST',
-                      headers: {'Content-Type': 'application/json'},
-                      body: JSON.stringify({face_ids: [{{ face.id }}]})
-                    }).then(r => r.ok && r.json()).then(d => {
-                      if (!d) return;
-                      document.getElementById('face-{{ face.id }}')?.remove();
-                      document.querySelector(&quot;a[href='#face-{{ face.id }}']&quot;)?.remove();
-                      if (d.undo_token) window.showUndoToast({message: d.message, token: d.undo_token});
-                    })"
+          <button @click="dismissAsNonFace()"
                   class="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium
                          text-gallery-muted/70 transition-colors cursor-pointer
                          hover:bg-gallery-danger/15 hover:text-gallery-danger"

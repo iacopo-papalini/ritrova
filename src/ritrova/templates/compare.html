@@ -82,7 +82,11 @@
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ face_ids: faceIds, target_subject_id: {{ subject_b.id }} })
-                }).then(r => { if (r.ok) location.reload(); })"
+                }).then(r => r.ok && r.json()).then(d => {
+                  if (!d) return;
+                  removeTiles(faceIds);
+                  if (d.undo_token) window.showUndoToast({ message: d.message, token: d.undo_token });
+                })"
               class="rounded-lg bg-gallery-accent px-4 py-1.5 text-sm font-medium text-gallery-bg
                      transition-colors hover:bg-gallery-accent/80 cursor-pointer">
         Move to {{ subject_b.name }}
@@ -171,7 +175,11 @@
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ face_ids: faceIds, target_subject_id: {{ subject_a.id }} })
-                }).then(r => { if (r.ok) location.reload(); })"
+                }).then(r => r.ok && r.json()).then(d => {
+                  if (!d) return;
+                  removeTiles(faceIds);
+                  if (d.undo_token) window.showUndoToast({ message: d.message, token: d.undo_token });
+                })"
               class="rounded-lg bg-gallery-accent px-4 py-1.5 text-sm font-medium text-gallery-bg
                      transition-colors hover:bg-gallery-accent/80 cursor-pointer">
         Move to {{ subject_a.name }}

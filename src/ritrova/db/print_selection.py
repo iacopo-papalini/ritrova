@@ -77,6 +77,18 @@ class PrintSelectionMixin(_DBAccessor):
         self.conn.commit()
 
     @_locked
+    def restore_print_selection_ids(self, source_ids: list[int]) -> None:
+        """Replace the print worklist with ``source_ids`` in the given order."""
+        with self.transaction():
+            self.conn.execute("DELETE FROM print_selection")
+            now = self._now()
+            for position, source_id in enumerate(source_ids, start=1):
+                self.conn.execute(
+                    "INSERT INTO print_selection (source_id, position, added_at) VALUES (?, ?, ?)",
+                    (source_id, position, now),
+                )
+
+    @_locked
     def reorder_print_selection(self, source_ids: list[int]) -> None:
         current = set(self.get_print_selection_ids())
         ordered: list[int] = []

@@ -27,7 +27,7 @@
                          deferred Alpine CDN script.
    =================================================================== */
 
-import './js/fetch-wrapper.js?v=22';
-import './js/dialogs.js?v=22';
-import './js/undo.js?v=22';
-import './js/alpine-components.js?v=22';
+import './js/fetch-wrapper.js?v=26';
+import './js/dialogs.js?v=26';
+import './js/undo.js?v=26';
+import './js/alpine-components.js?v=26';

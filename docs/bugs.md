@@ -2,6 +2,21 @@
 
 ## Open
 
+### BUG-25: Remaining write-feedback reloads violate the design guide
+**Reported:** 2026-04-28 | **Closed:** 2026-04-28
+**Rule:** write actions should patch the current DOM and show a toast instead of using `location.reload()` as feedback. Reload after a successful Undo remains allowed. Easily reversible edits that do not remove an item from the current view (for example in-place renames and order changes) may omit undo, but they should still avoid reload-as-feedback.
+**Fixed:**
+- `templates/compare.html`: swap actions remove selected tiles and show undo.
+- `templates/circles.html`: deleting a circle removes the card, updates the count, and shows undo.
+- `templates/subject_detail.html`: circle membership add/remove patches the chip row and shows undo.
+- `templates/singletons.html`: claim-faces, mark-stranger, and dismiss remove selected tiles and show undo.
+**Not included:** `static/js/undo.js` reloads after Undo by design, `templates/photo.html` manual-finding create reloads as the accepted FEAT-29 MVP to focus the newly-created tile, and subject merge/delete may navigate away because the current subject page ceases to be the right context.
+
+### BUG-24: Print-selection membership changes were not undoable
+**Reported:** 2026-04-28 | **Closed:** 2026-04-28
+**Rule:** print-selection changes are undoable when they make an item disappear from the current view, such as removing or clearing from `/print`. Add/remove toggles outside `/print` are naturally reversible because the source card stays visible and can be toggled back in place. Reordering remains exempt because it is visible, local, and easily reversed in place.
+**Fix:** `/api/print-selection/{source_id}?undo=true` remove and `/api/print-selection/clear` snapshot the prior ordered worklist and return an undo token. `/print` uses that path and patches remove/clear/reorder actions in place without reload. Outside-list add/remove keeps the lightweight toggle behavior.
+
 ### BUG-23: /together infinite scroll doesn't load more pages
 **Reported:** 2026-04-21 | **Closed:** 2026-04-21
 **Repro:** Open `/together`, select 1-2 subjects, scroll past the first page worth of results.

@@ -32,7 +32,13 @@ window.claimFaces = async function (subjectId, faceIds, opts = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (resp.ok) return true;
+  if (resp.ok) {
+    const data = await resp.json().catch(() => null);
+    if (data && data.undo_token) {
+      window.showUndoToast({ message: data.message, token: data.undo_token });
+    }
+    return true;
+  }
   if (resp.status !== 409) return false;
   const data = await resp.json().catch(() => ({}));
   if (!data.needs_confirm) return false;

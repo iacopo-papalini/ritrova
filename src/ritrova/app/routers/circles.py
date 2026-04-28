@@ -43,7 +43,7 @@ def delete_circle_api(request: Request, circle_id: int) -> JSONResponse | Redire
     except ValueError as e:
         raise HTTPException(404, str(e)) from e
     if request.headers.get("HX-Request"):
-        return JSONResponse({"ok": True, "undo_token": receipt.token})
+        return JSONResponse({"ok": True, "undo_token": receipt.token, "message": receipt.message})
     return RedirectResponse("/circles", status_code=303)
 
 
@@ -55,7 +55,7 @@ def add_subject_to_circle_api(request: Request, subject_id: int, circle_id: int)
         raise HTTPException(404, str(e)) from e
     if receipt is None:
         return JSONResponse({"ok": True, "already": True})
-    return JSONResponse({"ok": True, "undo_token": receipt.token})
+    return JSONResponse({"ok": True, "undo_token": receipt.token, "message": receipt.message})
 
 
 @router.post("/api/subjects/{subject_id}/circles/{circle_id}/remove")
@@ -68,7 +68,7 @@ def remove_subject_from_circle_api(
         raise HTTPException(404, str(e)) from e
     if receipt is None:
         return JSONResponse({"ok": True, "already": True})
-    return JSONResponse({"ok": True, "undo_token": receipt.token})
+    return JSONResponse({"ok": True, "undo_token": receipt.token, "message": receipt.message})
 
 
 @router.get("/api/circles/all")

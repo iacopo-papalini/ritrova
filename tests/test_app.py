@@ -667,14 +667,37 @@ class TestPrintSelectionPage(TestCase):
         resp = self.client.post(f"/api/print-selection/{first}")
         assert resp.status_code == 200
         assert resp.json()["source_ids"] == [first]
+        assert "undo_token" not in resp.json()
 
         resp = self.client.post(f"/api/print-selection/{second}")
         assert resp.status_code == 200
         assert resp.json()["source_ids"] == [first, second]
+        assert "undo_token" not in resp.json()
 
         resp = self.client.delete(f"/api/print-selection/{first}")
         assert resp.status_code == 200
         assert resp.json()["source_ids"] == [second]
+        assert "undo_token" not in resp.json()
+
+    def test_print_selection_view_removal_and_clear_are_undoable(self) -> None:
+        first = self.db.add_source("prints/z first.jpg")
+        second = self.db.add_source("prints/a_second.jpg")
+
+        self.db.add_to_print_selection(first)
+        self.db.add_to_print_selection(second)
+        remove_resp = self.client.delete(f"/api/print-selection/{first}?undo=true")
+        assert remove_resp.status_code == 200
+        assert self.db.get_print_selection_ids() == [second]
+        undo_resp = self.client.post(f"/api/undo/{remove_resp.json()['undo_token']}")
+        assert undo_resp.status_code == 200
+        assert self.db.get_print_selection_ids() == [first, second]
+
+        clear_resp = self.client.post("/api/print-selection/clear")
+        assert clear_resp.status_code == 200
+        assert self.db.get_print_selection_ids() == []
+        undo_resp = self.client.post(f"/api/undo/{clear_resp.json()['undo_token']}")
+        assert undo_resp.status_code == 200
+        assert self.db.get_print_selection_ids() == [first, second]
 
     def test_print_selection_rejects_video_sources(self) -> None:
         video = self.db.add_source("prints/video.mp4", source_type="video")

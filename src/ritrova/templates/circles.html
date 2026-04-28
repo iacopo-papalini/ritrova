@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Circles{% endblock %}
 {% block content %}
+<div x-data="{ circleCount: {{ circles|length }} }">
 
 <div class="mb-6 flex items-baseline justify-between">
   <h1 class="font-display text-2xl font-bold tracking-tight text-gallery-text">
     Circles
-    <span class="text-gallery-muted">({{ circles|length }})</span>
+    <span class="text-gallery-muted">(<span x-text="circleCount"></span>)</span>
   </h1>
 </div>
 
@@ -45,6 +46,7 @@
 <div class="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
   {% for c in circles %}
   <div x-data='{ editing: false, name: {{ c.name|tojson }} }'
+       data-circle-card="{{ c.id }}"
        class="group relative flex items-start justify-between rounded-lg border border-gallery-border
               bg-gallery-card p-4 transition-colors hover:border-gallery-accent/50">
     <div class="min-w-0 flex-1">
@@ -115,7 +117,11 @@
                 const r = await fetch(`/api/circles/${el.dataset.circleId}/delete`,
                                       { method: 'POST', headers: { 'HX-Request': 'true' } });
                 const data = await r.json();
-                if (data.ok) location.reload();"
+                if (data.ok) {
+                  el.closest('[data-circle-card]')?.remove();
+                  circleCount -= 1;
+                  if (data.undo_token) window.showUndoToast({ message: data.message || `Deleted circle ${el.dataset.circleName}`, token: data.undo_token });
+                }"
               title="Delete"
               class="opacity-0 group-hover:opacity-100 transition-opacity
                      rounded-md p-1.5 text-gallery-muted hover:bg-gallery-danger/20 hover:text-gallery-danger">
@@ -130,4 +136,5 @@
 </div>
 {% endif %}
 
+</div>
 {% endblock %}

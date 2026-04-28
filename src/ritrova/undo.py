@@ -224,6 +224,16 @@ class DeleteManualFindingPayload(UndoPayload):
 
 
 @dataclass
+class RestorePrintSelectionPayload(UndoPayload):
+    """Undo print-selection membership changes by restoring the prior worklist."""
+
+    source_ids: list[int]
+
+    def undo(self, db: FaceDB) -> None:
+        db.restore_print_selection_ids(self.source_ids)
+
+
+@dataclass
 class RecreateCirclePayload(UndoPayload):
     """Undo circle deletion: recreate the circle and all its memberships.
 

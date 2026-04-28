@@ -80,10 +80,164 @@ document.addEventListener('alpine:init', () => {
       this.ids = new Set(data.source_ids || []);
       this.total = data.total || 0;
       this.loaded = true;
-      Alpine.store('toast').success(selected ? 'Removed from print list' : 'Added to print list');
+      if (data.undo_token) {
+        window.showUndoToast({ message: data.message, token: data.undo_token });
+      } else {
+        Alpine.store('toast').success(selected ? 'Removed from print list' : 'Added to print list');
+      }
     },
   });
   Alpine.store('printSelection').load();
+
+  // --------------- Alpine: print selection page ---------------
+  Alpine.data('printSelectionPage', (opts = {}) => ({
+    count: opts.count || 0,
+
+    init() {
+      this.$nextTick(() => this.renumber());
+    },
+
+    _grid() {
+      return this.$root.querySelector('[data-print-grid]');
+    },
+
+    _ids() {
+      return [...(this._grid()?.querySelectorAll('[data-print-source-id]') || [])]
+        .map((el) => Number(el.dataset.printSourceId));
+    },
+
+    _syncStore(data) {
+      const store = window.Alpine && Alpine.store('printSelection');
+      if (!store || !data) return;
+      store.ids = new Set(data.source_ids || []);
+      store.total = data.total || 0;
+      store.loaded = true;
+    },
+
+    _showUndo(data) {
+      if (data && data.undo_token) {
+        window.showUndoToast({ message: data.message, token: data.undo_token });
+      }
+    },
+
+    renumber() {
+      const cards = [...(this._grid()?.querySelectorAll('[data-print-source-id]') || [])];
+      this.count = cards.length;
+      cards.forEach((card, idx) => {
+        const badge = card.querySelector('[data-print-position]');
+        if (badge) badge.textContent = String(idx + 1).padStart(4, '0');
+        const up = card.querySelector('[data-print-move="up"]');
+        const down = card.querySelector('[data-print-move="down"]');
+        if (up) up.disabled = idx === 0;
+        if (down) down.disabled = idx === cards.length - 1;
+      });
+    },
+
+    async clearAll() {
+      const ok = await confirmDialog({
+        title: 'Clear print selection?',
+        confirmLabel: 'Clear',
+        danger: true,
+      });
+      if (!ok) return;
+      const resp = await fetch('/api/print-selection/clear', { method: 'POST' });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      this._grid()?.replaceChildren();
+      this.renumber();
+      this._syncStore(data);
+      this._showUndo(data);
+    },
+
+    async move(button, delta) {
+      const card = button.closest('[data-print-source-id]');
+      if (!card) return;
+      const sibling = delta < 0 ? card.previousElementSibling : card.nextElementSibling;
+      if (!sibling) return;
+      if (delta < 0) card.parentNode.insertBefore(card, sibling);
+      else card.parentNode.insertBefore(sibling, card);
+      this.renumber();
+      const resp = await fetch('/api/print-selection/reorder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_ids: this._ids() }),
+      });
+      if (resp.ok) this._syncStore(await resp.json());
+    },
+
+    async remove(sourceId) {
+      const resp = await fetch(`/api/print-selection/${sourceId}?undo=true`, { method: 'DELETE' });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      this.$root.querySelector(`[data-print-source-id="${sourceId}"]`)?.remove();
+      this.renumber();
+      this._syncStore(data);
+      this._showUndo(data);
+    },
+  }));
+
+  // --------------- Alpine: subject detail circle chips ---------------
+  Alpine.data('subjectCircleMeta', (opts = {}) => ({
+    subjectId: opts.subjectId,
+    circleIds: new Set(opts.circleIds || []),
+    open: false,
+
+    async addCircle(circle, picker = null) {
+      if (this.circleIds.has(circle.id)) {
+        this.open = false;
+        return;
+      }
+      const resp = await fetch(`/api/subjects/${this.subjectId}/circles/${circle.id}/add`, {
+        method: 'POST',
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data.ok) return;
+      this.circleIds.add(circle.id);
+      if (picker && picker.invalidateCache) picker.invalidateCache();
+      this._appendChip(circle);
+      this.open = false;
+      if (data.undo_token) window.showUndoToast({ message: data.message || `Added to ${circle.name}`, token: data.undo_token });
+    },
+
+    async removeCircle(circleId, chip) {
+      const resp = await fetch(`/api/subjects/${this.subjectId}/circles/${circleId}/remove`, {
+        method: 'POST',
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data.ok) return;
+      this.circleIds.delete(circleId);
+      chip?.remove();
+      if (data.undo_token) window.showUndoToast({ message: data.message || 'Removed from circle', token: data.undo_token });
+    },
+
+    handleClick(event) {
+      const btn = event.target.closest('[data-remove-circle-id]');
+      if (!btn || !this.$root.contains(btn)) return;
+      event.preventDefault();
+      this.removeCircle(Number(btn.dataset.removeCircleId), btn.closest('[data-circle-chip]'));
+    },
+
+    _appendChip(circle) {
+      const list = this.$root.querySelector('[data-circle-chip-list]');
+      const template = this.$root.querySelector('template[data-circle-chip-template]');
+      if (!list || !template) return;
+      const node = template.content.firstElementChild.cloneNode(true);
+      node.dataset.circleChip = String(circle.id);
+      const link = node.querySelector('[data-circle-link]');
+      if (link) {
+        link.href = `/circles/${circle.id}`;
+        link.textContent = circle.name;
+      }
+      const button = node.querySelector('[data-remove-circle-id]');
+      if (button) {
+        button.dataset.removeCircleId = String(circle.id);
+        button.title = `Remove from ${circle.name}`;
+      }
+      list.appendChild(node);
+    },
+  }));
 
   // --------------- Alpine store: confirmation dialog ---------------
   // Promise-based replacement for browser confirm(). API:
@@ -230,6 +384,14 @@ document.addEventListener('alpine:init', () => {
 
     clear() {
       this.selected.clear();
+      this.anchor = null;
+    },
+
+    removeTiles(ids) {
+      ids.forEach((id) => {
+        this.selected.delete(id);
+        this.$root.querySelector(`[data-finding-id="${id}"]`)?.remove();
+      });
       this.anchor = null;
     },
 
@@ -425,6 +587,96 @@ document.addEventListener('alpine:init', () => {
         this.submitting = false;
         if (busyToastId !== null && toastStore) toastStore.dismiss(busyToastId);
       }
+    },
+  }));
+
+  // --------------- Alpine: photo face tile (FEAT-28) ---------------
+  // Per-finding controls on /photos/{id}: reassign in place, unassign,
+  // mark as stranger, or dismiss as not-a-face without a full page reload.
+  Alpine.data('photoFaceTile', (opts = {}) => ({
+    findingId: opts.findingId,
+    state: opts.initialState || 'pending',
+    subjectName: opts.initialSubjectName || '',
+    editing: opts.initialState === 'pending',
+
+    _toastSuccess(message) {
+      if (window.Alpine && Alpine.store('toast')) Alpine.store('toast').success(message);
+    },
+
+    _showUndo(data) {
+      if (data && data.undo_token) {
+        window.showUndoToast({ message: data.message, token: data.undo_token });
+      }
+    },
+
+    async assignSubject(subject, force = false) {
+      const fd = new FormData();
+      fd.append('subject_id', subject.id);
+      if (force) fd.append('force', 'true');
+      const resp = await fetch(`/api/findings/${this.findingId}/assign`, {
+        method: 'POST',
+        body: fd,
+      });
+      if (resp.ok) {
+        this.subjectName = subject.name;
+        this.state = 'assigned';
+        this.editing = false;
+        this._toastSuccess(`Assigned face to ${subject.name}`);
+        return;
+      }
+      if (resp.status !== 409) return;
+      const data = await resp.json();
+      if (!data.needs_confirm) return;
+      const ok = await confirmDialog({
+        title: 'Different species',
+        message: `${data.error}\n\nAssign anyway and correct the species?`,
+        confirmLabel: 'Assign',
+      });
+      if (ok) await this.assignSubject(subject, true);
+    },
+
+    async unassign() {
+      const resp = await fetch(`/api/findings/${this.findingId}/unassign`, { method: 'POST' });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      this.subjectName = '';
+      this.state = 'pending';
+      this.editing = true;
+      this._showUndo(data);
+    },
+
+    async markStranger() {
+      const resp = await fetch('/api/findings/mark-stranger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_ids: [this.findingId] }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      this.subjectName = '';
+      this.state = 'stranger';
+      this.editing = false;
+      this._showUndo(data);
+    },
+
+    async dismissAsNonFace() {
+      const ok = await confirmDialog({
+        title: 'Mark as non-face?',
+        message: 'Remove this finding. It is not actually a face.',
+        confirmLabel: 'Not a face',
+        danger: true,
+      });
+      if (!ok) return;
+      const resp = await fetch('/api/findings/dismiss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_ids: [this.findingId] }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      document.getElementById(`face-${this.findingId}`)?.remove();
+      document.querySelector(`a[href='#face-${this.findingId}']`)?.remove();
+      this._showUndo(data);
     },
   }));
 
