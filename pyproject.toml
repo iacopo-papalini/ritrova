@@ -20,6 +20,7 @@ dependencies = [
     # torch / transformers are required by pet_detector.py (YOLO + SigLIP).
     # They are NOT optional, even though the VLM caption path is.
     "transformers>=4.56.0",
+    "sentencepiece>=0.2.1",
     "torch>=2.0.0",
     "torchvision>=0.26.0",
     "python-dotenv>=1.2.2",
@@ -32,7 +33,6 @@ dependencies = [
 # only — the MLX backend is the only supported VLM runtime.
 caption = [
     "mlx-vlm>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "sentencepiece>=0.2.1",
     "sacremoses>=0.1.1",
 ]
 

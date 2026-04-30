@@ -1912,6 +1912,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "scipy" },
+    { name = "sentencepiece" },
     { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'AMD64' or sys_platform != 'win32'" },
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
     { name = "torchvision", version = "0.26.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'AMD64' or sys_platform != 'win32'" },
@@ -1925,7 +1926,6 @@ dependencies = [
 caption = [
     { name = "mlx-vlm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "sacremoses" },
-    { name = "sentencepiece" },
 ]
 
 [package.dev-dependencies]
@@ -1956,7 +1956,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.6" },
     { name = "sacremoses", marker = "extra == 'caption'", specifier = ">=0.1.1" },
     { name = "scipy", specifier = ">=1.11.0" },
-    { name = "sentencepiece", marker = "extra == 'caption'", specifier = ">=0.2.1" },
+    { name = "sentencepiece", specifier = ">=0.2.1" },
     { name = "torch", marker = "platform_machine != 'AMD64' or sys_platform != 'win32'", specifier = ">=2.0.0" },
     { name = "torch", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'", specifier = ">=2.0.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchvision", marker = "platform_machine != 'AMD64' or sys_platform != 'win32'", specifier = ">=0.26.0" },
