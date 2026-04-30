@@ -56,25 +56,19 @@ All configuration is via environment variables (loaded from `.env`):
 ## Recommended workflow
 
 ```bash
-# 1. Scan photos for human faces
-uv run ritrova scan
+# 1. Analyse photos and videos for people and pets
+uv run ritrova analyse
 
-# 2. Scan videos for human faces
-uv run ritrova scan-videos
-
-# 3. Scan photos for pets (dogs and cats)
-uv run ritrova scan-pets
-
-# 4. Cluster all faces (humans + dogs + cats)
+# 2. Cluster all faces (humans + dogs + cats)
 uv run ritrova cluster
 
-# 5. Launch the web UI to name clusters and review faces
+# 3. Launch the web UI to name clusters and review faces
 uv run ritrova serve
 
-# 6. After naming some persons in the UI, bulk-assign remaining clusters
+# 4. After naming some persons in the UI, bulk-assign remaining clusters
 uv run ritrova auto-assign
 
-# 7. Re-cluster if needed (adjusting threshold), then auto-assign again
+# 5. Re-cluster if needed (adjusting threshold), then auto-assign again
 uv run ritrova cluster
 uv run ritrova auto-assign
 ```
@@ -83,51 +77,25 @@ uv run ritrova auto-assign
 
 All commands use `PHOTOS_DIR` and `FACE_DB` from `.env` (or `--photos-dir` / `--db` flags).
 
-### scan
+### analyse
 
-Scan the photos directory for human faces.
-
-```bash
-uv run ritrova scan
-```
-
-Walks the directory tree, finds JPG/JPEG files, detects faces using InsightFace/ArcFace, extracts 512-dimensional embeddings, and stores everything in the SQLite database. Paths are stored relative to `PHOTOS_DIR`.
-
-Options:
-- `--min-confidence 0.65` -- minimum detection confidence (filters false positives)
-
-Scanning is incremental: already-processed photos are skipped on re-run.
-
-### scan-videos
-
-Scan the photos directory for videos containing human faces.
+Analyse the photos directory for people and pets.
 
 ```bash
-uv run ritrova scan-videos
+uv run ritrova analyse
 ```
 
-Finds MP4, MOV, AVI, and MKV files. Samples one frame every N seconds, detects faces, and deduplicates per video (keeping the highest-confidence detection for each unique identity). Extracted frames are saved as JPEG in `data/tmp/frames/`.
+Walks the directory tree, finds JPG/JPEG photos and supported videos, detects human faces with InsightFace/ArcFace, detects dogs and cats with YOLO + SigLIP, and stores findings in the SQLite database. Paths are stored relative to `PHOTOS_DIR`.
 
-Options:
-- `--min-confidence 0.65` -- minimum detection confidence
-- `--interval 2.0` -- seconds between sampled frames
+Useful options:
+- `--no-videos` -- analyse photos only
+- `--no-faces` -- skip human face detection
+- `--no-pets` -- skip pet detection
+- `--interval 2.0` -- seconds between sampled video frames
+- `--force` -- re-analyse sources that already have the selected scan type
+- `--scan-dir PATH` -- analyse a subdirectory while still storing paths relative to `PHOTOS_DIR`
 
-Scanning is incremental: already-processed videos are skipped on re-run.
-
-### scan-pets
-
-Scan the photos directory for dogs and cats.
-
-```bash
-uv run ritrova scan-pets
-```
-
-Uses YOLO for object detection (COCO classes: dog, cat) and SigLIP for visual embeddings. Pet detections are stored separately from human faces using a species column.
-
-Options:
-- `--min-confidence 0.5` -- minimum YOLO detection confidence
-
-Scanning is incremental: already-processed photos are skipped on re-run.
+Analysis is incremental: sources that already have the same scan type are skipped on re-run.
 
 ### cluster
 
