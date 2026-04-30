@@ -15,15 +15,55 @@ the image bytes — they share one aggregate from the client's perspective.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
+from ...db import FaceDB, Finding
 from ...images import crop_face_thumbnail, resize_photo
 from ..deps import get_db, get_thumbnails_dir
 from ..helpers import IMMUTABLE_IMAGE_HEADERS
 
 router = APIRouter()
+
+
+def _restore_video_frame_cache(db: FaceDB, finding: Finding, expected: Path) -> bool:
+    """Recreate a missing cached frame JPEG at the path already stored in the DB."""
+    if not finding.frame_path:
+        return False
+    source = db.get_source(finding.source_id)
+    if source is None or source.type != "video":
+        return False
+    video_path = db.resolve_path(source.file_path)
+    if not video_path.exists():
+        return False
+
+    import cv2
+    from PIL import Image
+
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, finding.frame_number)
+        ok, bgr_frame = cap.read()
+    finally:
+        cap.release()
+    if not ok:
+        return False
+
+    expected.parent.mkdir(parents=True, exist_ok=True)
+    rgb = bgr_frame[:, :, ::-1]
+    Image.fromarray(rgb).save(str(expected), "JPEG", quality=85)
+    return expected.exists()
+
+
+def _resolve_finding_image_or_restore(db: FaceDB, finding: Finding) -> Path | None:
+    resolved = db.resolve_finding_image(finding)
+    if resolved is None or resolved.exists():
+        return resolved
+    if _restore_video_frame_cache(db, finding, resolved):
+        return resolved
+    return resolved
 
 
 @router.get("/api/findings/{finding_id}/thumbnail")
@@ -41,7 +81,7 @@ def finding_thumbnail(finding_id: int, size: int = 150) -> StreamingResponse:
     finding = db.get_finding(finding_id)
     if not finding:
         raise HTTPException(404)
-    resolved = db.resolve_finding_image(finding)
+    resolved = _resolve_finding_image_or_restore(db, finding)
     if resolved is None or not resolved.exists():
         raise HTTPException(404)
 
@@ -66,7 +106,7 @@ def source_image(source_id: int, max_size: int = 1600) -> StreamingResponse:
         frame_finding = next((f for f in findings if f.frame_path), None)
         if frame_finding is None:
             raise HTTPException(404, "No frames available for this video")
-        resolved = db.resolve_finding_image(frame_finding)
+        resolved = _resolve_finding_image_or_restore(db, frame_finding)
         if resolved is None or not resolved.exists():
             raise HTTPException(404)
         buf = resize_photo(resolved, min(max_size, 2000))
@@ -122,7 +162,7 @@ def finding_frame(finding_id: int, max_size: int = 1600) -> StreamingResponse:
     finding = db.get_finding(finding_id)
     if not finding:
         raise HTTPException(404)
-    resolved = db.resolve_finding_image(finding)
+    resolved = _resolve_finding_image_or_restore(db, finding)
     if resolved is None or not resolved.exists():
         raise HTTPException(404)
     buf = resize_photo(resolved, min(max_size, 2000))

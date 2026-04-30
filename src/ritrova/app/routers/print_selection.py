@@ -128,6 +128,27 @@ def reorder_print_selection(source_ids: list[int] = Body(..., embed=True)) -> JS
     return JSONResponse(payload)
 
 
+@router.post("/api/print-selection/{source_id}/remove-from-list")
+def remove_print_selection_from_list(source_id: int) -> JSONResponse:
+    """Remove from the /print review page.
+
+    Unlike the global toggle, this action makes the card disappear from the
+    current view, so it must always return an undo token.
+    """
+    db = get_db()
+    prior = db.get_print_selection_ids()
+    db.remove_from_print_selection(source_id)
+    payload = _payload()
+    if source_id in prior:
+        token = get_undo_store().put(
+            "Removed photo from print selection",
+            RestorePrintSelectionPayload(source_ids=prior),
+        )
+        payload.update({"undo_token": token, "message": "Removed photo from print selection"})
+    payload.update({"ok": True, "source_id": source_id})
+    return JSONResponse(payload)
+
+
 @router.post("/api/print-selection/{source_id}")
 def add_print_selection(source_id: int, undo: bool = False) -> JSONResponse:
     db = get_db()

@@ -15,7 +15,7 @@
 ### BUG-24: Print-selection membership changes were not undoable
 **Reported:** 2026-04-28 | **Closed:** 2026-04-28
 **Rule:** print-selection changes are undoable when they make an item disappear from the current view, such as removing or clearing from `/print`. Add/remove toggles outside `/print` are naturally reversible because the source card stays visible and can be toggled back in place. Reordering remains exempt because it is visible, local, and easily reversed in place.
-**Fix:** `/api/print-selection/{source_id}?undo=true` remove and `/api/print-selection/clear` snapshot the prior ordered worklist and return an undo token. `/print` uses that path and patches remove/clear/reorder actions in place without reload. Outside-list add/remove keeps the lightweight toggle behavior.
+**Fix:** `/api/print-selection/{source_id}/remove-from-list` and `/api/print-selection/clear` snapshot the prior ordered worklist and return an undo token. `/print` uses those paths and patches remove/clear/reorder actions in place without reload. Outside-list add/remove keeps the lightweight toggle behavior.
 
 ### BUG-23: /together infinite scroll doesn't load more pages
 **Reported:** 2026-04-21 | **Closed:** 2026-04-21

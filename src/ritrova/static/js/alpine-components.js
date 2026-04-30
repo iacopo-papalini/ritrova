@@ -166,7 +166,9 @@ document.addEventListener('alpine:init', () => {
     },
 
     async remove(sourceId) {
-      const resp = await fetch(`/api/print-selection/${sourceId}?undo=true`, { method: 'DELETE' });
+      const resp = await fetch(`/api/print-selection/${sourceId}/remove-from-list`, {
+        method: 'POST',
+      });
       if (!resp.ok) return;
       const data = await resp.json();
       this.$root.querySelector(`[data-print-source-id="${sourceId}"]`)?.remove();

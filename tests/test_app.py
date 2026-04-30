@@ -685,8 +685,9 @@ class TestPrintSelectionPage(TestCase):
 
         self.db.add_to_print_selection(first)
         self.db.add_to_print_selection(second)
-        remove_resp = self.client.delete(f"/api/print-selection/{first}?undo=true")
+        remove_resp = self.client.post(f"/api/print-selection/{first}/remove-from-list")
         assert remove_resp.status_code == 200
+        assert "undo_token" in remove_resp.json()
         assert self.db.get_print_selection_ids() == [second]
         undo_resp = self.client.post(f"/api/undo/{remove_resp.json()['undo_token']}")
         assert undo_resp.status_code == 200
