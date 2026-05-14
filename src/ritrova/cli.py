@@ -437,8 +437,10 @@ def analyse(
 
         n_findings = len(result.findings)
 
-        # Persistence is serialised by the DB lock
-        if persister is not None and (n_findings > 0 or result.caption):
+        # Persistence is serialised by the DB lock. Persist successful
+        # zero-result analyses too: the scan row records "looked and found
+        # nothing", while findings/descriptions are optional children.
+        if persister is not None:
             if profile:
                 t0 = time.monotonic()
             if force:

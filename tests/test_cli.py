@@ -258,6 +258,42 @@ def test_analyse_without_force_skips_already_scanned(tmp_path: Path) -> None:
     db.close()
 
 
+def test_analyse_persists_zero_result_scan(tmp_path: Path) -> None:
+    """A successful analysis with no findings still records a scan row."""
+    from PIL import Image
+
+    db_path = tmp_path / "test.db"
+    photo_path = tmp_path / "empty.jpg"
+    Image.new("RGB", (16, 16), "white").save(photo_path)
+
+    result = _run(
+        [
+            "--photos-dir",
+            str(tmp_path),
+            "analyse",
+            str(photo_path),
+            "--no-faces",
+            "--no-pets",
+        ],
+        db_path,
+    )
+    assert result.exit_code == 0, result.output
+    assert "findings=0" in result.output
+    assert "errors=0" in result.output
+
+    db = FaceDB(db_path, base_dir=tmp_path)
+    scans = db.find_scans()
+    assert len(scans) == 1
+    assert scans[0]["source_path"] == "empty.jpg"
+    assert scans[0]["scan_type"] == "subjects"
+    assert scans[0]["detection_strategy"] == "dedup"
+    assert scans[0]["finding_count"] == 0
+    source = db.get_source_by_path("empty.jpg")
+    assert source is not None
+    assert db.get_source_findings(source.id) == []
+    db.close()
+
+
 def test_analyse_help_shows_sources_argument() -> None:
     """`analyse --help` must advertise the positional [SOURCES] argument."""
     runner = CliRunner()
