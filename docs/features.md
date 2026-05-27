@@ -2,6 +2,15 @@
 
 ## Open
 
+### FEAT-38: HTML report after each analysis run
+**Reported:** 2026-05-27 | **Closed:** 2026-05-27
+**Shipped:**
+- `ritrova analyse` now writes a timestamped HTML report by default under the database directory's `reports/` folder.
+- `ritrova analyse` now runs the standard clustering pass after a successful persisted scan by default; `--no-cluster` keeps the old scan-only behavior.
+- Report scope is the current command invocation only: persisted scan ids, source counts, source type breakdown, species counts, clustering coverage, likely known-subject matches from clusters, assigned subject counts, excluded finding counts, and per-source findings.
+- `--no-analysis-report` disables report generation for automation or dry operational runs.
+- Dry runs and no-op runs do not write reports because no scan ids are persisted.
+
 ### FEAT-30: Split selected cluster faces into a new cluster
 **Reported:** 2026-04-25 | **Closed:** 2026-04-25
 **Shipped:**

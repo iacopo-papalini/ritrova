@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import click
 from dotenv import load_dotenv
@@ -75,6 +76,17 @@ def _require_photos_dir(ctx: click.Context) -> str:
 )
 @click.option("--force", is_flag=True, help="Re-analyse already-scanned sources")
 @click.option("--dry-run", is_flag=True, help="Run pipeline but don't persist to DB")
+@click.option(
+    "--cluster/--no-cluster",
+    "cluster_after_analysis",
+    default=True,
+    help="Cluster findings after a successful persisted analysis run.",
+)
+@click.option(
+    "--analysis-report/--no-analysis-report",
+    default=True,
+    help="Write an HTML report for the scans persisted by this run.",
+)
 @click.option("--sample", default=0, type=int, help="Process only N random sources (0 = all)")
 @click.option(
     "--sample-seed",
@@ -146,6 +158,8 @@ def analyse(
     no_translate: bool,
     force: bool,
     dry_run: bool,
+    cluster_after_analysis: bool,
+    analysis_report: bool,
     sample: int,
     sample_seed: int | None,
     interval: float,
@@ -187,6 +201,7 @@ def analyse(
         photo_frames,
         video_frames,
     )
+    from .analysis_report import write_analysis_report
     from .analysis_steps import (
         CaptionStep,
         DeduplicationStep,
@@ -371,6 +386,7 @@ def analyse(
     # Shared counters protected by a lock
     lock = threading.Lock()
     counters = {"processed": 0, "errors": 0, "findings": 0, "done": 0}
+    persisted_scan_ids: list[int] = []
 
     # Profile buckets split by source_type. Dataclass (not dict) so mypy can
     # track the per-field types cleanly.
@@ -451,7 +467,11 @@ def analyse(
                 ).fetchone()
                 if existing:
                     db.delete_scan(existing[0])
-            persister.persist(result, strategy_id=strategy_id, scan_type=effective_scan_type)
+            scan_id = persister.persist(
+                result, strategy_id=strategy_id, scan_type=effective_scan_type
+            )
+            with lock:
+                persisted_scan_ids.append(scan_id)
             if profile:
                 t_persist = time.monotonic() - t0
 
@@ -503,6 +523,19 @@ def analyse(
         f"Done!{mode} processed={counters['processed']}  "
         f"findings={counters['findings']}  errors={counters['errors']}"
     )
+
+    if cluster_after_analysis and not dry_run and persisted_scan_ids:
+        print("\nClustering analysed findings...")
+        _run_clustering(db, threshold=None, min_size=2, auto_merge_threshold=None)
+
+    if analysis_report and not dry_run:
+        report = write_analysis_report(db, sorted(persisted_scan_ids))
+        if report is not None:
+            print(
+                f"Analysis report: {report.path} "
+                f"({report.source_count} sources, {report.finding_count} findings, "
+                f"{report.named_subject_count} named subjects)"
+            )
 
     if profile and counters["processed"] > 0:
         for bucket_name, bucket in profile_buckets.items():
@@ -914,36 +947,17 @@ SPECIES_THRESHOLDS = {
 AUTO_MERGE_THRESHOLDS = {"person": 70.0, "pet": 101.0}
 
 
-@cli.command()
-@click.option(
-    "--threshold",
-    default=None,
-    type=float,
-    help="Override cosine distance threshold (default: per-species)",
-)
-@click.option("--min-size", default=2, help="Minimum faces per cluster")
-@click.option(
-    "--auto-merge-threshold",
-    default=None,
-    type=float,
-    help=(
-        "Override per-kind auto-merge similarity %. "
-        "Default: 70 for people, disabled for pets (SigLIP centroids too close). "
-        "Set to 100 (or higher) to disable for all kinds."
-    ),
-)
-@click.pass_context
-def cluster(
-    ctx: click.Context,
+def _run_clustering(
+    db: Any,
+    *,
     threshold: float | None,
     min_size: int,
     auto_merge_threshold: float | None,
 ) -> None:
-    """Cluster all detected faces by embedding similarity (humans + pets)."""
+    """Run the standard clustering pass and print the CLI summary."""
+
     from .cluster import auto_merge_clusters, cluster_faces
     from .db import FaceDB
-
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
 
     for species, default_thresh in SPECIES_THRESHOLDS.items():
         t = threshold if threshold is not None else default_thresh
@@ -982,6 +996,42 @@ def cluster(
             total_moved += result["faces_moved"]
         print(f"  total: {total_merged} merges, {total_moved} faces moved")
 
+
+@cli.command()
+@click.option(
+    "--threshold",
+    default=None,
+    type=float,
+    help="Override cosine distance threshold (default: per-species)",
+)
+@click.option("--min-size", default=2, help="Minimum faces per cluster")
+@click.option(
+    "--auto-merge-threshold",
+    default=None,
+    type=float,
+    help=(
+        "Override per-kind auto-merge similarity %. "
+        "Default: 70 for people, disabled for pets (SigLIP centroids too close). "
+        "Set to 100 (or higher) to disable for all kinds."
+    ),
+)
+@click.pass_context
+def cluster(
+    ctx: click.Context,
+    threshold: float | None,
+    min_size: int,
+    auto_merge_threshold: float | None,
+) -> None:
+    """Cluster all detected faces by embedding similarity (humans + pets)."""
+    from .db import FaceDB
+
+    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    _run_clustering(
+        db,
+        threshold=threshold,
+        min_size=min_size,
+        auto_merge_threshold=auto_merge_threshold,
+    )
     db.close()
 
 

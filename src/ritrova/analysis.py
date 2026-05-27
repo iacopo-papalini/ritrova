@@ -283,12 +283,13 @@ class AnalysisPersister:
         analysis: SourceAnalysis,
         strategy_id: str,
         scan_type: str = "subjects",
-    ) -> None:
+    ) -> int:
         """Write analysis results to the database.
 
         Creates or updates the source row, records a scan, inserts findings
         grouped by species, and stores the description if present.
         For video findings, saves cached frame JPEGs to ``frames_dir``.
+        Returns the new scan id.
         """
         source_id = self._db.get_or_create_source(
             analysis.source_path,
@@ -332,3 +333,5 @@ class AnalysisPersister:
 
         if analysis.caption:
             self._db.add_description(source_id, scan_id, analysis.caption, analysis.tags)
+
+        return scan_id

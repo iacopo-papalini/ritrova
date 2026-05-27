@@ -193,6 +193,7 @@ def test_analyse_force_assigned_aborts_on_no(tmp_path: Path) -> None:
             "--force",
             "--no-faces",
             "--no-pets",
+            "--no-cluster",
         ],
         db_path,
         input_text="n\n",
@@ -221,6 +222,7 @@ def test_analyse_force_yes_skips_prompt(tmp_path: Path) -> None:
             "-y",
             "--no-faces",
             "--no-pets",
+            "--no-cluster",
         ],
         db_path,
     )
@@ -247,6 +249,7 @@ def test_analyse_without_force_skips_already_scanned(tmp_path: Path) -> None:
             str(photo_path),
             "--no-faces",
             "--no-pets",
+            "--no-cluster",
         ],
         db_path,
     )
@@ -274,6 +277,7 @@ def test_analyse_persists_zero_result_scan(tmp_path: Path) -> None:
             str(photo_path),
             "--no-faces",
             "--no-pets",
+            "--no-cluster",
         ],
         db_path,
     )
@@ -292,6 +296,61 @@ def test_analyse_persists_zero_result_scan(tmp_path: Path) -> None:
     assert source is not None
     assert db.get_source_findings(source.id) == []
     db.close()
+
+
+def test_analyse_writes_html_report_by_default(tmp_path: Path) -> None:
+    """analyse writes a per-run HTML report for persisted scans unless disabled."""
+    from PIL import Image
+
+    db_path = tmp_path / "test.db"
+    photo_path = tmp_path / "empty.jpg"
+    Image.new("RGB", (16, 16), "white").save(photo_path)
+
+    result = _run(
+        [
+            "--photos-dir",
+            str(tmp_path),
+            "analyse",
+            str(photo_path),
+            "--no-faces",
+            "--no-pets",
+        ],
+        db_path,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Clustering analysed findings" in result.output
+    assert "Analysis report:" in result.output
+
+    reports = list((tmp_path / "reports").glob("analysis-*.html"))
+    assert len(reports) == 1
+    html = reports[0].read_text()
+    assert "Ritrova Analysis Report" in html
+    assert "empty.jpg" in html
+
+
+def test_analyse_report_can_be_disabled(tmp_path: Path) -> None:
+    from PIL import Image
+
+    db_path = tmp_path / "test.db"
+    photo_path = tmp_path / "empty.jpg"
+    Image.new("RGB", (16, 16), "white").save(photo_path)
+
+    result = _run(
+        [
+            "--photos-dir",
+            str(tmp_path),
+            "analyse",
+            str(photo_path),
+            "--no-faces",
+            "--no-pets",
+            "--no-analysis-report",
+            "--no-cluster",
+        ],
+        db_path,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Analysis report:" not in result.output
+    assert not (tmp_path / "reports").exists()
 
 
 def test_analyse_help_shows_sources_argument() -> None:
