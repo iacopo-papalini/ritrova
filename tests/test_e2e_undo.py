@@ -108,11 +108,16 @@ class TestClusterDismissUndo:
         page.goto(f"{app_url}/clusters/{cluster_id}")
         page.wait_for_load_state("networkidle")
 
+        page.locator("button[title='More actions']").click()
         page.locator("button", has_text="Dismiss entire cluster").click()
         page.locator("button", has_text="Dismiss cluster").click()
 
-        # Client navigates away on success; wait for the target URL.
-        page.wait_for_url(f"{app_url}/people/clusters", timeout=5000)
+        # Client navigates away on success; wait for the next queue item or
+        # the clusters list fallback.
+        page.wait_for_url(
+            lambda u: "/clusters" in u and f"/clusters/{cluster_id}" not in u,
+            timeout=5000,
+        )
         page.wait_for_load_state("networkidle")
 
         # Verify the dismiss request was sent and succeeded. (We can't reliably

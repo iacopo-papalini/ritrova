@@ -10,6 +10,7 @@
   <img src="/api/findings/{{ face.id }}/thumbnail?size=180"
        loading="lazy"
        alt="face"
+       @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
        class="aspect-square w-full object-cover">
 
   <button @click.stop="$store.lightbox.openFromGrid($el, 'finding')"

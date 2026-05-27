@@ -238,6 +238,7 @@
            loading="lazy"
            alt="face"
            title="{{ finding_paths.get(face.id, '') }}"
+           @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
            class="aspect-square w-full object-cover">
       <!-- Preview photo button (visible on hover) -->
       <button @click.stop="$store.lightbox.openFromGrid($el, 'finding')"
