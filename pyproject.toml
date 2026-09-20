@@ -3,10 +3,9 @@ name = "ritrova"
 version = "0.2.0"
 description = "Ritrova — find again: face and pet recognition for personal photo archives"
 requires-python = ">=3.14"
+# Base install = everything `ritrova serve` and the browsing/clustering CLI
+# commands need. No model runtimes, so no torch / CUDA wheels.
 dependencies = [
-    "insightface>=0.7.3",
-    "onnxruntime>=1.17.0; sys_platform != 'win32'",
-    "onnxruntime-gpu>=1.17.0; sys_platform == 'win32' and platform_machine == 'AMD64'",
     "numpy>=1.24.0",
     "opencv-python-headless>=4.8.0",
     "scipy>=1.11.0",
@@ -16,22 +15,30 @@ dependencies = [
     "jinja2>=3.1.0",
     "python-multipart>=0.0.6",
     "click>=8.1.0",
-    "ultralytics>=8.1.0",
-    # torch / transformers are required by pet_detector.py (YOLO + SigLIP).
-    # They are NOT optional, even though the VLM caption path is.
-    "transformers>=4.56.0",
-    "sentencepiece>=0.2.1",
-    "torch>=2.0.0",
-    "torchvision>=0.26.0",
     "python-dotenv>=1.2.2",
     "faiss-cpu>=1.13.2",
 ]
 
 [project.optional-dependencies]
+# Detection + embedding model runtimes: InsightFace (faces), YOLO + SigLIP
+# (pets). Needed by `ritrova analyse` and by the web app's manual-finding
+# creation, which embeds the crop you draw. Install with `uv sync --extra scan`.
+scan = [
+    "insightface>=0.7.3",
+    "onnxruntime>=1.17.0; sys_platform != 'win32'",
+    "onnxruntime-gpu>=1.17.0; sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "ultralytics>=8.1.0",
+    "transformers>=4.56.0",
+    "sentencepiece>=0.2.1",
+    "torch>=2.0.0",
+    "torchvision>=0.26.0",
+]
+
 # VLM-powered captioning and en→it translation. Opt-in via `--caption` on
 # `ritrova analyse`; install with `uv sync --extra caption`. Apple Silicon
 # only — the MLX backend is the only supported VLM runtime.
 caption = [
+    "ritrova[scan]",
     "mlx-vlm>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "sacremoses>=0.1.1",
 ]
@@ -57,14 +64,23 @@ dev = [
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cu128", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
 ]
 torchvision = [
     { index = "pytorch-cu128", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
 ]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+# Linux gets the CPU-only build: PyPI's default torch wheel drags in ~3 GB of
+# nvidia-* CUDA libraries that the serving box has no GPU to run.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.ruff]

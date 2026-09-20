@@ -9,3 +9,4 @@ dist/
 .coverage
 tailwindcss
 src/face_recog/static/style.css
+.models-warmed

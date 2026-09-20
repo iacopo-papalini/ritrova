@@ -13,17 +13,23 @@ Built for Apple Silicon (CoreML acceleration) but most scanning features work cr
 
 ```bash
 cd ritrova
-uv sync
+uv sync --extra scan                    # scanning machine: models + torch
+# uv sync                               # serving machine only: no model runtimes
 cp .env.example .env
 # Edit .env: set PHOTOS_DIR to your photos root directory
 ```
+
+The base install carries no model runtimes (no `torch`, no CUDA/Nvidia wheels) —
+enough for `ritrova serve`, `cluster`, `auto-assign`, `auto-merge` and browsing.
+Add `--extra scan` on the machine that runs `ritrova analyse`; it is also
+required for creating a manual finding from the web UI, which embeds the crop.
 
 ### VLM captioning (optional, Apple Silicon only)
 
 The default `ritrova analyse` pipeline runs **face + pet detection only**. VLM-based captioning and Italian tagging are opt-in via `--caption`:
 
 ```bash
-uv sync --extra caption                 # install MLX VLM + tokenizer extras
+uv sync --extra caption                 # implies --extra scan, adds MLX VLM + tokenizer
 uv run ritrova analyse --caption        # enable captioning for this run
 ```
 
@@ -31,7 +37,8 @@ Requires Apple Silicon (MLX backend). The transformers/CUDA VLM path was retired
 
 ### Windows + Nvidia notes
 
-- On Windows, `uv sync` pulls `torch` and `torchvision` from the official PyTorch CUDA 12.8 wheel index.
+- On Windows, `uv sync --extra scan` pulls `torch` and `torchvision` from the official PyTorch CUDA 12.8 wheel index.
+- On Linux, they come from the CPU-only wheel index instead — the default PyPI wheel drags in ~3 GB of `nvidia-*` CUDA libraries.
 - `onnxruntime-gpu` is installed so InsightFace face detection can use `CUDAExecutionProvider`.
 - Pet embedding (SigLIP) uses CUDA automatically when the CUDA PyTorch build is available.
 - VLM captioning is **not** available on Windows; the `[caption]` extra only installs on Apple Silicon.

@@ -8,13 +8,22 @@ ENV_FILE := .env_windows
 endif
 
 RITROVA := uv run --env-file $(ENV_FILE) ritrova
+MODELS_STAMP := .models-warmed
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-serve: ## Start the web UI
+serve: $(MODELS_STAMP) ## Start the web UI
 	$(RITROVA) serve
+
+# Downloads buffalo_l / yolo11m / siglip on first run so a family member's
+# first manual finding doesn't stall on ~1.1 GB of weights. Delete the stamp
+# to re-pull. Skipped with a warning when the `scan` extra isn't installed.
+$(MODELS_STAMP):
+	@uv run python -c "from ritrova.detector import FaceDetector; from ritrova.pet_detector import PetDetector; FaceDetector(); PetDetector()" \
+		&& touch $@ \
+		|| echo "==> models not pre-pulled (install the 'scan' extra: uv sync --extra scan)"
 
 analyse: ## Analyse photos and videos for people and pets
 	$(RITROVA) analyse
