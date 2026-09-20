@@ -1185,6 +1185,23 @@ def cleanup(
 
 
 @cli.command()
+def warmup() -> None:
+    """Download and load the detection models, so first use isn't a stall."""
+    try:
+        from .detector import FaceDetector
+        from .pet_detector import PetDetector
+    except ImportError:
+        raise SystemExit(
+            "Detection models are not installed — skipping warmup.\n"
+            "Install them with: uv sync --extra scan"
+        ) from None
+
+    FaceDetector()
+    PetDetector()
+    print("Models ready.")
+
+
+@cli.command()
 @click.option("--host", default="0.0.0.0", help="Host to bind to")
 @click.option("--port", default=8787, type=int, help="Port to listen on")
 @click.pass_context

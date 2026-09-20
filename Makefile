@@ -21,9 +21,7 @@ serve: $(MODELS_STAMP) ## Start the web UI
 # first manual finding doesn't stall on ~1.1 GB of weights. Delete the stamp
 # to re-pull. Skipped with a warning when the `scan` extra isn't installed.
 $(MODELS_STAMP):
-	@uv run python -c "from ritrova.detector import FaceDetector; from ritrova.pet_detector import PetDetector; FaceDetector(); PetDetector()" \
-		&& touch $@ \
-		|| echo "==> models not pre-pulled (install the 'scan' extra: uv sync --extra scan)"
+	@$(RITROVA) warmup && touch $@ || true
 
 analyse: ## Analyse photos and videos for people and pets
 	$(RITROVA) analyse
