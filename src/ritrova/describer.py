@@ -123,7 +123,7 @@ class Describer:
             raise RuntimeError(
                 "VLM captioning requires Apple Silicon (MLX backend). "
                 "The transformers/CUDA backend was retired in ADR-011; "
-                "see docs/adr-011-retire-vlm-default.md for the rationale."
+                "see core-knowledge/decisions/ADR-011-retire-vlm-default.md for the rationale."
             )
         try:
             from mlx_vlm import load

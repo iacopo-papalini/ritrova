@@ -33,7 +33,7 @@ uv sync --extra caption                 # implies --extra scan, adds MLX VLM + t
 uv run ritrova analyse --caption        # enable captioning for this run
 ```
 
-Requires Apple Silicon (MLX backend). The transformers/CUDA VLM path was retired — see `docs/adr-011-retire-vlm-default.md` for the rationale (face recall regression + Italian translation quality).
+Requires Apple Silicon (MLX backend). The transformers/CUDA VLM path was retired — see `core-knowledge/decisions/ADR-011-retire-vlm-default.md` for the rationale (face recall regression + Italian translation quality).
 
 ### Windows + Nvidia notes
 

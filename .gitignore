@@ -10,3 +10,5 @@ dist/
 tailwindcss
 src/face_recog/static/style.css
 .models-warmed
+.claude/state/
+.claude/worktrees/

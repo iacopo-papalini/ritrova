@@ -244,7 +244,7 @@ def analyse(
             raise click.ClickException(
                 "--caption requires Apple Silicon (MLX backend). "
                 "The transformers/CUDA path was retired in ADR-011; "
-                "see docs/adr-011-retire-vlm-default.md."
+                "see core-knowledge/decisions/ADR-011-retire-vlm-default.md."
             )
         try:
             from .describer import Describer, Translator

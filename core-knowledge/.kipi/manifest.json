@@ -1,0 +1,5 @@
+{
+  "name": "ritrova",
+  "scope": "Personal photo archive for a single household. Detects and clusters faces in photos and videos using ArcFace embeddings. Detects dogs and cats using YOLO and SigLIP. Serves a web UI for naming, searching, and curating people and animals across years of photos. Holds 61K+ faces and 100K+ photos. Built for Apple Silicon with CoreML; most scanning works cross-platform.",
+  "includes": []
+}
