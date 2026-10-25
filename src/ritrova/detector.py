@@ -27,7 +27,6 @@ MIN_FACE_SIZE = 50  # pixels — smaller faces are unrecognizable
 # be rejected: cv2.Canny(50, 150) returns zero edges when the scene-wide
 # gradient never crosses 50/255, even on clear portraits. The Laplacian
 # sharpness filter alone handles motion blur as intended.
-# See scripts/investigations/aquarium_face_loss.py for the diagnosis.
 _REF_AREA = 2500.0  # 50x50
 _BASE_SHARPNESS = 30.0  # Laplacian variance at reference size
 

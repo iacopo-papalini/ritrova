@@ -55,8 +55,7 @@
 
 - **One-shot scripts**¹⁰ — `scripts/` holds offline DB migrations and
   backfills, each written for one historical repair and each documenting its
-  own cause in its docstring. `scripts/investigations/` holds throwaway
-  diagnostic reproductions. Nothing here is part of a routine workflow; the
+  own cause in its docstring. Nothing here is part of a routine workflow; the
   durable equivalents (`migrate-paths`, `backfill-gps`,
   `backfill-path-metadata`, `prune`, `doctor`) are CLI commands instead.
 
@@ -227,7 +226,7 @@ to be:
 ⁷ `src/ritrova/analysis_report.py` — `default_analysis_report_path`, `write_analysis_report`
 ⁸ `src/ritrova/pet_detector.py` — `PetDetector` weight paths and device selection
 ⁹ `docs/auth-session-design-home-server.md` — intended auth and session model
-¹⁰ `scripts/`, `scripts/investigations/` — offline migrations, backfills and diagnostics
+¹⁰ `scripts/` — offline migrations and backfills
 ¹¹ `.pre-commit-config.yaml` — ruff, ruff-format, mypy hooks
 
 ---

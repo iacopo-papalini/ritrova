@@ -98,7 +98,6 @@ ignore = ["E501", "UP047"]
 "src/ritrova/scan_pipeline.py" = ["T20"]
 # Operational / investigation scripts are CLI-style runners; print() is the point.
 "scripts/*.py" = ["T20"]
-"scripts/investigations/*.py" = ["T20"]
 
 [tool.mypy]
 python_version = "3.14"

@@ -1,7 +1,7 @@
 """Rescan sources where legacy `human`/`pet` scans found faces but the new
 `subjects` pipeline returned zero findings.
 
-Motivation (ADR-011 + scripts/investigations/aquarium_face_loss.py):
+Motivation (ADR-011):
 the edge-density filter in the old detector.py silently dropped legitimate
 faces on dim/low-contrast photos. The main subjects rescan ran with that
 filter still in place and left ~2,400 sources without any findings even
