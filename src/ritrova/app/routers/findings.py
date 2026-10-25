@@ -15,6 +15,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Form
 
+from ...capabilities import INSTALL_HINT, models_for_species
 from ...services_domain import ManualFindingError
 from ..deps import (
     get_curation_service,
@@ -47,6 +48,16 @@ async def create_manual_finding(
     """
     if len(bbox) != 4:
         return JSONResponse({"error": "bbox must be [x, y, w, h]"}, status_code=422)
+    if not models_for_species(species):
+        # A base install has no detector to embed the crop with. Say so,
+        # rather than letting the lazy import surface as a 500.
+        return JSONResponse(
+            {
+                "error": "Drawing a face by hand needs the detection models, "
+                f"which this server was installed without. {INSTALL_HINT}"
+            },
+            status_code=503,
+        )
     bbox_tuple = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
     try:
         result = await get_findings_service().create_manual(

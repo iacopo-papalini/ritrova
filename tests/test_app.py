@@ -1,6 +1,7 @@
 """Tests for ritrova.app routes and API endpoints."""
 
 import io
+from unittest.mock import patch
 from zipfile import ZipFile
 
 import numpy as np
@@ -781,3 +782,42 @@ class TestTemplateIdRendering(PostgresAppTestCase):
         body = self.client.get(f"/people/{sid}").text
         assert f'subjectId: "{sid}"' in body
         assert f"subjectId: {sid}," not in body
+
+
+class TestServeOnlyMode(PostgresAppTestCase):
+    """A base install has no detection models (W3). The app must still
+    serve everything that does not need one, and refuse the one route
+    that does with a message rather than a traceback."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.client = self.make_client()
+        self.source_id = await self.db.add_source("/a.jpg", width=400, height=300)
+
+    async def test_manual_finding_returns_503_without_models(self) -> None:
+        with patch("ritrova.app.routers.findings.models_for_species", return_value=False):
+            resp = self.client.post(
+                f"/api/sources/{self.source_id}/findings",
+                json={"bbox": [10, 10, 60, 60], "species": "human"},
+            )
+        assert resp.status_code == 503, resp.text
+        assert "uv sync --extra scan" in resp.json()["error"]
+
+    async def test_bad_bbox_still_422_not_503(self) -> None:
+        """Validation comes first: a malformed request is the client's
+        fault whether or not the models are installed."""
+        with patch("ritrova.app.routers.findings.models_for_species", return_value=False):
+            resp = self.client.post(
+                f"/api/sources/{self.source_id}/findings",
+                json={"bbox": [10, 10], "species": "human"},
+            )
+        assert resp.status_code == 422
+
+    async def test_healthz_reports_ok(self) -> None:
+        resp = self.client.get("/healthz")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "ok"
+
+    async def test_healthz_is_not_shadowed_by_the_kind_catchall(self) -> None:
+        """``/{kind}`` matches any single segment; /healthz must win."""
+        assert self.client.get("/healthz").headers["content-type"].startswith("application/json")

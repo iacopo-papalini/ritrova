@@ -68,13 +68,15 @@
        switch to 'cat' in the popover).
        #}
     <div class="relative inline-block max-w-full"
+         {% if scan_models %}
          x-data="manualFinding({
            sourceId: {{ source.id|tojson }},
            sourceWidth: {{ source.width }},
            sourceHeight: {{ source.height }},
            defaultSpecies: '{{ 'dog' if kind == 'pets' else 'human' }}'
          })"
-         @keydown.escape.window="cancel()">
+         @keydown.escape.window="cancel()"
+         {% endif %}>
       <img src="/api/sources/{{ source.id }}/image"
            id="photo-img"
            alt="photo"
@@ -102,6 +104,7 @@
       </a>
       {% endif %}{% endfor %}
 
+      {% if scan_models %}
       {# Live drag rectangle (rendered while the user is shift-dragging) #}
       <div x-show="dragging" x-cloak
            :style="`left:${rect.x}px; top:${rect.y}px; width:${rect.w}px; height:${rect.h}px;`"
@@ -147,13 +150,16 @@
           </button>
         </div>
       </div>
+      {% endif %}
     </div>
 
+    {% if scan_models %}
     {# Hint the first time the user lands on the page. Kept tiny on purpose. #}
     <p class="mt-2 text-xs text-gallery-muted">
       Tip: hold <kbd class="rounded border border-gallery-border bg-gallery-card px-1 text-[0.65rem]">Shift</kbd>
       and drag on the photo to add a missed face.
     </p>
+    {% endif %}
   </div>
 
   {# ── Faces in this photo ─────────────────────────────────── #}

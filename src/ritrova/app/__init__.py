@@ -19,13 +19,16 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import asyncpg
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from ..capabilities import scan_available
 from ..db import FaceDB
 from ..undo import UndoStore
 from . import deps, imaging
+from .responses import JSONResponse
 from .routers import (
     browse,
     circles,
@@ -58,6 +61,9 @@ def create_app(
     # rendering for UUID or datetime — without this every page that hands
     # Alpine an id raises at render time.
     templates.env.policies["json.dumps_kwargs"] = {"sort_keys": True, "default": str}
+    # Templates hide the affordances a base install cannot serve, so a
+    # server build offers no Shift+drag the API would only refuse.
+    templates.env.globals["scan_models"] = scan_available()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -95,6 +101,21 @@ def create_app(
     app.include_router(print_selection.router)
     app.include_router(together.router)
     app.include_router(undo.router)
+
+    @app.get("/healthz")
+    async def healthz() -> JSONResponse:
+        """Liveness plus a real query, so a pool that cannot reach Postgres
+        reports unhealthy instead of serving 500s to every page."""
+        try:
+            await deps.get_db().fetchval("SELECT 1")
+        except (OSError, asyncpg.PostgresError) as exc:
+            return JSONResponse(
+                {"status": "unhealthy", "database": type(exc).__name__}, status_code=503
+            )
+        return JSONResponse({"status": "ok", "scan_models": scan_available()})
+
+    # Registered last: ``/{kind}`` matches any single segment, so it would
+    # shadow every literal route declared after it — /healthz included.
     app.include_router(pages.router)
 
     return app

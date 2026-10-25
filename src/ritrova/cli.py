@@ -11,10 +11,22 @@ from uuid import UUID
 import click
 from dotenv import load_dotenv
 
+from .capabilities import INSTALL_HINT, scan_available
 from .db import FaceDB
 from .describer import DEFAULT_TRANSLATOR_MODEL, DEFAULT_VLM_MODEL
 
 load_dotenv()
+
+
+def _require_scan_models() -> None:
+    """Stop with an actionable message on a base install.
+
+    Without this the first lazy import inside the pipeline raises a bare
+    ``ModuleNotFoundError``, which says nothing about the extra.
+    """
+    if scan_available():
+        return
+    raise click.ClickException(f"This command needs the detection models. {INSTALL_HINT}")
 
 
 def _async_command(
@@ -225,6 +237,8 @@ async def analyse(
     """
     import random
     import warnings
+
+    _require_scan_models()
 
     # Suppress noisy third-party loggers during model loading
     for noisy in (
@@ -660,6 +674,8 @@ async def describe(
 ) -> None:
     """Generate scene descriptions and tags for photos via VLM + translation."""
     import random
+
+    _require_scan_models()
 
     from .describer import (
         DEFAULT_TRANSLATOR_MODEL,

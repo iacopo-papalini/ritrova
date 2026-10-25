@@ -1,0 +1,83 @@
+# Ritrova on the home server: Postgres plus one app process.
+#
+# Copy `.env.example` to `.env` and fill it in before the first `up`.
+#
+# The host is shared with pihole, which serves DNS for the whole house, so
+# both services are capped rather than left to take what they like.
+
+x-logging: &logging
+  # Snap docker keeps json-file logs forever by default and the volume is
+  # the same one the photos live on.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ritrova}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-ritrova}
+      # D12. SQLite sorted TEXT by BINARY collation; a locale-aware cluster
+      # reorders every `ORDER BY name` in the app. initdb-only — changing it
+      # afterwards means a dump and restore.
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C.UTF-8
+    ports:
+      # The Mac runs `ritrova analyse` against this, so it cannot be
+      # loopback-only. Narrow POSTGRES_BIND to the Mac's address to keep the
+      # rest of the house out.
+      - "${POSTGRES_BIND:-0.0.0.0}:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ritrova} -d ${POSTGRES_DB:-ritrova}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1536M
+
+  ritrova:
+    image: ritrova:latest
+    build:
+      context: .
+      args:
+        RITROVA_UID: ${RITROVA_UID:-1000}
+        RITROVA_GID: ${RITROVA_GID:-1000}
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RITROVA_DSN: postgresql://${POSTGRES_USER:-ritrova}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ritrova}
+      RITROVA_DATA_DIR: /data
+      RITROVA_PHOTOS_DIR: /photos
+    ports:
+      # Reachable from the whole LAN, per the owner's explicit decision.
+      - "${RITROVA_BIND:-0.0.0.0}:8787:8787"
+    volumes:
+      # Read-only: this service never writes to the photo archive, and the
+      # Nextcloud sync client owns that tree.
+      - ${PHOTOS_DIR:?set PHOTOS_DIR in .env}:/photos:ro
+      # D15: thumbnails and extracted video frames.
+      - ritrova-data:/data
+    deploy:
+      resources:
+        limits:
+          # One process by design (W2.3): UndoStore keeps its single slot in
+          # process memory, so a second worker would 404 most undo attempts.
+          cpus: "2.0"
+          memory: 2048M
+
+volumes:
+  postgres-data:
+  ritrova-data:
