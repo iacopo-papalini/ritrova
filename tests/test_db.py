@@ -1,5 +1,6 @@
 """Comprehensive tests for ritrova.db module."""
 
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -795,6 +796,24 @@ class TestPathResolution(TestCase):
 
     async def tearDown(self) -> None:
         await self._tmp.cleanup()
+
+    def test_resolve_finds_the_composed_spelling_on_a_byte_exact_fs(self) -> None:
+        """A path scanned on macOS is stored decomposed. ext4 keeps the two
+        spellings apart, so the stored form can miss a file that is really
+        there — on paiolo that is 193 photos whose album name carries an
+        accent. macOS resolves either spelling, so this only bites on the
+        server; the assertion holds on both.
+        """
+        album = unicodedata.normalize("NFC", "2021-07-02.San.Niccol\u00f2.e.rampe")
+        (self.base / album).mkdir()
+        (self.base / album / "photo.jpg").write_bytes(b"jpeg")
+
+        decomposed = unicodedata.normalize("NFD", f"{album}/photo.jpg")
+        assert self.db.resolve_path(decomposed).exists()
+
+    def test_resolve_keeps_the_stored_spelling_when_nothing_is_on_disk(self) -> None:
+        missing = unicodedata.normalize("NFD", "gone/caff\u00e8.jpg")
+        assert self.db.resolve_path(missing) == self.base / missing
 
     def test_resolve_relative_path(self) -> None:
         resolved = self.db.resolve_path("subfolder/photo.jpg")

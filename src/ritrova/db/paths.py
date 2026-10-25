@@ -2,10 +2,30 @@
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 from ._base import _DBAccessor
 from .models import Finding
+
+
+def _spelling_on_disk(path: Path) -> Path:
+    """Return whichever unicode normalization of ``path`` the filesystem has.
+
+    macOS stores decomposed names but resolves either spelling, so a path
+    scanned there is openable there whichever way it is written. ext4 is
+    byte-exact: the same stored path can be unopenable on the server even
+    though the file is sitting in a directory whose name differs only by
+    composition. Costs one stat on the hit, which is the usual case.
+    """
+    if path.exists():
+        return path
+    text = str(path)
+    for form in ("NFC", "NFD"):
+        variant = unicodedata.normalize(form, text)
+        if variant != text and Path(variant).exists():
+            return Path(variant)
+    return path
 
 
 class PathMixin(_DBAccessor):
@@ -17,7 +37,7 @@ class PathMixin(_DBAccessor):
     def resolve_path(self, stored_path: str) -> Path:
         """Resolve a DB-stored path to an absolute filesystem path."""
         if stored_path.startswith("/"):
-            return Path(stored_path)
+            return _spelling_on_disk(Path(stored_path))
         if ".." in stored_path.split("/"):
             msg = f"Path contains '..': {stored_path}"
             raise ValueError(msg)
@@ -25,8 +45,8 @@ class PathMixin(_DBAccessor):
         if stored_path.startswith("tmp/"):
             return self.data_dir / stored_path
         if self.base_dir is not None:
-            return self.base_dir / stored_path
-        return Path(stored_path)
+            return _spelling_on_disk(self.base_dir / stored_path)
+        return _spelling_on_disk(Path(stored_path))
 
     async def resolve_finding_image(self, finding: Finding) -> Path | None:
         """Resolve the image file to use for a finding's thumbnail.
