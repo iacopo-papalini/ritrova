@@ -3,6 +3,7 @@
 import logging
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 import faiss
 import numpy as np
@@ -20,13 +21,15 @@ EMBEDDING_DIMS: dict[str, int] = {"person": 512, "pet": 768}
 
 @dataclass
 class MergeSuggestion:
-    cluster_a: int
-    cluster_b: int
+    # A side is either a subject (UUID key) or a cluster (int label); `kind_*`
+    # says which, so the id type follows it.
+    cluster_a: int | UUID
+    cluster_b: int | UUID
     similarity_pct: float
     size_a: int
     size_b: int
-    sample_finding_ids_a: list[int]
-    sample_finding_ids_b: list[int]
+    sample_finding_ids_a: list[UUID]
+    sample_finding_ids_b: list[UUID]
     kind_a: str = "cluster"  # "subject" or "cluster"
     kind_b: str = "cluster"
 
@@ -180,7 +183,7 @@ def _cluster_exact_or_split(embeddings: np.ndarray, threshold: float, min_size: 
     return labels
 
 
-def cluster_faces(
+async def cluster_faces(
     db: FaceDB,
     threshold: float = 0.45,
     min_size: int = 2,
@@ -200,15 +203,15 @@ def cluster_faces(
         min_size: Discard clusters smaller than this.
         species: Only cluster faces of this species.
     """
-    db.clear_clusters(species=species)
+    await db.clear_clusters(species=species)
 
     # Offset cluster IDs to avoid collision with other species' clusters
-    max_existing = db.query("SELECT COALESCE(MAX(cluster_id), -1) FROM cluster_findings")
+    max_existing = await db.query("SELECT COALESCE(MAX(cluster_id), -1) FROM cluster_findings")
     cluster_offset = max_existing[0][0] + 1 if max_existing else 0
 
     dim = EMBEDDING_DIMS.get("pet" if species in db.PET_SPECIES or species == "pet" else "person")
     logger.info("Loading %s embeddings (dim=%s)...", species, dim)
-    data = db.get_all_embeddings(species=species, embedding_dim=dim)
+    data = await db.get_all_embeddings(species=species, embedding_dim=dim)
     if not data:
         return {"total_faces": 0, "clusters": 0, "noise": 0}
 
@@ -225,7 +228,7 @@ def cluster_faces(
     }
 
     logger.info("Updating %d face cluster assignments...", len(face_cluster_map))
-    db.update_cluster_ids(face_cluster_map)
+    await db.update_cluster_ids(face_cluster_map)
 
     n_clusters = len(set(labels) - {-1})
     n_noise = int(np.sum(labels == -1))
@@ -239,14 +242,14 @@ def cluster_faces(
     }
 
 
-def find_similar_unclustered(
-    db: FaceDB, subject_id: int, min_similarity: float = 0.55, limit: int = 100
-) -> list[tuple[int, float]]:
+async def find_similar_unclustered(
+    db: FaceDB, subject_id: UUID, min_similarity: float = 0.55, limit: int = 100
+) -> list[tuple[UUID, float]]:
     """Find unclustered faces similar to a confirmed subject.
 
     Returns list of (face_id, similarity_pct) sorted by similarity desc.
     """
-    subject_findings = db.get_subject_findings(subject_id, limit=500)
+    subject_findings = await db.get_subject_findings(subject_id, limit=500)
     if not subject_findings:
         return []
 
@@ -254,7 +257,7 @@ def find_similar_unclustered(
     dim = len(centroid)
     species = "pet" if dim == EMBEDDING_DIMS["pet"] else "human"
 
-    unclustered = db.get_unclustered_embeddings(species=species, embedding_dim=dim)
+    unclustered = await db.get_unclustered_embeddings(species=species, embedding_dim=dim)
     if not unclustered:
         return []
 
@@ -269,7 +272,7 @@ def find_similar_unclustered(
     return candidates[:limit]
 
 
-def auto_assign(
+async def auto_assign(
     db: FaceDB,
     min_similarity: float = 0.50,
     kind: str = "person",
@@ -283,13 +286,13 @@ def auto_assign(
     """
     species = FaceDB.KIND_TO_SPECIES[kind]
     dim = EMBEDDING_DIMS.get(kind)
-    subjects = db.get_subjects_by_kind(kind)
+    subjects = await db.get_subjects_by_kind(kind)
     if not subjects:
         logger.info("No named subjects to match against.")
         return {"assigned_clusters": 0, "assigned_faces": 0, "unmatched": 0}
 
     logger.info("Computing centroids for %d subjects...", len(subjects))
-    subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
+    subject_centroids = await db.get_subject_centroids(kind=kind, embedding_dim=dim)
 
     if not subject_centroids:
         logger.info("No subjects with matching kind.")
@@ -298,7 +301,7 @@ def auto_assign(
     centroid_matrix = np.array([sc[2] for sc in subject_centroids])
 
     # Process unnamed clusters
-    unnamed = db.get_unnamed_clusters(species=species)
+    unnamed = await db.get_unnamed_clusters(species=species)
     logger.info("Matching %d unnamed clusters...", len(unnamed))
 
     assigned_clusters = 0
@@ -306,7 +309,7 @@ def auto_assign(
     unmatched = 0
 
     for cluster in unnamed:
-        findings = db.get_cluster_findings(cluster["cluster_id"], limit=500)
+        findings = await db.get_cluster_findings(cluster["cluster_id"], limit=500)
         if not findings:
             continue
         cluster_centroid = _findings_centroid(findings)
@@ -317,7 +320,7 @@ def auto_assign(
 
         if best_sim >= min_similarity:
             sid, _name, _ = subject_centroids[best_idx]
-            db.assign_cluster_to_subject(cluster["cluster_id"], sid)
+            await db.assign_cluster_to_subject(cluster["cluster_id"], sid)
             assigned_clusters += 1
             assigned_faces += cluster["face_count"]
             if assigned_clusters % 100 == 0:
@@ -337,7 +340,7 @@ def auto_assign(
     )
 
     # Also sweep unclustered singletons
-    unclustered = db.get_unclustered_embeddings(species=species, embedding_dim=dim)
+    unclustered = await db.get_unclustered_embeddings(species=species, embedding_dim=dim)
 
     assigned_singletons = 0
     if unclustered:
@@ -349,7 +352,7 @@ def auto_assign(
             best_sim = float(sims[best_idx])
             if best_sim >= min_similarity:
                 sid = subject_centroids[best_idx][0]
-                db.assign_finding_to_subject(fid, sid)
+                await db.assign_finding_to_subject(fid, sid)
                 assigned_singletons += 1
 
         logger.info(
@@ -366,17 +369,17 @@ def auto_assign(
     }
 
 
-def compare_subjects(
+async def compare_subjects(
     db: FaceDB,
-    subject_a_id: int,
-    subject_b_id: int,
+    subject_a_id: UUID,
+    subject_b_id: UUID,
 ) -> dict[str, Any]:
     """Compare two subjects and find faces that might be misassigned.
 
     Returns faces from A that are closer to B's centroid, and vice versa.
     """
-    findings_a = db.get_subject_findings(subject_a_id, limit=5000)
-    findings_b = db.get_subject_findings(subject_b_id, limit=5000)
+    findings_a = await db.get_subject_findings(subject_a_id, limit=5000)
+    findings_b = await db.get_subject_findings(subject_b_id, limit=5000)
     if not findings_a or not findings_b:
         return {"swaps_a_to_b": [], "swaps_b_to_a": []}
 
@@ -385,9 +388,9 @@ def compare_subjects(
     dim = len(centroid_a)
     centroid_b = _findings_centroid(findings_b, embedding_dim=dim)
 
-    def _find_swaps(
+    async def _find_swaps(
         findings: list[Finding], own_centroid: np.ndarray, other_centroid: np.ndarray
-    ) -> list[tuple[int, float, float, str]]:
+    ) -> list[tuple[UUID, float, float, str]]:
         swaps = []
         for finding in findings:
             if len(finding.embedding) != dim:
@@ -396,49 +399,49 @@ def compare_subjects(
             sim_own = cosine_similarity(emb, own_centroid)
             sim_other = cosine_similarity(emb, other_centroid)
             if sim_other > sim_own:
-                source = db.get_source(finding.source_id)
+                source = await db.get_source(finding.source_id)
                 path = source.file_path if source else ""
                 swaps.append((finding.id, round(sim_own * 100, 1), round(sim_other * 100, 1), path))
         swaps.sort(key=lambda x: x[2] - x[1], reverse=True)
         return swaps
 
     return {
-        "swaps_a_to_b": _find_swaps(findings_a, centroid_a, centroid_b),
-        "swaps_b_to_a": _find_swaps(findings_b, centroid_b, centroid_a),
+        "swaps_a_to_b": await _find_swaps(findings_a, centroid_a, centroid_b),
+        "swaps_b_to_a": await _find_swaps(findings_b, centroid_b, centroid_a),
     }
 
 
-def auto_merge_clusters(
+async def auto_merge_clusters(
     db: FaceDB,
     min_similarity: float = 0.70,
     species: str = "human",
 ) -> dict[str, Any]:
     """Auto-merge unnamed cluster pairs whose centroids exceed the similarity threshold."""
-    suggestions = suggest_merges(db, min_similarity=min_similarity * 100, species=species)
+    suggestions = await suggest_merges(db, min_similarity=min_similarity * 100, species=species)
 
     merged = 0
     faces_moved = 0
     for s in suggestions:
-        if s.kind_a == "subject" or s.kind_b == "subject":
+        if isinstance(s.cluster_a, UUID) or isinstance(s.cluster_b, UUID):
             continue
         if s.size_a >= s.size_b:
             target, source, source_size = s.cluster_a, s.cluster_b, s.size_b
         else:
             target, source, source_size = s.cluster_b, s.cluster_a, s.size_a
-        db.merge_clusters(source, target)
+        await db.merge_clusters(source, target)
         merged += 1
         faces_moved += source_size
 
-    remaining = len(db.get_unnamed_clusters(species=species))
+    remaining = len(await db.get_unnamed_clusters(species=species))
     return {"merged": merged, "faces_moved": faces_moved, "remaining_clusters": remaining}
 
 
-def nearest_named_subject(
+async def nearest_named_subject(
     db: FaceDB,
     embedding: np.ndarray,
     species: str,
     min_similarity: float = 0.55,
-) -> tuple[int, str, float] | None:
+) -> tuple[UUID, str, float] | None:
     """Return ``(subject_id, name, similarity_pct)`` of the single nearest
     named subject whose kind matches ``species`` and whose centroid cosine
     similarity exceeds ``min_similarity``. Returns ``None`` otherwise.
@@ -448,7 +451,7 @@ def nearest_named_subject(
     """
     kind = "pet" if species in FaceDB.PET_SPECIES or species == "pet" else "person"
     dim = EMBEDDING_DIMS.get(kind, 512)
-    subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
+    subject_centroids = await db.get_subject_centroids(kind=kind, embedding_dim=dim)
     if not subject_centroids:
         return None
     query = normalize(embedding.astype(np.float32))
@@ -462,12 +465,14 @@ def nearest_named_subject(
     return sid, name, round(best_sim * 100, 1)
 
 
-def rank_subjects_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, str, int, float]]:
+async def rank_subjects_for_cluster(
+    db: FaceDB, cluster_id: int
+) -> list[tuple[UUID, str, int, float]]:
     """Rank existing subjects by similarity to a cluster.
 
     Returns list of (subject_id, name, face_count, similarity_pct) sorted desc.
     """
-    cluster_findings = db.get_cluster_findings(cluster_id, limit=200)
+    cluster_findings = await db.get_cluster_findings(cluster_id, limit=200)
     if not cluster_findings:
         return []
 
@@ -477,8 +482,8 @@ def rank_subjects_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, st
     dim = len(centroid)
     kind = "pet" if dim == EMBEDDING_DIMS["pet"] else "person"
 
-    subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
-    subjects_by_kind = {s.id: s.face_count for s in db.get_subjects_by_kind(kind)}
+    subject_centroids = await db.get_subject_centroids(kind=kind, embedding_dim=dim)
+    subjects_by_kind = {s.id: s.face_count for s in await db.get_subjects_by_kind(kind)}
     results = []
     for sid, name, s_centroid in subject_centroids:
         sim = round(cosine_similarity(centroid, s_centroid) * 100, 1)
@@ -488,14 +493,14 @@ def rank_subjects_for_cluster(db: FaceDB, cluster_id: int) -> list[tuple[int, st
     return results
 
 
-def find_similar_cluster(
+async def find_similar_cluster(
     db: FaceDB,
-    subject_id: int,
+    subject_id: UUID,
     min_similarity: float = 0.35,
     species: str = "human",
 ) -> int | None:
     """Find the unnamed cluster most similar to a subject. Returns cluster_id or None."""
-    subject_findings = db.get_subject_findings(subject_id, limit=500)
+    subject_findings = await db.get_subject_findings(subject_id, limit=500)
     if not subject_findings:
         return None
 
@@ -505,8 +510,8 @@ def find_similar_cluster(
     best_cluster = None
     best_sim = min_similarity
 
-    for cluster in db.get_unnamed_clusters(species=species):
-        findings = db.get_cluster_findings(cluster["cluster_id"], limit=100)
+    for cluster in await db.get_unnamed_clusters(species=species):
+        findings = await db.get_cluster_findings(cluster["cluster_id"], limit=100)
         if not findings:
             continue
         c = _findings_centroid(findings, embedding_dim=dim)
@@ -520,7 +525,7 @@ def find_similar_cluster(
     return best_cluster
 
 
-def suggest_merges(
+async def suggest_merges(
     db: FaceDB,
     min_similarity: float = 40.0,
     species: str = "human",
@@ -535,18 +540,18 @@ def suggest_merges(
     # subject lookups and embedding-dim selection.
     kind = db._kind_for_species(species)  # noqa: SLF001 — DB-internal mapper
     dim = EMBEDDING_DIMS.get(kind, 512)
-    groups: list[tuple[str, int, list[int], np.ndarray]] = []
+    groups: list[tuple[str, int | UUID, list[UUID], np.ndarray]] = []
 
-    for subject in db.get_subjects_by_kind(kind):
-        findings = db.get_subject_findings(subject.id, limit=500)
+    for subject in await db.get_subjects_by_kind(kind):
+        findings = await db.get_subject_findings(subject.id, limit=500)
         compatible = [f for f in findings if len(f.embedding) == dim]
         if not compatible:
             continue
         embs = np.array([f.embedding for f in compatible])
         groups.append(("subject", subject.id, [f.id for f in compatible], embs))
 
-    for cluster in db.get_unnamed_clusters(species=species):
-        findings = db.get_cluster_findings(cluster["cluster_id"], limit=500)
+    for cluster in await db.get_unnamed_clusters(species=species):
+        findings = await db.get_cluster_findings(cluster["cluster_id"], limit=500)
         compatible = [f for f in findings if len(f.embedding) == dim]
         if not compatible:
             continue

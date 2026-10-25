@@ -8,6 +8,8 @@ row and its membership set so the full circle can be resurrected.
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from ..db import FaceDB
 from ..undo import (
     AddSubjectToCirclePayload,
@@ -27,19 +29,19 @@ class CirclesService:
 
     # ── Membership ──────────────────────────────────────────────────────
 
-    def add_subject(self, circle_id: int, subject_id: int) -> UndoReceipt | None:
+    async def add_subject(self, circle_id: UUID, subject_id: UUID) -> UndoReceipt | None:
         """Add a subject to a circle.
 
         Returns ``None`` when the subject was already a member — the
         no-op is idempotent and doesn't deserve an undo slot. Raises
         ``ValueError`` when subject or circle is missing.
         """
-        subject = self._db.get_subject(subject_id)
-        circle = self._db.get_circle(circle_id)
+        subject = await self._db.get_subject(subject_id)
+        circle = await self._db.get_circle(circle_id)
         if subject is None or circle is None:
             msg = "Subject or circle not found"
             raise ValueError(msg)
-        added = self._db.add_subject_to_circle(subject_id, circle_id)
+        added = await self._db.add_subject_to_circle(subject_id, circle_id)
         if not added:
             return None
         message = f"Added {subject.name} to {circle.name}"
@@ -49,18 +51,18 @@ class CirclesService:
         )
         return UndoReceipt(token=token, message=message)
 
-    def remove_subject(self, circle_id: int, subject_id: int) -> UndoReceipt | None:
+    async def remove_subject(self, circle_id: UUID, subject_id: UUID) -> UndoReceipt | None:
         """Remove a subject from a circle.
 
         Returns ``None`` when the subject wasn't a member. Raises
         ``ValueError`` when subject or circle is missing.
         """
-        subject = self._db.get_subject(subject_id)
-        circle = self._db.get_circle(circle_id)
+        subject = await self._db.get_subject(subject_id)
+        circle = await self._db.get_circle(circle_id)
         if subject is None or circle is None:
             msg = "Subject or circle not found"
             raise ValueError(msg)
-        removed = self._db.remove_subject_from_circle(subject_id, circle_id)
+        removed = await self._db.remove_subject_from_circle(subject_id, circle_id)
         if not removed:
             return None
         message = f"Removed {subject.name} from {circle.name}"
@@ -72,28 +74,28 @@ class CirclesService:
 
     # ── CRUD ────────────────────────────────────────────────────────────
 
-    def create_circle(
+    async def create_circle(
         self, name: str, description: str | None = None
-    ) -> tuple[int, UndoReceipt | None]:
+    ) -> tuple[UUID, UndoReceipt | None]:
         """Create a circle (idempotent on name). No undo — the user can
         click delete; see router comment history."""
-        circle_id = self._db.create_circle(name, description=description)
+        circle_id = await self._db.create_circle(name, description=description)
         return circle_id, None
 
-    def delete_circle(self, circle_id: int) -> UndoReceipt:
+    async def delete_circle(self, circle_id: UUID) -> UndoReceipt:
         """Delete a circle, snapshotting its row and members first so the
         undo resurrects the whole thing (new id; old FK-cascade deletions
         of the subject_circles rows are re-inserted).
 
         Raises ``ValueError`` when the circle doesn't exist.
         """
-        with self._db.transaction():
-            circle = self._db.get_circle(circle_id)
+        async with self._db.transaction():
+            circle = await self._db.get_circle(circle_id)
             if circle is None:
                 msg = "Circle not found"
                 raise ValueError(msg)
-            member_ids = self._db.get_circle_subject_ids(circle_id)
-            self._db.delete_circle(circle_id)
+            member_ids = await self._db.get_circle_subject_ids(circle_id)
+            await self._db.delete_circle(circle_id)
         message = f"Deleted circle '{circle.name}' ({len(member_ids)} members)"
         token = self._undo.put(
             description=message,
@@ -105,7 +107,7 @@ class CirclesService:
         )
         return UndoReceipt(token=token, message=message)
 
-    def rename_circle(self, circle_id: int, new_name: str) -> UndoReceipt | None:
+    async def rename_circle(self, circle_id: UUID, new_name: str) -> UndoReceipt | None:
         """Rename; no undo slot (trivially reversible)."""
-        self._db.rename_circle(circle_id, new_name)
+        await self._db.rename_circle(circle_id, new_name)
         return None

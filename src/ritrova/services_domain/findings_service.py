@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -35,7 +36,7 @@ if TYPE_CHECKING:
 class Suggestion:
     """Top-1 subject match for a manual finding's embedding."""
 
-    subject_id: int
+    subject_id: UUID
     name: str
     similarity_pct: float
 
@@ -44,7 +45,7 @@ class Suggestion:
 class CreateManualResult:
     """Return shape of ``FindingsService.create_manual``."""
 
-    finding_id: int
+    finding_id: UUID
     suggestion: Suggestion | None
     receipt: UndoReceipt
 
@@ -72,9 +73,9 @@ class FindingsService:
         self._face_detector: FaceDetector | None = None
         self._pet_detector: PetDetector | None = None
 
-    def create_manual(
+    async def create_manual(
         self,
-        source_id: int,
+        source_id: UUID,
         bbox: tuple[int, int, int, int],
         species: str,
     ) -> CreateManualResult:
@@ -92,7 +93,7 @@ class FindingsService:
         if w < _MIN_BBOX_SIDE or h < _MIN_BBOX_SIDE:
             msg = f"Bbox is too small ({w}×{h}). Minimum side is {_MIN_BBOX_SIDE} pixels."
             raise ManualFindingError(msg)
-        source = self._db.get_source(source_id)
+        source = await self._db.get_source(source_id)
         if source is None:
             msg = f"Source {source_id} not found."
             raise ManualFindingError(msg)
@@ -111,7 +112,7 @@ class FindingsService:
                 f"({source.width}×{source.height})."
             )
             raise ManualFindingError(msg)
-        scan_id = self._db.get_latest_scan_id(source_id, "subjects")
+        scan_id = await self._db.get_latest_scan_id(source_id, "subjects")
         if scan_id is None:
             msg = "Source has no 'subjects' scan — analyse the source first."
             raise ManualFindingError(msg)
@@ -126,8 +127,8 @@ class FindingsService:
 
         embedding = self._embed(pil_image, bbox, species)
 
-        with self._db.transaction():
-            finding_id = self._db.add_manual_finding(
+        async with self._db.transaction():
+            finding_id = await self._db.add_manual_finding(
                 source_id=source_id,
                 bbox=bbox,
                 embedding=embedding,
@@ -136,7 +137,7 @@ class FindingsService:
                 confidence=1.0,
             )
 
-        match = nearest_named_subject(self._db, embedding, species=species)
+        match = await nearest_named_subject(self._db, embedding, species=species)
         suggestion = (
             Suggestion(subject_id=match[0], name=match[1], similarity_pct=match[2])
             if match is not None

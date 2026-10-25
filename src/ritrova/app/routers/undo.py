@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
 
 from ..deps import get_db, get_undo_store
+from ..responses import JSONResponse
 
 router = APIRouter()
 
@@ -21,7 +21,7 @@ def peek_undo() -> JSONResponse:
 
 
 @router.post("/api/undo/{token}")
-def apply_undo(token: str) -> JSONResponse:
+async def apply_undo(token: str) -> JSONResponse:
     """Consume the pending undo matching ``token`` and invert its effect.
 
     Returns 404 if the token is missing, already consumed, or past its TTL.
@@ -30,5 +30,5 @@ def apply_undo(token: str) -> JSONResponse:
     entry = get_undo_store().pop(token)
     if entry is None:
         raise HTTPException(404, "Undo token missing, already used, or expired")
-    entry.payload.undo(get_db())
+    await entry.payload.undo(get_db())
     return JSONResponse({"ok": True, "undone": entry.description})

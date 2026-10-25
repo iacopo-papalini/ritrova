@@ -16,58 +16,65 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from ...db import FaceDB, Finding
 from ...images import crop_face_thumbnail, resize_photo
+from .. import imaging
 from ..deps import get_db, get_thumbnails_dir
 from ..helpers import IMMUTABLE_IMAGE_HEADERS
+from ..responses import JSONResponse
 
 router = APIRouter()
 
 
-def _restore_video_frame_cache(db: FaceDB, finding: Finding, expected: Path) -> bool:
+async def _restore_video_frame_cache(db: FaceDB, finding: Finding, expected: Path) -> bool:
     """Recreate a missing cached frame JPEG at the path already stored in the DB."""
     if not finding.frame_path:
         return False
-    source = db.get_source(finding.source_id)
+    source = await db.get_source(finding.source_id)
     if source is None or source.type != "video":
         return False
     video_path = db.resolve_path(source.file_path)
     if not video_path.exists():
         return False
 
+    return await imaging.run(_extract_frame, video_path, finding.frame_number, expected)
+
+
+def _extract_frame(video_path: Path, frame_number: int, destination: Path) -> bool:
     import cv2
     from PIL import Image
 
     cap = cv2.VideoCapture(str(video_path))
     try:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, finding.frame_number)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
         ok, bgr_frame = cap.read()
     finally:
         cap.release()
     if not ok:
         return False
 
-    expected.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     rgb = bgr_frame[:, :, ::-1]
-    Image.fromarray(rgb).save(str(expected), "JPEG", quality=85)
-    return expected.exists()
+    Image.fromarray(rgb).save(str(destination), "JPEG", quality=85)
+    return destination.exists()
 
 
-def _resolve_finding_image_or_restore(db: FaceDB, finding: Finding) -> Path | None:
-    resolved = db.resolve_finding_image(finding)
+async def _resolve_finding_image_or_restore(db: FaceDB, finding: Finding) -> Path | None:
+    resolved = await db.resolve_finding_image(finding)
     if resolved is None or resolved.exists():
         return resolved
-    if _restore_video_frame_cache(db, finding, resolved):
+    if await _restore_video_frame_cache(db, finding, resolved):
         return resolved
     return resolved
 
 
 @router.get("/api/findings/{finding_id}/thumbnail")
-def finding_thumbnail(finding_id: int, size: int = 150) -> StreamingResponse:
+async def finding_thumbnail(finding_id: UUID, size: int = 150) -> StreamingResponse:
     db = get_db()
     size = min(size, 500)
     cache_path = get_thumbnails_dir() / f"{finding_id}_{size}.jpg"
@@ -78,51 +85,57 @@ def finding_thumbnail(finding_id: int, size: int = 150) -> StreamingResponse:
             headers=IMMUTABLE_IMAGE_HEADERS,
         )
 
-    finding = db.get_finding(finding_id)
+    finding = await db.get_finding(finding_id)
     if not finding:
         raise HTTPException(404)
-    resolved = _resolve_finding_image_or_restore(db, finding)
+    resolved = await _resolve_finding_image_or_restore(db, finding)
     if resolved is None or not resolved.exists():
         raise HTTPException(404)
 
-    buf = crop_face_thumbnail(
-        resolved, finding.bbox_x, finding.bbox_y, finding.bbox_w, finding.bbox_h, size
+    buf = await imaging.run(
+        crop_face_thumbnail,
+        resolved,
+        finding.bbox_x,
+        finding.bbox_y,
+        finding.bbox_w,
+        finding.bbox_h,
+        size,
     )
     cache_path.write_bytes(buf.getvalue())
     return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
 
 
 @router.get("/api/sources/{source_id}/image")
-def source_image(source_id: int, max_size: int = 1600) -> StreamingResponse:
+async def source_image(source_id: UUID, max_size: int = 1600) -> StreamingResponse:
     db = get_db()
-    source = db.get_source(source_id)
+    source = await db.get_source(source_id)
     if not source:
         raise HTTPException(404)
     if source.type == "video":
         # No raw image for videos; fall back to the first finding's extracted
         # frame so callers (Together grid, subject detail photo tab) can still
         # render a representative thumbnail. 404 only if truly no frames.
-        findings = db.get_source_findings(source_id)
+        findings = await db.get_source_findings(source_id)
         frame_finding = next((f for f in findings if f.frame_path), None)
         if frame_finding is None:
             raise HTTPException(404, "No frames available for this video")
-        resolved = _resolve_finding_image_or_restore(db, frame_finding)
+        resolved = await _resolve_finding_image_or_restore(db, frame_finding)
         if resolved is None or not resolved.exists():
             raise HTTPException(404)
-        buf = resize_photo(resolved, min(max_size, 2000))
+        buf = await imaging.run(resize_photo, resolved, min(max_size, 2000))
         return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
     resolved = db.resolve_path(source.file_path)
     if not resolved.exists():
         raise HTTPException(404)
-    buf = resize_photo(resolved, min(max_size, 2000))
+    buf = await imaging.run(resize_photo, resolved, min(max_size, 2000))
     return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
 
 
 @router.get("/api/sources/{source_id}/original")
-def source_original(source_id: int) -> FileResponse:
+async def source_original(source_id: UUID) -> FileResponse:
     """Serve the unmodified original file from disk with a download disposition."""
     db = get_db()
-    source = db.get_source(source_id)
+    source = await db.get_source(source_id)
     if not source:
         raise HTTPException(404)
     resolved = db.resolve_path(source.file_path)
@@ -138,9 +151,9 @@ def source_original(source_id: int) -> FileResponse:
 
 
 @router.get("/api/sources/{source_id}/info")
-def source_info(source_id: int) -> JSONResponse:
+async def source_info(source_id: UUID) -> JSONResponse:
     db = get_db()
-    source = db.get_source(source_id)
+    source = await db.get_source(source_id)
     if not source:
         raise HTTPException(404)
     return JSONResponse(
@@ -154,31 +167,31 @@ def source_info(source_id: int) -> JSONResponse:
 
 
 @router.get("/api/findings/{finding_id}/frame")
-def finding_frame(finding_id: int, max_size: int = 1600) -> StreamingResponse:
+async def finding_frame(finding_id: UUID, max_size: int = 1600) -> StreamingResponse:
     """Serve the image for a finding — the extracted frame for video findings,
     or the source image for photo findings. `resolve_finding_image` dispatches.
     """
     db = get_db()
-    finding = db.get_finding(finding_id)
+    finding = await db.get_finding(finding_id)
     if not finding:
         raise HTTPException(404)
-    resolved = _resolve_finding_image_or_restore(db, finding)
+    resolved = await _resolve_finding_image_or_restore(db, finding)
     if resolved is None or not resolved.exists():
         raise HTTPException(404)
-    buf = resize_photo(resolved, min(max_size, 2000))
+    buf = await imaging.run(resize_photo, resolved, min(max_size, 2000))
     return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
 
 
 @router.get("/api/findings/{finding_id}/info")
-def finding_info(finding_id: int) -> JSONResponse:
+async def finding_info(finding_id: UUID) -> JSONResponse:
     """Metadata for the finding's underlying source. `file_path` is always the
     source's path (not the frame path) so the lightbox shows the real filename.
     """
     db = get_db()
-    finding = db.get_finding(finding_id)
+    finding = await db.get_finding(finding_id)
     if not finding:
         raise HTTPException(404)
-    source = db.get_source(finding.source_id)
+    source = await db.get_source(finding.source_id)
     if not source:
         raise HTTPException(404)
     return JSONResponse(

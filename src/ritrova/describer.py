@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from PIL import Image, ImageFile, ImageOps
 
@@ -340,9 +341,9 @@ class Translator:
 # ── Pipeline ─────────────────────────────────────────────────────────
 
 
-def _build_vocab_hint(db: FaceDB) -> str | None:
+async def _build_vocab_hint(db: FaceDB) -> str | None:
     """Build a sorted comma-separated vocabulary string from existing tags."""
-    tags = db.get_all_tags()
+    tags = await db.get_all_tags()
     if not tags:
         return None
     return ", ".join(sorted(tags))
@@ -355,9 +356,9 @@ class DescribeResult:
     total_tags: int
 
 
-def describe_sources(
+async def describe_sources(
     db: FaceDB,
-    source_ids: list[int],
+    source_ids: list[UUID],
     describer: Describer,
     translator: Translator | None = None,
     *,
@@ -370,7 +371,7 @@ def describe_sources(
     Stage 2 (translation, optional) converts to Italian.
     If ``translator`` is None, English output is stored directly.
     """
-    vocab_hint = _build_vocab_hint(db)
+    vocab_hint = await _build_vocab_hint(db)
     described = 0
     errors = 0
     total = len(source_ids)
@@ -380,7 +381,7 @@ def describe_sources(
         strategy = f"{describer.model_id}+{translator.model_id}"
 
     for i, source_id in enumerate(source_ids, 1):
-        source = db.get_source(source_id)
+        source = await db.get_source(source_id)
         if not source or source.type != "photo":
             continue
         resolved = db.resolve_path(source.file_path)
@@ -389,7 +390,7 @@ def describe_sources(
             continue
 
         if i > 1 and (i - 1) % vocab_refresh_interval == 0:
-            vocab_hint = _build_vocab_hint(db)
+            vocab_hint = await _build_vocab_hint(db)
 
         output = describer.describe(resolved, vocab_hint=vocab_hint)
         if not output.caption:
@@ -401,10 +402,10 @@ def describe_sources(
             caption, tags = translator.translate(caption, tags)
 
         if force:
-            db.delete_describe_scans(source_id)
+            await db.delete_describe_scans(source_id)
 
-        scan_id = db.record_scan(source_id, "describe", detection_strategy=strategy)
-        db.add_description(source_id, scan_id, caption, tags)
+        scan_id = await db.record_scan(source_id, "describe", detection_strategy=strategy)
+        await db.add_description(source_id, scan_id, caption, tags)
         described += 1
 
         tag_str = ", ".join(sorted(tags)) if tags else "(no tags)"
@@ -418,5 +419,5 @@ def describe_sources(
     return DescribeResult(
         described=described,
         errors=errors,
-        total_tags=len(db.get_all_tags()),
+        total_tags=len(await db.get_all_tags()),
     )

@@ -14,8 +14,10 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
+from uuid import UUID
 
 import numpy as np
 from PIL import Image, ImageFile, ImageOps
@@ -61,7 +63,7 @@ class SourceAnalysis:
     source_type: str  # "photo" | "video"
     width: int = 0
     height: int = 0
-    taken_at: str | None = None
+    taken_at: datetime | None = None
     latitude: float | None = None
     longitude: float | None = None
     findings: list[AnalysisFinding] = field(default_factory=list)
@@ -278,12 +280,12 @@ class AnalysisPersister:
         self._db = db
         self._frames_dir = frames_dir
 
-    def persist(
+    async def persist(
         self,
         analysis: SourceAnalysis,
         strategy_id: str,
         scan_type: str = "subjects",
-    ) -> int:
+    ) -> UUID:
         """Write analysis results to the database.
 
         Creates or updates the source row, records a scan, inserts findings
@@ -291,7 +293,7 @@ class AnalysisPersister:
         For video findings, saves cached frame JPEGs to ``frames_dir``.
         Returns the new scan id.
         """
-        source_id = self._db.get_or_create_source(
+        source_id = await self._db.get_or_create_source(
             analysis.source_path,
             source_type=analysis.source_type,
             width=analysis.width,
@@ -300,7 +302,7 @@ class AnalysisPersister:
             latitude=analysis.latitude,
             longitude=analysis.longitude,
         )
-        scan_id = self._db.record_scan(source_id, scan_type, detection_strategy=strategy_id)
+        scan_id = await self._db.record_scan(source_id, scan_type, detection_strategy=strategy_id)
 
         # Save frame cache JPEGs for video findings
         frame_paths: dict[int, str] = {}
@@ -312,18 +314,18 @@ class AnalysisPersister:
             for frame_number, img in analysis.frame_images.items():
                 frame_file = self._frames_dir / f"vid_{vid_hash}_{frame_number}.jpg"
                 img.save(str(frame_file), "JPEG", quality=85)
-                frame_paths[frame_number] = str(frame_file.relative_to(self._db.db_path.parent))
+                frame_paths[frame_number] = str(frame_file.relative_to(self._db.data_dir))
 
         # Group findings by (species, frame_number) for batch insert
         by_key: dict[
-            tuple[str, int], list[tuple[int, tuple[int, int, int, int], np.ndarray, float]]
+            tuple[str, int], list[tuple[UUID, tuple[int, int, int, int], np.ndarray, float]]
         ] = {}
         for f in analysis.findings:
             key = (f.species, f.frame_number)
             by_key.setdefault(key, []).append((source_id, f.bbox, f.embedding, f.confidence))
 
         for (species, frame_number), batch in by_key.items():
-            self._db.add_findings_batch(
+            await self._db.add_findings_batch(
                 batch,
                 scan_id=scan_id,
                 species=species,
@@ -332,6 +334,6 @@ class AnalysisPersister:
             )
 
         if analysis.caption:
-            self._db.add_description(source_id, scan_id, analysis.caption, analysis.tags)
+            await self._db.add_description(source_id, scan_id, analysis.caption, analysis.tags)
 
         return scan_id

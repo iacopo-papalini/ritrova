@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from .db import FaceDB
 
@@ -22,16 +23,16 @@ class AnalysisReport:
     named_subject_count: int
 
 
-def default_analysis_report_path(db_path: Path) -> Path:
+def default_analysis_report_path(data_dir: Path) -> Path:
     """Return the default timestamped report path for an analysis run."""
 
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    return db_path.parent / "reports" / f"analysis-{stamp}.html"
+    return data_dir / "reports" / f"analysis-{stamp}.html"
 
 
-def write_analysis_report(
+async def write_analysis_report(
     db: FaceDB,
-    scan_ids: list[int],
+    scan_ids: list[UUID],
     output_path: Path | None = None,
 ) -> AnalysisReport | None:
     """Write an HTML report for the given scan ids.
@@ -42,16 +43,15 @@ def write_analysis_report(
     if not scan_ids:
         return None
 
-    path = output_path or default_analysis_report_path(db.db_path)
+    path = output_path or default_analysis_report_path(db.data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    placeholders = ",".join("?" for _ in scan_ids)
-    scan_params = tuple(scan_ids)
+    scan_params = scan_ids
 
     source_rows = [
         dict(row)
-        for row in db.conn.execute(
-            f"""
+        for row in await db.fetch(
+            """
             SELECT
                 sc.id AS scan_id,
                 sc.scanned_at,
@@ -65,64 +65,64 @@ def write_analysis_report(
             FROM scans sc
             JOIN sources s ON s.id = sc.source_id
             LEFT JOIN findings f ON f.scan_id = sc.id
-            WHERE sc.id IN ({placeholders})
+            WHERE sc.id = ANY(?)
             GROUP BY sc.id, s.id
             ORDER BY s.type, s.file_path
             """,
             scan_params,
-        ).fetchall()
+        )
     ]
 
     species_rows = [
         dict(row)
-        for row in db.conn.execute(
-            f"""
+        for row in await db.fetch(
+            """
             SELECT s.type AS source_type, f.species, COUNT(*) AS findings
             FROM findings f
             JOIN sources s ON s.id = f.source_id
-            WHERE f.scan_id IN ({placeholders})
+            WHERE f.scan_id = ANY(?)
             GROUP BY s.type, f.species
             ORDER BY s.type, f.species
             """,
             scan_params,
-        ).fetchall()
+        )
     ]
 
     subject_rows = [
         dict(row)
-        for row in db.conn.execute(
-            f"""
+        for row in await db.fetch(
+            """
             SELECT sub.id, sub.name, sub.kind, f.species, COUNT(*) AS findings
             FROM findings f
             JOIN finding_assignment fa ON fa.finding_id = f.id
             JOIN subjects sub ON sub.id = fa.subject_id
-            WHERE f.scan_id IN ({placeholders})
+            WHERE f.scan_id = ANY(?)
             GROUP BY sub.id, sub.name, sub.kind, f.species
             ORDER BY findings DESC, sub.name
             """,
             scan_params,
-        ).fetchall()
+        )
     ]
 
     excluded_rows = [
         dict(row)
-        for row in db.conn.execute(
-            f"""
+        for row in await db.fetch(
+            """
             SELECT fa.exclusion_reason, f.species, COUNT(*) AS findings
             FROM findings f
             JOIN finding_assignment fa ON fa.finding_id = f.id
-            WHERE f.scan_id IN ({placeholders}) AND fa.exclusion_reason IS NOT NULL
+            WHERE f.scan_id = ANY(?) AND fa.exclusion_reason IS NOT NULL
             GROUP BY fa.exclusion_reason, f.species
             ORDER BY findings DESC, fa.exclusion_reason, f.species
             """,
             scan_params,
-        ).fetchall()
+        )
     ]
 
     cluster_rows = [
         dict(row)
-        for row in db.conn.execute(
-            f"""
+        for row in await db.fetch(
+            """
             SELECT
                 f.species,
                 COUNT(*) AS findings,
@@ -130,23 +130,23 @@ def write_analysis_report(
                 SUM(CASE WHEN cf.cluster_id IS NULL THEN 1 ELSE 0 END) AS unclustered
             FROM findings f
             LEFT JOIN cluster_findings cf ON cf.finding_id = f.id
-            WHERE f.scan_id IN ({placeholders})
+            WHERE f.scan_id = ANY(?)
             GROUP BY f.species
             ORDER BY f.species
             """,
             scan_params,
-        ).fetchall()
+        )
     ]
 
     likely_subject_rows = [
         dict(row)
-        for row in db.conn.execute(
-            f"""
+        for row in await db.fetch(
+            """
             WITH new_findings AS (
                 SELECT f.id, f.species, cf.cluster_id
                 FROM findings f
                 LEFT JOIN cluster_findings cf ON cf.finding_id = f.id
-                WHERE f.scan_id IN ({placeholders})
+                WHERE f.scan_id = ANY(?)
             )
             SELECT
                 sub.id,
@@ -166,7 +166,7 @@ def write_analysis_report(
             ORDER BY matching_findings DESC, sub.name
             """,
             scan_params,
-        ).fetchall()
+        )
     ]
 
     source_counts = Counter(str(row["source_type"]) for row in source_rows)
@@ -226,15 +226,15 @@ def _render_html(
     clustered_count: int,
     first_scan: str,
     last_scan: str,
-    scan_ids: list[int],
+    scan_ids: list[UUID],
 ) -> str:
     source_summary = ", ".join(
         f"{count} {source_type}{'' if count == 1 else 's'}"
         for source_type, count in sorted(source_counts.items())
     )
-    scan_range = f"{min(scan_ids)}-{max(scan_ids)}" if len(scan_ids) > 1 else str(scan_ids[0])
-    direct_subjects = len({int(row["id"]) for row in subject_rows})
-    likely_subjects = len({int(row["id"]) for row in likely_subject_rows})
+    scan_count = f"{len(scan_ids)} scan{'' if len(scan_ids) == 1 else 's'}"
+    direct_subjects = len({row["id"] for row in subject_rows})
+    likely_subjects = len({row["id"] for row in likely_subject_rows})
     subject_note = (
         f"{direct_subjects} named subject(s) directly assigned in this run."
         if subject_rows
@@ -274,7 +274,7 @@ def _render_html(
 <body>
 <main>
   <h1>Ritrova Analysis Report</h1>
-  <p class="muted">Scan ids {escape(scan_range)}, scanned {escape(first_scan)} to {escape(last_scan)}.</p>
+  <p class="muted">{escape(scan_count)}, scanned {escape(first_scan)} to {escape(last_scan)}.</p>
   <section class="cards" aria-label="Run summary">
     <div class="card"><span class="label">Sources</span><span class="value">{len(source_rows)}</span><span class="muted">{escape(source_summary)}</span></div>
     <div class="card"><span class="label">Findings</span><span class="value">{finding_count}</span><span class="muted">Persisted detections</span></div>

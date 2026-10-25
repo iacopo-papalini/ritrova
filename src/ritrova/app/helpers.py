@@ -28,11 +28,26 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 KindType = Literal["people", "pets"]
 
 # URL kind -> finding species (for finding-level filtering)
 _KIND_TO_SPECIES: dict[str, str] = {"people": "human", "pets": "pet"}
+
+
+def parse_uuid_list(raw: str) -> list[UUID]:
+    """Parse a comma-separated id query parameter, dropping unparseable entries."""
+    out = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(UUID(part))
+        except ValueError:
+            continue
+    return out
 
 
 def species_for_kind(kind: KindType) -> str:

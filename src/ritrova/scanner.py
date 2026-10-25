@@ -10,6 +10,7 @@ side.
 """
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from PIL import Image
@@ -21,7 +22,22 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv"}
 
 
-def get_exif_date(image_path: Path) -> str | None:
+def parse_exif_datetime(value: str | None) -> datetime | None:
+    """``2002:08:09 20:07:38`` -> naive datetime. Sentinels and junk -> None.
+
+    ``scripts/migrate_sqlite_to_postgres.py`` carries its own copy of this
+    parser; the two must agree or migrated and freshly-scanned rows will
+    disagree about the same photo.
+    """
+    if not value or value.startswith("0000"):
+        return None
+    try:
+        return datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
+    except ValueError:
+        return datetime.fromisoformat(value) if "-" in value else None
+
+
+def get_exif_date(image_path: Path) -> datetime | None:
     """Extract date taken from EXIF data."""
     try:
         with Image.open(image_path) as img:
@@ -29,7 +45,7 @@ def get_exif_date(image_path: Path) -> str | None:
             if exif:
                 date_str = exif.get(ExifBase.DateTimeOriginal) or exif.get(ExifBase.DateTime)
                 if date_str:
-                    return str(date_str)
+                    return parse_exif_datetime(str(date_str))
     except OSError:
         pass
     return None

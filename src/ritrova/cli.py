@@ -1,23 +1,65 @@
 """CLI entry point for ritrova."""
 
+import asyncio
+import functools
 import logging
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import click
 from dotenv import load_dotenv
 
+from .db import FaceDB
 from .describer import DEFAULT_TRANSLATOR_MODEL, DEFAULT_VLM_MODEL
 
 load_dotenv()
 
 
+def _async_command(
+    fn: Callable[..., Coroutine[Any, Any, None]],
+) -> Callable[..., None]:
+    """Run an async Click command body, closing the pool it opened."""
+
+    @functools.wraps(fn)
+    def wrapper(ctx: click.Context, *args: Any, **kwargs: Any) -> None:
+        async def run() -> None:
+            try:
+                await fn(ctx, *args, **kwargs)
+            finally:
+                db = ctx.obj.get("db")
+                if db is not None:
+                    await db.close()
+
+        asyncio.run(run())
+
+    return wrapper
+
+
+async def _open_db(ctx: click.Context, base_dir: str | None = None) -> FaceDB:
+    db = await FaceDB.connect(
+        ctx.obj["dsn"],
+        data_dir=ctx.obj["data_dir"],
+        base_dir=base_dir if base_dir is not None else ctx.obj["photos_dir"],
+    )
+    ctx.obj["db"] = db
+    return db
+
+
 @click.group()
 @click.option(
-    "--db",
-    default="./faces.db",
-    help="Path to SQLite database",
-    envvar="FACE_DB",
+    "--dsn",
+    default="postgresql://ritrova:ritrova-dev@127.0.0.1:5432/ritrova",
+    help="PostgreSQL connection string",
+    envvar="RITROVA_DSN",
+)
+@click.option(
+    "--data-dir",
+    default="./data",
+    help="Directory for thumbnails, frame caches, and reports",
+    envvar="RITROVA_DATA_DIR",
+    type=click.Path(file_okay=False),
 )
 @click.option(
     "--photos-dir",
@@ -28,7 +70,7 @@ load_dotenv()
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
 @click.pass_context
-def cli(ctx: click.Context, db: str, photos_dir: str | None, verbose: bool) -> None:
+def cli(ctx: click.Context, dsn: str, data_dir: str, photos_dir: str | None, verbose: bool) -> None:
     """Ritrova — find again: face and pet recognition for photo collections."""
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.WARNING,
@@ -36,7 +78,8 @@ def cli(ctx: click.Context, db: str, photos_dir: str | None, verbose: bool) -> N
     )
     logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
     ctx.ensure_object(dict)
-    ctx.obj["db_path"] = db
+    ctx.obj["dsn"] = dsn
+    ctx.obj["data_dir"] = Path(data_dir)
     ctx.obj["photos_dir"] = photos_dir
 
 
@@ -144,7 +187,8 @@ def _require_photos_dir(ctx: click.Context) -> str:
     "assignments on explicit [SOURCES].",
 )
 @click.pass_context
-def analyse(
+@_async_command
+async def analyse(
     ctx: click.Context,
     sources: tuple[str, ...],
     no_faces: bool,
@@ -209,7 +253,6 @@ def analyse(
         PetDetectionStep,
         TranslationStep,
     )
-    from .db import FaceDB
     from .scanner import (
         IMAGE_EXTENSIONS,
         VIDEO_EXTENSIONS,
@@ -220,10 +263,10 @@ def analyse(
     )
 
     photos_dir = _require_photos_dir(ctx)
-    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
+    db = await _open_db(ctx, photos_dir)
     # scan_dir: where to discover files. base_dir (photos_dir): prefix to strip for relative paths.
     discovery_dir = scan_dir or photos_dir
-    frames_dir = Path(ctx.obj["db_path"]).parent / "tmp" / "frames"
+    frames_dir = ctx.obj["data_dir"] / "tmp" / "frames"
 
     builder = AnalysisPipelineBuilder()
 
@@ -305,7 +348,7 @@ def analyse(
                     f"(expected one of {sorted(IMAGE_EXTENSIONS | VIDEO_EXTENSIONS)})"
                 )
             stored = db.to_relative(str(abs_path))
-            if not force and db.is_scanned(stored, effective_scan_type):
+            if not force and await db.is_scanned(stored, effective_scan_type):
                 print(f"Skipping already-scanned source: {stored} (use --force to re-analyse)")
                 continue
             candidates.append((abs_path, source_type))
@@ -316,26 +359,25 @@ def analyse(
         # (existing scans are simply skipped).
         if force and not yes and candidates:
             stored_paths = [db.to_relative(str(p.resolve())) for p, _ in candidates]
-            placeholders = ",".join("?" * len(stored_paths))
-            existing_rows = db.conn.execute(
-                f"SELECT sc.id FROM scans sc "  # noqa: S608 -- placeholders only
-                f"JOIN sources s ON s.id = sc.source_id "
-                f"WHERE s.file_path IN ({placeholders}) AND sc.scan_type = ?",
-                (*stored_paths, effective_scan_type),
-            ).fetchall()
+            existing_rows = await db.fetch(
+                "SELECT sc.id FROM scans sc "
+                "JOIN sources s ON s.id = sc.source_id "
+                "WHERE s.file_path = ANY(?) AND sc.scan_type = ?",
+                stored_paths,
+                effective_scan_type,
+            )
             if existing_rows:
                 scan_ids = [r[0] for r in existing_rows]
-                id_placeholders = ",".join("?" * len(scan_ids))
-                n_findings = db.conn.execute(
-                    f"SELECT COUNT(*) FROM findings WHERE scan_id IN ({id_placeholders})",  # noqa: S608
-                    tuple(scan_ids),
-                ).fetchone()[0]
-                n_assigned = db.conn.execute(
-                    f"SELECT COUNT(*) FROM findings f "  # noqa: S608
-                    f"JOIN finding_assignment fa ON fa.finding_id = f.id "
-                    f"WHERE fa.subject_id IS NOT NULL AND f.scan_id IN ({id_placeholders})",
-                    tuple(scan_ids),
-                ).fetchone()[0]
+                n_findings = await db.fetchval(
+                    "SELECT COUNT(*) FROM findings WHERE scan_id = ANY(?)",
+                    scan_ids,
+                )
+                n_assigned = await db.fetchval(
+                    "SELECT COUNT(*) FROM findings f "
+                    "JOIN finding_assignment fa ON fa.finding_id = f.id "
+                    "WHERE fa.subject_id IS NOT NULL AND f.scan_id = ANY(?)",
+                    scan_ids,
+                )
                 if n_assigned > 0:
                     click.echo(
                         f"About to reprocess {len(candidates)} source(s). "
@@ -344,19 +386,19 @@ def analyse(
                     )
                     if not click.confirm("Proceed?", default=False):
                         click.echo("Aborted.")
-                        db.close()
+                        await db.close()
                         return
     else:
         for img_path in find_images(Path(discovery_dir)):
             stored = db.to_relative(str(img_path.resolve()))
-            if not force and db.is_scanned(stored, effective_scan_type):
+            if not force and await db.is_scanned(stored, effective_scan_type):
                 continue
             candidates.append((img_path, "photo"))
 
         if not no_videos:
             for vid_path in find_videos(Path(discovery_dir)):
                 stored = db.to_relative(str(vid_path.resolve()))
-                if not force and db.is_scanned(stored, effective_scan_type):
+                if not force and await db.is_scanned(stored, effective_scan_type):
                     continue
                 candidates.append((vid_path, "video"))
 
@@ -366,7 +408,7 @@ def analyse(
         rng = random.Random(sample_seed) if sample_seed is not None else random
         candidates = rng.sample(candidates, sample)
 
-    print(f"Database: {ctx.obj['db_path']}")
+    print(f"Database: {ctx.obj['dsn']}")
     print(f"scan_type: {effective_scan_type}")
     print(f"Pipeline:  {pipeline.strategy_id}")
     n_photos = sum(1 for _, t in candidates if t == "photo")
@@ -376,17 +418,14 @@ def analyse(
         f" — {workers} workers"
     )
 
-    import threading
     import time
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor
 
     persister = AnalysisPersister(db, frames_dir=frames_dir) if not dry_run else None
     strategy_id = pipeline.strategy_id
 
-    # Shared counters protected by a lock
-    lock = threading.Lock()
     counters = {"processed": 0, "errors": 0, "findings": 0, "done": 0}
-    persisted_scan_ids: list[int] = []
+    persisted_scan_ids: list[UUID] = []
 
     # Profile buckets split by source_type. Dataclass (not dict) so mypy can
     # track the per-field types cleanly.
@@ -409,7 +448,10 @@ def analyse(
     t_start = time.monotonic()
     total = len(candidates)
 
-    def _process_one(source_path: Path, source_type: str) -> None:
+    def _analyse_one(
+        source_path: Path, source_type: str
+    ) -> tuple[str, Any, dict[str, float] | None, float, float, float] | None:
+        """CPU half: detection only. Runs in a worker thread, touches no DB."""
         stored = db.to_relative(str(source_path.resolve()))
         if source_type == "video":
             frame_iter = video_frames(source_path, interval_sec=interval)
@@ -420,7 +462,6 @@ def analyse(
         t_source_start = time.monotonic() if profile else 0.0
         t_exif = 0.0
         t_pipeline = 0.0
-        t_persist = 0.0
 
         try:
             initial = SourceAnalysis(source_path=stored, source_type=source_type)
@@ -446,76 +487,92 @@ def analyse(
             if profile:
                 t_pipeline = time.monotonic() - t0
         except OSError:
-            with lock:
-                counters["errors"] += 1
-                counters["done"] += 1
+            return None
+
+        return stored, result, per_source_times, t_exif, t_pipeline, t_source_start
+
+    async def _persist_one(
+        outcome: tuple[str, Any, dict[str, float] | None, float, float, float] | None,
+        source_type: str,
+    ) -> None:
+        """DB half: runs on the event loop, so writes stay serialised."""
+        if outcome is None:
+            counters["errors"] += 1
+            counters["done"] += 1
             return
-
+        stored, result, per_source_times, t_exif, t_pipeline, t_source_start = outcome
         n_findings = len(result.findings)
+        t_persist = 0.0
 
-        # Persistence is serialised by the DB lock. Persist successful
-        # zero-result analyses too: the scan row records "looked and found
-        # nothing", while findings/descriptions are optional children.
+        # Persist successful zero-result analyses too: the scan row records
+        # "looked and found nothing", while findings/descriptions are optional
+        # children.
         if persister is not None:
             if profile:
                 t0 = time.monotonic()
             if force:
-                existing = db.conn.execute(
+                existing = await db.fetchval(
                     "SELECT sc.id FROM scans sc JOIN sources s ON s.id = sc.source_id "
                     "WHERE s.file_path = ? AND sc.scan_type = ?",
-                    (stored, effective_scan_type),
-                ).fetchone()
+                    stored,
+                    effective_scan_type,
+                )
                 if existing:
-                    db.delete_scan(existing[0])
-            scan_id = persister.persist(
+                    await db.delete_scan(existing)
+            scan_id = await persister.persist(
                 result, strategy_id=strategy_id, scan_type=effective_scan_type
             )
-            with lock:
-                persisted_scan_ids.append(scan_id)
+            persisted_scan_ids.append(scan_id)
             if profile:
                 t_persist = time.monotonic() - t0
 
-        with lock:
-            counters["processed"] += 1
-            counters["findings"] += n_findings
-            counters["done"] += 1
-            if per_source_times is not None:
-                bucket = profile_buckets[source_type]
-                step_sum = 0.0
-                for name, elapsed in per_source_times.items():
-                    bucket.steps[name] = bucket.steps.get(name, 0.0) + elapsed
-                    step_sum += elapsed
-                # I/O time inside the pipeline = pipeline wall minus step work.
-                # Captures PIL.open + EXIF-transpose + RGB convert for photos,
-                # and cv2 VideoCapture frame decoding for videos.
-                bucket.io += max(t_pipeline - step_sum, 0.0)
-                bucket.exif += t_exif
-                bucket.persist += t_persist
-                bucket.total += time.monotonic() - t_source_start
-                bucket.n += 1
+        counters["processed"] += 1
+        counters["findings"] += n_findings
+        counters["done"] += 1
+        if per_source_times is not None:
+            bucket = profile_buckets[source_type]
+            step_sum = 0.0
+            for name, elapsed in per_source_times.items():
+                bucket.steps[name] = bucket.steps.get(name, 0.0) + elapsed
+                step_sum += elapsed
+            # I/O time inside the pipeline = pipeline wall minus step work.
+            # Captures PIL.open + EXIF-transpose + RGB convert for photos,
+            # and cv2 VideoCapture frame decoding for videos.
+            bucket.io += max(t_pipeline - step_sum, 0.0)
+            bucket.exif += t_exif
+            bucket.persist += t_persist
+            bucket.total += time.monotonic() - t_source_start
+            bucket.n += 1
+
+    def _report_progress() -> None:
+        done = counters["done"]
+        if done % 10 and done != total:
+            return
+        elapsed = time.monotonic() - t_start
+        rate = done / elapsed if elapsed > 0 else 0
+        remaining = (total - done) / rate if rate > 0 else 0
+        eta_min, eta_sec = divmod(int(remaining), 60)
+        eta_h, eta_min = divmod(eta_min, 60)
+        eta = f"{eta_h}h{eta_min:02d}m" if eta_h else f"{eta_min}m{eta_sec:02d}s"
+        print(
+            f"\r  [{done}/{total}] processed={counters['processed']} "
+            f"findings={counters['findings']} errors={counters['errors']} "
+            f"{rate:.1f}/s ETA {eta}   ",
+            end="",
+            flush=True,
+        )
+
+    loop = asyncio.get_running_loop()
+    gate = asyncio.Semaphore(workers)
+
+    async def _run_one(source_path: Path, source_type: str) -> None:
+        async with gate:
+            outcome = await loop.run_in_executor(pool, _analyse_one, source_path, source_type)
+        await _persist_one(outcome, source_type)
+        _report_progress()
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(_process_one, src, stype): i for i, (src, stype) in enumerate(candidates, 1)
-        }
-        for future in as_completed(futures):
-            future.result()  # propagate unexpected exceptions
-            with lock:
-                done = counters["done"]
-            if done % 10 == 0 or done == total:
-                elapsed = time.monotonic() - t_start
-                rate = done / elapsed if elapsed > 0 else 0
-                remaining = (total - done) / rate if rate > 0 else 0
-                eta_min, eta_sec = divmod(int(remaining), 60)
-                eta_h, eta_min = divmod(eta_min, 60)
-                eta = f"{eta_h}h{eta_min:02d}m" if eta_h else f"{eta_min}m{eta_sec:02d}s"
-                print(
-                    f"\r  [{done}/{total}] processed={counters['processed']} "
-                    f"findings={counters['findings']} errors={counters['errors']} "
-                    f"{rate:.1f}/s ETA {eta}   ",
-                    end="",
-                    flush=True,
-                )
+        await asyncio.gather(*(_run_one(src, stype) for src, stype in candidates))
 
     print()
     mode = " (dry run)" if dry_run else ""
@@ -526,10 +583,10 @@ def analyse(
 
     if cluster_after_analysis and not dry_run and persisted_scan_ids:
         print("\nClustering analysed findings...")
-        _run_clustering(db, threshold=None, min_size=2, auto_merge_threshold=None)
+        await _run_clustering(db, threshold=None, min_size=2, auto_merge_threshold=None)
 
     if analysis_report and not dry_run:
-        report = write_analysis_report(db, sorted(persisted_scan_ids))
+        report = await write_analysis_report(db, sorted(persisted_scan_ids))
         if report is not None:
             print(
                 f"Analysis report: {report.path} "
@@ -566,7 +623,7 @@ def analyse(
                 print(f"  {name:<{name_w}}  {total_t / bucket.n:7.3f}s  ({pct:5.1f}%)")
             print(f"  {'TOTAL':<{name_w}}  {bucket.total / bucket.n:7.3f}s")
 
-    db.close()
+    await db.close()
 
 
 @cli.command()
@@ -591,19 +648,19 @@ def analyse(
     help="Specific source IDs (repeatable)",
 )
 @click.pass_context
-def describe(
+@_async_command
+async def describe(
     ctx: click.Context,
     model: str | None,
     translator: str | None,
     no_translate: bool,
     sample: int,
     force: bool,
-    source_ids_arg: tuple[int, ...],
+    source_ids_arg: tuple[str, ...],
 ) -> None:
     """Generate scene descriptions and tags for photos via VLM + translation."""
     import random
 
-    from .db import FaceDB
     from .describer import (
         DEFAULT_TRANSLATOR_MODEL,
         DEFAULT_VLM_MODEL,
@@ -616,24 +673,24 @@ def describe(
     translator = translator or DEFAULT_TRANSLATOR_MODEL
 
     _require_photos_dir(ctx)
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    db = await _open_db(ctx)
 
     if source_ids_arg:
-        source_ids = list(source_ids_arg)
+        source_ids = [UUID(x) for x in source_ids_arg]
     elif force:
-        source_ids = db.get_all_source_ids()
+        source_ids = await db.get_all_source_ids()
     else:
-        source_ids = db.get_undescribed_source_ids()
+        source_ids = await db.get_undescribed_source_ids()
 
     if not source_ids:
         print("All sources already have descriptions. Use --force to re-describe.")
-        db.close()
+        await db.close()
         return
 
     if sample > 0 and not source_ids_arg:
         source_ids = random.sample(source_ids, min(sample, len(source_ids)))
 
-    print(f"Database: {ctx.obj['db_path']}")
+    print(f"Database: {ctx.obj['dsn']}")
     print(f"VLM: {model}")
     if no_translate:
         print("Translation: disabled (English output)")
@@ -644,10 +701,10 @@ def describe(
 
     describer = Describer(model_id=model)
     translator_obj = None if no_translate else Translator(model_id=translator)
-    result = describe_sources(db, source_ids, describer, translator_obj, force=force)
+    result = await describe_sources(db, source_ids, describer, translator_obj, force=force)
 
     print(f"Done! described={result.described}  errors={result.errors}  tags={result.total_tags}")
-    db.close()
+    await db.close()
 
 
 @cli.command("describe-eval")
@@ -694,7 +751,8 @@ def describe(
     "Use to build a corpus for the translate-bench rig.",
 )
 @click.pass_context
-def describe_eval(
+@_async_command
+async def describe_eval(
     ctx: click.Context,
     model: str | None,
     translator: str | None,
@@ -715,7 +773,6 @@ def describe_eval(
     import csv
     import random
 
-    from .db import FaceDB
     from .describer import (
         DEFAULT_TRANSLATOR_MODEL,
         DEFAULT_VLM_MODEL,
@@ -727,10 +784,10 @@ def describe_eval(
     translator = translator or DEFAULT_TRANSLATOR_MODEL
 
     _require_photos_dir(ctx)
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    db = await _open_db(ctx)
 
     if high_complexity:
-        rows = db.conn.execute(
+        rows = await db.fetch(
             """
             SELECT s.id
             FROM sources s
@@ -741,7 +798,7 @@ def describe_eval(
             GROUP BY s.id
             HAVING COUNT(f.id) >= 4
             """
-        ).fetchall()
+        )
         all_ids = [r[0] for r in rows]
         if not all_ids:
             raise click.UsageError(
@@ -749,7 +806,7 @@ def describe_eval(
                 "run `ritrova analyse` first or drop the flag."
             )
     else:
-        all_ids = db.get_all_source_ids()
+        all_ids = await db.get_all_source_ids()
 
     all_ids.sort()  # stable order so --sample-seed is reproducible.
     rng = random.Random(sample_seed) if sample_seed is not None else random
@@ -774,7 +831,7 @@ def describe_eval(
 
         errors = 0
         for i, source_id in enumerate(source_ids, 1):
-            source = db.get_source(source_id)
+            source = await db.get_source(source_id)
             if not source or source.type != "photo":
                 continue
             resolved = db.resolve_path(source.file_path)
@@ -798,7 +855,7 @@ def describe_eval(
                 print(f"\r  [{i}/{len(source_ids)}] errors={errors}", end="", flush=True)
 
     print(f"\nDone! Wrote {len(source_ids) - errors} rows to {output} ({errors} errors)")
-    db.close()
+    await db.close()
 
 
 @cli.command("translate-bench")
@@ -947,7 +1004,7 @@ SPECIES_THRESHOLDS = {
 AUTO_MERGE_THRESHOLDS = {"person": 70.0, "pet": 101.0}
 
 
-def _run_clustering(
+async def _run_clustering(
     db: Any,
     *,
     threshold: float | None,
@@ -962,7 +1019,7 @@ def _run_clustering(
     for species, default_thresh in SPECIES_THRESHOLDS.items():
         t = threshold if threshold is not None else default_thresh
         print(f"\n── {species} (threshold={t}) ──")
-        result = cluster_faces(db, threshold=t, min_size=min_size, species=species)
+        result = await cluster_faces(db, threshold=t, min_size=min_size, species=species)
         print(f"  Total faces:      {result['total_faces']}")
         print(f"  Clusters formed:  {result['clusters']}")
         print(f"  Noise (outliers): {result['noise']}")
@@ -983,7 +1040,7 @@ def _run_clustering(
         iteration = 0
         max_iterations = 20  # safety cap — convergence is typically 1-3 passes
         while iteration < max_iterations:
-            result = auto_merge_clusters(db, min_similarity=t / 100, species=species)
+            result = await auto_merge_clusters(db, min_similarity=t / 100, species=species)
             iteration += 1
             print(
                 f"  pass {iteration}: merged {result['merged']} pairs, "
@@ -1016,64 +1073,65 @@ def _run_clustering(
     ),
 )
 @click.pass_context
-def cluster(
+@_async_command
+async def cluster(
     ctx: click.Context,
     threshold: float | None,
     min_size: int,
     auto_merge_threshold: float | None,
 ) -> None:
     """Cluster all detected faces by embedding similarity (humans + pets)."""
-    from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
-    _run_clustering(
+    db = await _open_db(ctx)
+    await _run_clustering(
         db,
         threshold=threshold,
         min_size=min_size,
         auto_merge_threshold=auto_merge_threshold,
     )
-    db.close()
+    await db.close()
 
 
 @cli.command()
 @click.option("--min-similarity", default=50.0, help="Minimum centroid similarity %")
 @click.option("--kind", default="person", help="Subject kind: person or pet")
 @click.pass_context
-def auto_assign(ctx: click.Context, min_similarity: float, kind: str) -> None:
+@_async_command
+async def auto_assign(ctx: click.Context, min_similarity: float, kind: str) -> None:
     """Bulk-assign unnamed clusters to existing named subjects."""
     from .cluster import auto_assign as _auto_assign
-    from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
-    result = _auto_assign(db, min_similarity=min_similarity / 100, kind=kind)
+    db = await _open_db(ctx)
+    result = await _auto_assign(db, min_similarity=min_similarity / 100, kind=kind)
 
     print(
         f"\nAssigned {result['assigned_clusters']} clusters "
         f"({result['assigned_faces']} faces), "
         f"{result['unmatched']} unmatched"
     )
-    db.close()
+    await db.close()
 
 
 @cli.command()
 @click.option("--min-similarity", default=70.0, help="Minimum centroid similarity %")
 @click.option("--kind", default="person", help="Subject kind: person or pet")
 @click.pass_context
-def auto_merge(ctx: click.Context, min_similarity: float, kind: str) -> None:
+@_async_command
+async def auto_merge(ctx: click.Context, min_similarity: float, kind: str) -> None:
     """Auto-merge unnamed clusters whose centroids are highly similar."""
     from .cluster import auto_merge_clusters
     from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    db = await _open_db(ctx)
     species = FaceDB.KIND_TO_SPECIES[kind]
-    result = auto_merge_clusters(db, min_similarity=min_similarity / 100, species=species)
+    result = await auto_merge_clusters(db, min_similarity=min_similarity / 100, species=species)
 
     print(
         f"\nMerged {result['merged']} cluster pairs "
         f"({result['faces_moved']} faces moved), "
         f"{result['remaining_clusters']} clusters remaining"
     )
-    db.close()
+    await db.close()
 
 
 @cli.command()
@@ -1082,7 +1140,8 @@ def auto_merge(ctx: click.Context, min_similarity: float, kind: str) -> None:
 @click.option("--min-edges", default=2.0, help="Minimum Canny edge density % (motion blur)")
 @click.option("--dry-run", is_flag=True, help="Show what would be dismissed without acting")
 @click.pass_context
-def cleanup(
+@_async_command
+async def cleanup(
     ctx: click.Context, min_size: int, min_sharpness: float, min_edges: float, dry_run: bool
 ) -> None:
     """Dismiss tiny and blurry faces from the database."""
@@ -1090,12 +1149,11 @@ def cleanup(
     from PIL import Image, ImageFile, ImageOps
 
     ImageFile.LOAD_TRUNCATED_IMAGES = True
-    from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
+    db = await _open_db(ctx)
 
     # Find uncurated faces (no assignment row at all, excluded included).
-    rows = db.query(
+    rows = await db.query(
         "SELECT f.id, f.source_id, f.bbox_x, f.bbox_y, f.bbox_w, f.bbox_h "
         "FROM findings f "
         "LEFT JOIN finding_assignment fa ON fa.finding_id = f.id "
@@ -1127,13 +1185,18 @@ def cleanup(
     focus_blur = [0]
     motion_blur = [0]
 
-    def check_quality(row: tuple[int, ...]) -> tuple[int | None, str | None]:
+    # Resolve every source path on the loop first: the workers below run in
+    # threads and cannot await the pool.
+    source_paths = {
+        pid: db.resolve_path(photo.file_path)
+        for pid, photo in [(r[1], await db.get_source(r[1])) for r in check_rows]
+        if photo is not None
+    }
+
+    def check_quality(row: tuple[Any, ...]) -> tuple[Any | None, str | None]:
         fid, pid, bx, by, bw, bh = row
-        photo = db.get_source(pid)
-        if not photo:
-            return None, None
-        resolved = db.resolve_path(photo.file_path)
-        if not resolved.exists():
+        resolved = source_paths.get(pid)
+        if resolved is None or not resolved.exists():
             return None, None
         try:
             raw_img = Image.open(resolved)
@@ -1178,10 +1241,10 @@ def cleanup(
     if dry_run:
         print("Dry run — no changes made.")
     elif to_dismiss:
-        db.dismiss_findings(to_dismiss)
+        await db.dismiss_findings(to_dismiss)
         print(f"Dismissed {len(to_dismiss)} faces.")
 
-    db.close()
+    await db.close()
 
 
 @cli.command()
@@ -1211,7 +1274,7 @@ def serve(ctx: click.Context, host: str, port: int) -> None:
 
     from .app import create_app
 
-    app = create_app(ctx.obj["db_path"], photos_dir=ctx.obj["photos_dir"])
+    app = create_app(ctx.obj["dsn"], ctx.obj["data_dir"], photos_dir=ctx.obj["photos_dir"])
     print(f"Ritrova → http://localhost:{port}")
     uvicorn.run(app, host=host, port=port)
 
@@ -1219,29 +1282,29 @@ def serve(ctx: click.Context, host: str, port: int) -> None:
 @cli.command()
 @click.option("--output", "-o", default="-", help="Output file (- for stdout)")
 @click.pass_context
-def export(ctx: click.Context, output: str) -> None:
+@_async_command
+async def export(ctx: click.Context, output: str) -> None:
     """Export database as JSON."""
-    from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
-    data = db.export_json()
+    db = await _open_db(ctx)
+    data = await db.export_json()
 
     if output == "-":
         print(data)
     else:
         Path(output).write_text(data)
         print(f"Exported to {output}")
-    db.close()
+    await db.close()
 
 
 @cli.command()
 @click.pass_context
-def stats(ctx: click.Context) -> None:
+@_async_command
+async def stats(ctx: click.Context) -> None:
     """Show database statistics."""
-    from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
-    s = db.get_stats()
+    db = await _open_db(ctx)
+    s = await db.get_stats()
 
     print(f"Sources scanned:   {s['total_sources']}")
     print(f"Findings detected: {s['total_findings']}")
@@ -1249,7 +1312,7 @@ def stats(ctx: click.Context) -> None:
     print(f"Named findings:    {s['named_findings']}")
     print(f"Unnamed clusters:  {s['unnamed_clusters']}")
     print(f"Unclustered:       {s['unclustered_findings']}")
-    db.close()
+    await db.close()
 
 
 @cli.group()
@@ -1260,27 +1323,27 @@ def scans() -> None:
 @scans.command("list")
 @click.option("--source-pattern", default=None, help="GLOB pattern on source path (e.g. '2024/*')")
 @click.pass_context
-def scans_list(ctx: click.Context, source_pattern: str | None) -> None:
+@_async_command
+async def scans_list(ctx: click.Context, source_pattern: str | None) -> None:
     """List scans, optionally filtered by a source path pattern."""
-    from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
-    rows = db.find_scans(source_pattern=source_pattern)
+    db = await _open_db(ctx)
+    rows = await db.find_scans(source_pattern=source_pattern)
     if not rows:
         click.echo("(no scans match)")
     else:
-        click.echo(f"{'id':>6}  {'type':6s}  {'findings':>8}  {'scanned_at':24s}  source")
+        click.echo(f"{'id':36s}  {'type':6s}  {'findings':>8}  {'scanned_at':24s}  source")
         for r in rows:
             click.echo(
-                f"{r['id']:>6}  {r['scan_type']:6s}  {r['finding_count']:>8}  "
-                f"{r['scanned_at']:24s}  {r['source_path']}"
+                f"{r['id']!s:36s}  {r['scan_type']:6s}  {r['finding_count']:>8}  "
+                f"{r['scanned_at']!s:24s}  {r['source_path']}"
             )
         click.echo(f"\n{len(rows)} scan(s)")
-    db.close()
+    await db.close()
 
 
 @scans.command("prune")
-@click.option("--scan-id", type=int, default=None, help="Prune a single scan by id")
+@click.option("--scan-id", type=click.UUID, default=None, help="Prune a single scan by id")
 @click.option(
     "--source-pattern",
     default=None,
@@ -1288,34 +1351,33 @@ def scans_list(ctx: click.Context, source_pattern: str | None) -> None:
 )
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
 @click.pass_context
-def scans_prune(
-    ctx: click.Context, scan_id: int | None, source_pattern: str | None, yes: bool
+@_async_command
+async def scans_prune(
+    ctx: click.Context, scan_id: UUID | None, source_pattern: str | None, yes: bool
 ) -> None:
     """Prune scans (and their findings via cascade). Requires --scan-id and/or --source-pattern."""
     if scan_id is None and source_pattern is None:
         msg = "Provide --scan-id and/or --source-pattern (refusing to prune everything)."
         raise click.UsageError(msg)
 
-    from .db import FaceDB
-
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
-    targets = db.find_scans(scan_id=scan_id, source_pattern=source_pattern)
+    db = await _open_db(ctx)
+    targets = await db.find_scans(scan_id=scan_id, source_pattern=source_pattern)
     if not targets:
         click.echo("(no scans match)")
-        db.close()
+        await db.close()
         return
 
     n_findings = sum(t["finding_count"] for t in targets)
-    n_assigned = db.query(
-        f"SELECT COUNT(*) FROM findings f "  # noqa: S608
-        f"JOIN finding_assignment fa ON fa.finding_id = f.id "
-        f"WHERE fa.subject_id IS NOT NULL AND f.scan_id IN "
-        f"({','.join(str(t['id']) for t in targets)})"
-    )[0][0]
+    n_assigned = await db.fetchval(
+        "SELECT COUNT(*) FROM findings f "
+        "JOIN finding_assignment fa ON fa.finding_id = f.id "
+        "WHERE fa.subject_id IS NOT NULL AND f.scan_id = ANY(?)",
+        [t["id"] for t in targets],
+    )
 
     click.echo(f"About to prune {len(targets)} scan(s):")
     for t in targets[:10]:
-        click.echo(f"  scan {t['id']:>6} [{t['scan_type']}]  {t['source_path']}")
+        click.echo(f"  scan {t['id']} [{t['scan_type']}]  {t['source_path']}")
     if len(targets) > 10:
         click.echo(f"  ... and {len(targets) - 10} more")
     click.echo(
@@ -1324,25 +1386,25 @@ def scans_prune(
     )
     if not yes and not click.confirm("Proceed?", default=False):
         click.echo("Aborted.")
-        db.close()
+        await db.close()
         return
 
     for t in targets:
-        db.delete_scan(t["id"])
+        await db.delete_scan(t["id"])
     click.echo(f"Pruned {len(targets)} scan(s) ({n_findings} findings).")
-    db.close()
+    await db.close()
 
 
 @cli.command("backfill-gps")
 @click.pass_context
-def backfill_gps(ctx: click.Context) -> None:
+@_async_command
+async def backfill_gps(ctx: click.Context) -> None:
     """Read GPS from EXIF for all photos missing coordinates."""
-    from .db import FaceDB
     from .scanner import get_exif_gps
 
     photos_dir = _require_photos_dir(ctx)
-    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
-    rows = db.query("SELECT id, file_path FROM sources WHERE latitude IS NULL")
+    db = await _open_db(ctx, photos_dir)
+    rows = await db.query("SELECT id, file_path FROM sources WHERE latitude IS NULL")
     updated = 0
     total = len(rows)
     for i, r in enumerate(rows, 1):
@@ -1352,7 +1414,7 @@ def backfill_gps(ctx: click.Context) -> None:
             continue
         gps = get_exif_gps(resolved)
         if gps:
-            db.run(
+            await db.run(
                 "UPDATE sources SET latitude = ?, longitude = ? WHERE id = ?",
                 (gps[0], gps[1], pid),
             )
@@ -1360,7 +1422,7 @@ def backfill_gps(ctx: click.Context) -> None:
         if i % 500 == 0 or i == total:
             print(f"\r  [{i}/{total}] updated={updated}", end="", flush=True)
     print(f"\nUpdated {updated} of {total} sources with GPS coordinates.")
-    db.close()
+    await db.close()
 
 
 @cli.command("backfill-path-metadata")
@@ -1371,38 +1433,38 @@ def backfill_gps(ctx: click.Context) -> None:
     help="Limit backfill to one source type.",
 )
 @click.pass_context
-def backfill_path_metadata(ctx: click.Context, source_type: str | None) -> None:
+@_async_command
+async def backfill_path_metadata(ctx: click.Context, source_type: str | None) -> None:
     """Extract path dates and tags for existing sources."""
-    from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
-    count = db.backfill_source_path_metadata(source_type=source_type)
+    db = await _open_db(ctx)
+    count = await db.backfill_source_path_metadata(source_type=source_type)
     qualifier = f" {source_type}" if source_type else ""
     print(f"Indexed path metadata for {count}{qualifier} source(s).")
-    db.close()
+    await db.close()
 
 
 @cli.command("migrate-paths")
 @click.pass_context
-def migrate_paths(ctx: click.Context) -> None:
+@_async_command
+async def migrate_paths(ctx: click.Context) -> None:
     """Rewrite absolute paths in the DB to relative (using --photos-dir as base)."""
-    from .db import FaceDB
 
     photos_dir = ctx.obj["photos_dir"]
     if not photos_dir:
         print("Error: --photos-dir is required for migration")
         raise SystemExit(1)
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=photos_dir)
+    db = await _open_db(ctx, photos_dir)
     base = str(db.base_dir) + "/"
 
-    rows = db.query("SELECT id, file_path FROM sources")
+    rows = await db.query("SELECT id, file_path FROM sources")
     migrated = 0
     for r in rows:
         sid, fp = r[0], r[1]
         if fp and fp.startswith(base):
             new_fp = fp[len(base) :]
-            db.run("UPDATE sources SET file_path = ? WHERE id = ?", (new_fp, sid))
+            await db.run("UPDATE sources SET file_path = ? WHERE id = ?", (new_fp, sid))
             migrated += 1
 
     print(f"Migrated {migrated} of {len(rows)} source paths to relative.")
@@ -1412,7 +1474,8 @@ def migrate_paths(ctx: click.Context) -> None:
 @click.option("--dry-run", is_flag=True, help="Report duplicates without deleting")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
-def prune(ctx: click.Context, dry_run: bool, yes: bool) -> None:
+@_async_command
+async def prune(ctx: click.Context, dry_run: bool, yes: bool) -> None:
     """Remove duplicate findings on the same source.
 
     When a source is re-analysed, duplicate findings can accumulate. This
@@ -1422,34 +1485,33 @@ def prune(ctx: click.Context, dry_run: bool, yes: bool) -> None:
     - (source_id, subject_id): keep newest finding per assigned subject
     - (source_id, cluster_id): keep newest finding per cluster (unassigned)
     """
-    from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
-    report = db.prune_duplicate_findings(dry_run=True)
+    db = await _open_db(ctx)
+    report = await db.prune_duplicate_findings(dry_run=True)
 
-    print(f"Database: {ctx.obj['db_path']}")
+    print(f"Database: {ctx.obj['dsn']}")
     print(f"  Duplicate by subject assignment: {report.by_subject}")
     print(f"  Duplicate by cluster membership: {report.by_cluster}")
     print(f"  Total to remove: {report.total}")
 
     if report.total == 0:
         print("\nNo duplicates found.")
-        db.close()
+        await db.close()
         return
 
     if dry_run:
         print("\nDry run — no changes made.")
-        db.close()
+        await db.close()
         return
 
     if not yes and not click.confirm(f"Delete {report.total} duplicate finding(s)?", default=False):
         print("Aborted.")
-        db.close()
+        await db.close()
         return
 
-    report = db.prune_duplicate_findings(dry_run=False)
+    report = await db.prune_duplicate_findings(dry_run=False)
     print(f"Deleted {report.total} duplicate finding(s).")
-    db.close()
+    await db.close()
 
 
 @cli.command("doctor")
@@ -1460,17 +1522,17 @@ def prune(ctx: click.Context, dry_run: bool, yes: bool) -> None:
 )
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt (requires --fix)")
 @click.pass_context
-def doctor(ctx: click.Context, fix: bool, yes: bool) -> None:
+@_async_command
+async def doctor(ctx: click.Context, fix: bool, yes: bool) -> None:
     """Find (and optionally delete) orphaned DB rows.
 
     Orphans are child rows whose parent was deleted from a connection with
     ``PRAGMA foreign_keys=OFF`` (e.g. a plain ``sqlite3`` CLI session). The
     app connection enforces FKs, so only external tools can create these.
     """
-    from .db import FaceDB
 
-    db = FaceDB(ctx.obj["db_path"], base_dir=ctx.obj["photos_dir"])
-    report = db.find_orphans()
+    db = await _open_db(ctx)
+    report = await db.find_orphans()
 
     categories = [
         ("findings with missing source", report.findings_missing_source),
@@ -1478,7 +1540,7 @@ def doctor(ctx: click.Context, fix: bool, yes: bool) -> None:
         ("scans with missing source", report.scans_missing_source),
     ]
 
-    click.echo(f"DB: {ctx.obj['db_path']}")
+    click.echo(f"DB: {ctx.obj['dsn']}")
     for label, ids in categories:
         click.echo(f"  {label}: {len(ids)}")
         # Show a small sample so the user can cross-reference with their logs
@@ -1490,22 +1552,22 @@ def doctor(ctx: click.Context, fix: bool, yes: bool) -> None:
 
     if report.total == 0:
         click.echo("\nNo orphans found. DB is healthy.")
-        db.close()
+        await db.close()
         return
 
     click.echo(f"\nTotal orphans: {report.total}")
 
     if not fix:
         click.echo("Run with --fix to delete them. Exiting with code 1 (dirty).")
-        db.close()
+        await db.close()
         raise SystemExit(1)
 
     if not yes and not click.confirm(f"Delete {report.total} orphaned row(s)?", default=False):
         click.echo("Aborted.")
-        db.close()
+        await db.close()
         return
 
-    db.delete_orphans(report)
+    await db.delete_orphans(report)
     click.echo(f"Deleted {report.total} orphan row(s).")
-    db.close()
-    db.close()
+    await db.close()
+    await db.close()

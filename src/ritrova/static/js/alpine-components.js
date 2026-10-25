@@ -66,11 +66,11 @@ document.addEventListener('alpine:init', () => {
 
     has(sourceId) {
       if (!this.loaded) this.load();
-      return this.ids.has(Number(sourceId));
+      return this.ids.has(String(sourceId));
     },
 
     async toggle(sourceId) {
-      sourceId = Number(sourceId);
+      sourceId = String(sourceId);
       const selected = this.ids.has(sourceId);
       const r = await fetch(`/api/print-selection/${sourceId}`, {
         method: selected ? 'DELETE' : 'POST',
@@ -103,7 +103,7 @@ document.addEventListener('alpine:init', () => {
 
     _ids() {
       return [...(this._grid()?.querySelectorAll('[data-print-source-id]') || [])]
-        .map((el) => Number(el.dataset.printSourceId));
+        .map((el) => el.dataset.printSourceId);
     },
 
     _syncStore(data) {
@@ -218,7 +218,7 @@ document.addEventListener('alpine:init', () => {
       const btn = event.target.closest('[data-remove-circle-id]');
       if (!btn || !this.$root.contains(btn)) return;
       event.preventDefault();
-      this.removeCircle(Number(btn.dataset.removeCircleId), btn.closest('[data-circle-chip]'));
+      this.removeCircle(btn.dataset.removeCircleId, btn.closest('[data-circle-chip]'));
     },
 
     _appendChip(circle) {
@@ -311,8 +311,7 @@ document.addEventListener('alpine:init', () => {
     _tileIdFromEvent(e) {
       const el = e.target.closest('[data-finding-id]');
       if (!el || !this.$root.contains(el)) return null;
-      const id = parseInt(el.dataset.findingId, 10);
-      return Number.isNaN(id) ? null : id;
+      return el.dataset.findingId || null;
     },
 
     _onMouseDown(e) {
@@ -362,7 +361,7 @@ document.addEventListener('alpine:init', () => {
     _extendTo(id) {
       // Range-select from anchor to id in DOM (reading) order; additive only.
       const ids = [...this.$root.querySelectorAll('[data-finding-id]')]
-        .map(el => parseInt(el.dataset.findingId, 10));
+        .map(el => el.dataset.findingId);
       const i0 = ids.indexOf(this.anchor);
       const i1 = ids.indexOf(id);
       if (i0 < 0 || i1 < 0) return;
@@ -937,7 +936,7 @@ document.addEventListener('alpine:init', () => {
       const group = thumb.closest('[data-lightbox-group]') || thumb.parentElement;
       if (!group) return;
       const nodes = Array.from(group.querySelectorAll(`[${attr}]`));
-      const ids = nodes.map((n) => Number(n.getAttribute(attr)));
+      const ids = nodes.map((n) => n.getAttribute(attr));
       const start = Math.max(0, nodes.indexOf(thumb));
       if (mode === 'finding') this.openFindings(ids, start);
       else this.openSources(ids, start);

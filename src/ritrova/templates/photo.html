@@ -51,7 +51,7 @@
     </div>
     {% if source.taken_at %}
     <p class="text-gallery-muted text-sm mt-1 ml-8">
-      Taken {{ source.taken_at }} &mdash; {{ source.width }}&times;{{ source.height }}
+      Taken {{ source.taken_at.strftime('%Y-%m-%d %H:%M') }} &mdash; {{ source.width }}&times;{{ source.height }}
     </p>
     {% else %}
     <p class="text-gallery-muted text-sm mt-1 ml-8">

@@ -10,6 +10,7 @@ router modules that render cluster / singleton pages.
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 import numpy as np
 
@@ -18,23 +19,23 @@ from .db import FaceDB, Finding
 from .embeddings import cosine_similarity, normalize
 
 
-def compute_cluster_hint(db: FaceDB, cluster_id: int) -> dict[str, Any] | None:
+async def compute_cluster_hint(db: FaceDB, cluster_id: int) -> dict[str, Any] | None:
     """Return the best matching subject for a cluster, or None.
 
     Returns dict with keys: subject_id, name, sim (percentage).
     """
-    findings = db.get_cluster_findings(cluster_id, limit=200)
+    findings = await db.get_cluster_findings(cluster_id, limit=200)
     if not findings:
         return None
 
     centroid = _findings_centroid(findings)
     dim = len(centroid)
     kind = "pet" if dim == EMBEDDING_DIMS["pet"] else "person"
-    subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
+    subject_centroids = await db.get_subject_centroids(kind=kind, embedding_dim=dim)
 
     best_name: str | None = None
     best_sim = 0.0
-    best_sid: int | None = None
+    best_sid: UUID | None = None
 
     for sid, name, s_centroid in subject_centroids:
         sim = cosine_similarity(centroid, s_centroid)
@@ -48,11 +49,11 @@ def compute_cluster_hint(db: FaceDB, cluster_id: int) -> dict[str, Any] | None:
     return {"subject_id": best_sid, "name": best_name, "sim": round(best_sim * 100, 1)}
 
 
-def compute_singleton_hints(
+async def compute_singleton_hints(
     db: FaceDB,
     findings: list[Finding],
     species: str,
-) -> dict[int, dict[str, Any]]:
+) -> dict[UUID, dict[str, Any]]:
     """For each singleton finding, find the nearest subject by centroid similarity.
 
     Returns {finding_id: {"subject_id": int, "name": str, "sim": float}}.
@@ -61,13 +62,13 @@ def compute_singleton_hints(
     # subject lookups and embedding-dim selection.
     kind = db._kind_for_species(species)  # noqa: SLF001 — DB-internal mapper
     dim = EMBEDDING_DIMS.get(kind)
-    subject_centroids = db.get_subject_centroids(kind=kind, embedding_dim=dim)
+    subject_centroids = await db.get_subject_centroids(kind=kind, embedding_dim=dim)
     if not subject_centroids:
         return {}
 
     centroid_matrix = np.array([sc[2] for sc in subject_centroids])
 
-    hints: dict[int, dict[str, Any]] = {}
+    hints: dict[UUID, dict[str, Any]] = {}
     for finding in findings:
         emb = normalize(finding.embedding)
         sims = centroid_matrix @ emb

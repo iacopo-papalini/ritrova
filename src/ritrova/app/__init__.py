@@ -15,6 +15,8 @@ the order they were registered, so an ``/api/...`` route registered after
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -23,7 +25,7 @@ from fastapi.templating import Jinja2Templates
 
 from ..db import FaceDB
 from ..undo import UndoStore
-from . import deps
+from . import deps, imaging
 from .routers import (
     browse,
     circles,
@@ -41,18 +43,39 @@ TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 STATIC_DIR = Path(__file__).parent.parent / "static"
 
 
-def create_app(db_path: str, photos_dir: str | None = None) -> FastAPI:
-    app = FastAPI(title="Ritrova")
-    db = FaceDB(db_path, base_dir=photos_dir)
+def create_app(
+    dsn: str,
+    data_dir: str | Path,
+    photos_dir: str | None = None,
+    *,
+    imaging_workers: int = 4,
+) -> FastAPI:
     undo_store = UndoStore()
+    thumbnails_dir = Path(data_dir) / "tmp" / "thumbnails"
+    thumbnails_dir.mkdir(parents=True, exist_ok=True)
+    templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # The pool has to be created inside the running loop, so it belongs
+        # here rather than in the constructor.
+        db = await FaceDB.connect(dsn, data_dir=data_dir, base_dir=photos_dir)
+        imaging.configure(imaging_workers)
+        deps.configure(
+            db=db,
+            undo_store=undo_store,
+            templates=templates,
+            thumbnails_dir=thumbnails_dir,
+        )
+        try:
+            yield
+        finally:
+            imaging.shutdown()
+            await db.close()
+
+    app = FastAPI(title="Ritrova", lifespan=lifespan)
     # Expose on app.state so tests can clear/peek between cases.
     app.state.undo_store = undo_store
-
-    thumbnails_dir = Path(db_path).parent / "tmp" / "thumbnails"
-    thumbnails_dir.mkdir(parents=True, exist_ok=True)
-
-    templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-    deps.configure(db=db, undo_store=undo_store, templates=templates, thumbnails_dir=thumbnails_dir)
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

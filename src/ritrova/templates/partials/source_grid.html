@@ -39,7 +39,7 @@
     {% if source.taken_at %}
     <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent
                 px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-      <span class="text-xs text-gallery-text/90">{{ source.taken_at[:10] }}</span>
+      <span class="text-xs text-gallery-text/90">{{ source.taken_at.strftime('%Y-%m-%d') }}</span>
     </div>
     {% endif %}
   </div>

@@ -7,12 +7,14 @@ import re
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, Body, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from ...undo import RestorePrintSelectionPayload
 from ..deps import get_db, get_templates, get_undo_store
+from ..responses import JSONResponse
 
 router = APIRouter()
 
@@ -26,9 +28,9 @@ def _safe_zip_name(position: int, file_path: str) -> str:
     return f"{position:04d}_{stem}{suffix}"
 
 
-def _payload() -> dict[str, object]:
+async def _payload() -> dict[str, object]:
     db = get_db()
-    items = db.list_print_selection()
+    items = await db.list_print_selection()
     return {
         "total": len(items),
         "source_ids": [item.source.id for item in items],
@@ -45,23 +47,23 @@ def _payload() -> dict[str, object]:
 
 
 @router.get("/print", response_class=HTMLResponse)
-def print_page(request: Request) -> HTMLResponse:
+async def print_page(request: Request) -> HTMLResponse:
     return get_templates().TemplateResponse(
         name="print_selection.html",
-        context={"kind": "people", "items": get_db().list_print_selection()},
+        context={"kind": "people", "items": await get_db().list_print_selection()},
         request=request,
     )
 
 
 @router.get("/api/print-selection")
-def get_print_selection() -> JSONResponse:
-    return JSONResponse(_payload())
+async def get_print_selection() -> JSONResponse:
+    return JSONResponse(await _payload())
 
 
 @router.post("/api/print-selection/export")
-def export_print_selection() -> StreamingResponse:
+async def export_print_selection() -> StreamingResponse:
     db = get_db()
-    items = db.list_print_selection()
+    items = await db.list_print_selection()
     if not items:
         raise HTTPException(400, "Print selection is empty")
 
@@ -100,10 +102,10 @@ def export_print_selection() -> StreamingResponse:
 
 
 @router.post("/api/print-selection/clear")
-def clear_print_selection() -> JSONResponse:
+async def clear_print_selection() -> JSONResponse:
     db = get_db()
-    prior = db.get_print_selection_ids()
-    db.clear_print_selection()
+    prior = await db.get_print_selection_ids()
+    await db.clear_print_selection()
     token = get_undo_store().put(
         "Cleared print selection",
         RestorePrintSelectionPayload(source_ids=prior),
@@ -121,24 +123,24 @@ def clear_print_selection() -> JSONResponse:
 
 
 @router.post("/api/print-selection/reorder")
-def reorder_print_selection(source_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
-    get_db().reorder_print_selection(source_ids)
-    payload = _payload()
+async def reorder_print_selection(source_ids: list[UUID] = Body(..., embed=True)) -> JSONResponse:
+    await get_db().reorder_print_selection(source_ids)
+    payload = await _payload()
     payload.update({"ok": True})
     return JSONResponse(payload)
 
 
 @router.post("/api/print-selection/{source_id}/remove-from-list")
-def remove_print_selection_from_list(source_id: int) -> JSONResponse:
+async def remove_print_selection_from_list(source_id: UUID) -> JSONResponse:
     """Remove from the /print review page.
 
     Unlike the global toggle, this action makes the card disappear from the
     current view, so it must always return an undo token.
     """
     db = get_db()
-    prior = db.get_print_selection_ids()
-    db.remove_from_print_selection(source_id)
-    payload = _payload()
+    prior = await db.get_print_selection_ids()
+    await db.remove_from_print_selection(source_id)
+    payload = await _payload()
     if source_id in prior:
         token = get_undo_store().put(
             "Removed photo from print selection",
@@ -150,14 +152,14 @@ def remove_print_selection_from_list(source_id: int) -> JSONResponse:
 
 
 @router.post("/api/print-selection/{source_id}")
-def add_print_selection(source_id: int, undo: bool = False) -> JSONResponse:
+async def add_print_selection(source_id: UUID, undo: bool = False) -> JSONResponse:
     db = get_db()
-    prior = db.get_print_selection_ids()
+    prior = await db.get_print_selection_ids()
     try:
-        position = db.add_to_print_selection(source_id)
+        position = await db.add_to_print_selection(source_id)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
-    payload = _payload()
+    payload = await _payload()
     if undo and source_id not in prior:
         token = get_undo_store().put(
             "Added photo to print selection",
@@ -169,11 +171,11 @@ def add_print_selection(source_id: int, undo: bool = False) -> JSONResponse:
 
 
 @router.delete("/api/print-selection/{source_id}")
-def remove_print_selection(source_id: int, undo: bool = False) -> JSONResponse:
+async def remove_print_selection(source_id: UUID, undo: bool = False) -> JSONResponse:
     db = get_db()
-    prior = db.get_print_selection_ids()
-    db.remove_from_print_selection(source_id)
-    payload = _payload()
+    prior = await db.get_print_selection_ids()
+    await db.remove_from_print_selection(source_id)
+    payload = await _payload()
     if undo and source_id in prior:
         token = get_undo_store().put(
             "Removed photo from print selection",

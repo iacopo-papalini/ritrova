@@ -11,8 +11,9 @@ dance — see ADR-012 §M3.
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, Body, Form
-from fastapi.responses import JSONResponse
 
 from ...services_domain import ManualFindingError
 from ..deps import (
@@ -21,13 +22,14 @@ from ..deps import (
     get_findings_service,
     get_subject_service,
 )
+from ..responses import JSONResponse
 
 router = APIRouter()
 
 
 @router.post("/api/sources/{source_id}/findings")
-def create_manual_finding(
-    source_id: int,
+async def create_manual_finding(
+    source_id: UUID,
     bbox: list[int] = Body(..., embed=True),
     species: str = Body(..., embed=True),
 ) -> JSONResponse:
@@ -47,7 +49,7 @@ def create_manual_finding(
         return JSONResponse({"error": "bbox must be [x, y, w, h]"}, status_code=422)
     bbox_tuple = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
     try:
-        result = get_findings_service().create_manual(
+        result = await get_findings_service().create_manual(
             source_id=source_id, bbox=bbox_tuple, species=species
         )
     except ManualFindingError as e:
@@ -71,16 +73,16 @@ def create_manual_finding(
 
 
 @router.post("/api/findings/swap")
-def swap_findings(
-    face_ids: list[int] = Body(...),
-    target_subject_id: int = Body(...),
+async def swap_findings(
+    face_ids: list[UUID] = Body(...),
+    target_subject_id: UUID = Body(...),
 ) -> JSONResponse:
     """Move a batch of findings onto a target subject.
 
     Same undo shape as claim-faces; kept as a separate route so the UI
     can label the toast "Swapped" rather than "Claimed".
     """
-    receipt = get_subject_service().swap_findings(face_ids, target_subject_id)
+    receipt = await get_subject_service().swap_findings(face_ids, target_subject_id)
     if receipt is None:
         return JSONResponse({"ok": True, "swapped": 0})
     return JSONResponse(
@@ -94,7 +96,7 @@ def swap_findings(
 
 
 @router.post("/api/findings/mark-stranger")
-def mark_findings_stranger(face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
+async def mark_findings_stranger(face_ids: list[UUID] = Body(..., embed=True)) -> JSONResponse:
     """Flag an ad-hoc batch of findings as strangers.
 
     Writes ``exclusion_reason='stranger'`` on each one (overwriting any
@@ -103,7 +105,7 @@ def mark_findings_stranger(face_ids: list[int] = Body(..., embed=True)) -> JSONR
     via the returned undo token; prior cluster membership is snapshotted
     inside the service and restored on undo.
     """
-    receipt = get_curation_service().mark_strangers(face_ids)
+    receipt = await get_curation_service().mark_strangers(face_ids)
     if receipt is None:
         return JSONResponse({"ok": True, "marked": 0})
     return JSONResponse(
@@ -117,9 +119,9 @@ def mark_findings_stranger(face_ids: list[int] = Body(..., embed=True)) -> JSONR
 
 
 @router.post("/api/findings/dismiss")
-def dismiss_findings(face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
+async def dismiss_findings(face_ids: list[UUID] = Body(..., embed=True)) -> JSONResponse:
     """Mark findings as non-faces (statues, paintings, dogs, etc.)."""
-    receipt = get_curation_service().dismiss_findings(face_ids)
+    receipt = await get_curation_service().dismiss_findings(face_ids)
     if receipt is None:
         return JSONResponse({"ok": True, "dismissed": 0})
     return JSONResponse(
@@ -133,11 +135,11 @@ def dismiss_findings(face_ids: list[int] = Body(..., embed=True)) -> JSONRespons
 
 
 @router.post("/api/findings/exclude")
-def exclude_findings(
-    face_ids: list[int] = Body(..., embed=True),
+async def exclude_findings(
+    face_ids: list[UUID] = Body(..., embed=True),
     cluster_id: int = Body(..., embed=True),
 ) -> JSONResponse:
-    receipt = get_curation_service().exclude_findings_from_cluster(cluster_id, face_ids)
+    receipt = await get_curation_service().exclude_findings_from_cluster(cluster_id, face_ids)
     if receipt is None:
         return JSONResponse({"ok": True, "excluded": 0})
     return JSONResponse(
@@ -151,8 +153,8 @@ def exclude_findings(
 
 
 @router.post("/api/findings/{finding_id}/assign")
-def assign_finding(
-    finding_id: int, subject_id: int = Form(...), force: bool = Form(False)
+async def assign_finding(
+    finding_id: UUID, subject_id: UUID = Form(...), force: bool = Form(False)
 ) -> JSONResponse:
     """Assign a single finding to a subject.
 
@@ -163,16 +165,16 @@ def assign_finding(
     undo that the client isn't prepared to consume.
     """
     try:
-        get_db().assign_finding_to_subject(finding_id, subject_id, force=force)
+        await get_db().assign_finding_to_subject(finding_id, subject_id, force=force)
     except ValueError as e:
         return JSONResponse({"error": str(e), "needs_confirm": True}, status_code=409)
     return JSONResponse({"ok": True})
 
 
 @router.post("/api/findings/unassign")
-def unassign_findings_batch(face_ids: list[int] = Body(..., embed=True)) -> JSONResponse:
+async def unassign_findings_batch(face_ids: list[UUID] = Body(..., embed=True)) -> JSONResponse:
     """Unassign multiple findings from their current subjects in one call."""
-    receipt = get_curation_service().unassign_findings(face_ids)
+    receipt = await get_curation_service().unassign_findings(face_ids)
     if receipt is None:
         return JSONResponse({"ok": True, "unassigned": 0})
     return JSONResponse(
@@ -186,13 +188,13 @@ def unassign_findings_batch(face_ids: list[int] = Body(..., embed=True)) -> JSON
 
 
 @router.post("/api/findings/{finding_id}/unassign")
-def unassign_finding(finding_id: int) -> JSONResponse:
+async def unassign_finding(finding_id: UUID) -> JSONResponse:
     """Single-finding unassign.
 
     Emits the "Removed face from {name}" toast that the photo page
     expects (distinct from the batch "Removed N face(s)" phrasing).
     """
-    receipt = get_curation_service().unassign_finding(finding_id)
+    receipt = await get_curation_service().unassign_finding(finding_id)
     if receipt is None:
         return JSONResponse({"ok": True})
     return JSONResponse({"ok": True, "undo_token": receipt.token, "message": receipt.message})
