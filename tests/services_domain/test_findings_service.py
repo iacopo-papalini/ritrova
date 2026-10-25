@@ -73,7 +73,7 @@ class TestCreateManualHappyPath(TestCase):
 
     def test_suggestion_points_to_nearest_named_subject(self) -> None:
         # Seed a named subject whose centroid matches the faked embedding.
-        sid = self.db.create_subject("Caterina", kind="person")
+        sid = self.db.create_subject("Alice", kind="person")
         seed_src = self.db.add_source("/seed.jpg", width=100, height=100)
         # Three findings with the same embedding → centroid == that embedding.
         add_findings(
@@ -93,7 +93,7 @@ class TestCreateManualHappyPath(TestCase):
         )
         assert result.suggestion is not None
         assert result.suggestion.subject_id == sid
-        assert result.suggestion.name == "Caterina"
+        assert result.suggestion.name == "Alice"
         # Cosine similarity of a vector with itself is 1.0 → 100%.
         assert result.suggestion.similarity_pct > 55.0
 

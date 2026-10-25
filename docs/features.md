@@ -96,7 +96,7 @@ Detectors miss faces in hard cases (profile, occlusion, low light, distant subje
 {
   "ok": true,
   "finding_id": 12345,
-  "suggestion": {"subject_id": 7, "name": "Caterina", "similarity_pct": 78.4},  // or null
+  "suggestion": {"subject_id": 7, "name": "Alice", "similarity_pct": 78.4},  // or null
   "undo_token": "...",
   "message": "Added manual face"
 }

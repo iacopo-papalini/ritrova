@@ -27,7 +27,7 @@ Applies to: cluster detail assign, singleton assign, photo face assign, any futu
 ### Feedback: toasts, not reloads
 
 After every write action, show a toast notification (fixed bottom-right) with:
-- What happened: "Assigned 14 faces to Teresa"
+- What happened: "Assigned 14 faces to Alice"
 - Undo button when the action is undoable (see FEAT-5)
 
 **Duration:**

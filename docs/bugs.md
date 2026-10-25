@@ -40,7 +40,7 @@
 **Fix:** Nuke-and-pave cleanup on 2026-04-15. The "rescan pets on videos" path in the original plan was invalid (pet scanner walks photos only), so the residual was purged directly:
 - 14,769 orphan source rows deleted (14,687 empty + 78 video-frame rows with legacy findings + 4 library-asset rows from `.venv/`).
 - ON DELETE CASCADE removed 14,787 scan rows and 110 findings.
-- 95 manual subject assignments on the orphan findings were lost (all dog/cat-species, distributed across "Cani a caso", "Mordicchia", "Figaro", "Strega", "penny", "Gatti a caso", "Caterina - baby" — each affected subject retained the vast majority of its real findings).
+- 95 manual subject assignments on the orphan findings were lost (all dog/cat-species, spread across seven pet subjects — each affected subject retained the vast majority of its real findings).
 - VACUUM reclaimed ~280 MB (562 MB → 281 MB).
 - Pre-cleanup DB backup kept at `data/faces.db.pre-nuke-20260415-151033` (and the two pre-benchmark backups from 2026-04-13 as deeper fallbacks).
 

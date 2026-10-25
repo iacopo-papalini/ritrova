@@ -110,7 +110,7 @@ class TestCreateManualFindingRouter(TestCase):
         assert resp.status_code == 422
 
     def test_suggestion_returned_for_matching_subject(self) -> None:
-        sid = self.db.create_subject("Caterina", kind="person")
+        sid = self.db.create_subject("Alice", kind="person")
         seed_src = self.db.add_source("/seed.jpg", width=100, height=100)
         add_findings(
             self.db,
@@ -127,7 +127,7 @@ class TestCreateManualFindingRouter(TestCase):
         body = resp.json()
         assert body["suggestion"] is not None
         assert body["suggestion"]["subject_id"] == sid
-        assert body["suggestion"]["name"] == "Caterina"
+        assert body["suggestion"]["name"] == "Alice"
 
     def test_undo_deletes_created_finding(self) -> None:
         resp = self.client.post(
