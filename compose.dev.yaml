@@ -1,0 +1,25 @@
+name: ritrova-dev
+
+services:
+  postgres:
+    image: postgres:17
+    # C.UTF-8 matches SQLite's BINARY collation, so `ORDER BY name` keeps the
+    # ordering the app has today instead of silently acquiring locale rules.
+    environment:
+      POSTGRES_DB: ritrova
+      POSTGRES_USER: ritrova
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ritrova-dev}
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C.UTF-8
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ritrova -d ritrova"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
