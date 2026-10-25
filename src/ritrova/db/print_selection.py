@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
-from ._base import _DBAccessor, _locked
+from uuid import UUID
+
+from ._base import _DBAccessor
 from .models import PrintSelectionItem, Source
+
+_ORDERED = "ORDER BY position, added_at, source_id"
 
 
 class PrintSelectionMixin(_DBAccessor):
-    @_locked
-    def list_print_selection(self) -> list[PrintSelectionItem]:
-        rows = self.conn.execute(
+    async def list_print_selection(self) -> list[PrintSelectionItem]:
+        rows = await self.fetch(
             """
             SELECT s.*, ps.position, ps.added_at
             FROM print_selection ps
             JOIN sources s ON s.id = ps.source_id
             ORDER BY ps.position, ps.added_at, ps.source_id
             """
-        ).fetchall()
+        )
         return [
             PrintSelectionItem(
                 source=Source(
@@ -35,89 +38,80 @@ class PrintSelectionMixin(_DBAccessor):
             for r in rows
         ]
 
-    @_locked
-    def get_print_selection_ids(self) -> list[int]:
-        rows = self.conn.execute(
-            "SELECT source_id FROM print_selection ORDER BY position, added_at, source_id"
-        ).fetchall()
-        return [int(r["source_id"]) for r in rows]
+    async def get_print_selection_ids(self) -> list[UUID]:
+        rows = await self.fetch(f"SELECT source_id FROM print_selection {_ORDERED}")
+        return [r["source_id"] for r in rows]
 
-    @_locked
-    def add_to_print_selection(self, source_id: int) -> int:
-        source = self.get_source(source_id)
+    async def add_to_print_selection(self, source_id: UUID) -> int:
+        source = await self.get_source(source_id)
         if source is None:
             raise ValueError("Source not found")
         if source.type != "photo":
             raise ValueError("Only photos can be selected for print")
-        existing = self.conn.execute(
-            "SELECT position FROM print_selection WHERE source_id = ?", (source_id,)
-        ).fetchone()
-        if existing:
-            return int(existing["position"])
-        row = self.conn.execute(
-            "SELECT COALESCE(MAX(position), 0) + 1 FROM print_selection"
-        ).fetchone()
-        position = int(row[0]) if row else 1
-        self.conn.execute(
-            "INSERT INTO print_selection (source_id, position, added_at) VALUES (?, ?, ?)",
-            (source_id, position, self._now()),
+        existing = await self.fetchval(
+            "SELECT position FROM print_selection WHERE source_id = ?", source_id
         )
-        self.conn.commit()
+        if existing is not None:
+            return int(existing)
+        position = int(
+            await self.fetchval("SELECT COALESCE(MAX(position), 0) + 1 FROM print_selection")
+        )
+        await self.execute(
+            "INSERT INTO print_selection (source_id, position, added_at) VALUES (?, ?, ?)",
+            source_id,
+            position,
+            self._now(),
+        )
         return position
 
-    @_locked
-    def remove_from_print_selection(self, source_id: int) -> None:
-        self.conn.execute("DELETE FROM print_selection WHERE source_id = ?", (source_id,))
-        self._compact_print_selection_positions()
-        self.conn.commit()
+    async def remove_from_print_selection(self, source_id: UUID) -> None:
+        async with self.transaction():
+            await self.execute("DELETE FROM print_selection WHERE source_id = ?", source_id)
+            await self._compact_print_selection_positions()
 
-    @_locked
-    def clear_print_selection(self) -> None:
-        self.conn.execute("DELETE FROM print_selection")
-        self.conn.commit()
+    async def clear_print_selection(self) -> None:
+        await self.execute("DELETE FROM print_selection")
 
-    @_locked
-    def restore_print_selection_ids(self, source_ids: list[int]) -> None:
+    async def restore_print_selection_ids(self, source_ids: list[UUID]) -> None:
         """Replace the print worklist with ``source_ids`` in the given order."""
-        with self.transaction():
-            self.conn.execute("DELETE FROM print_selection")
+        async with self.transaction():
+            await self.execute("DELETE FROM print_selection")
             now = self._now()
-            for position, source_id in enumerate(source_ids, start=1):
-                self.conn.execute(
-                    "INSERT INTO print_selection (source_id, position, added_at) VALUES (?, ?, ?)",
-                    (source_id, position, now),
-                )
+            await self.executemany(
+                "INSERT INTO print_selection (source_id, position, added_at) VALUES (?, ?, ?)",
+                [
+                    (source_id, position, now)
+                    for position, source_id in enumerate(source_ids, start=1)
+                ],
+            )
 
-    @_locked
-    def reorder_print_selection(self, source_ids: list[int]) -> None:
-        current = set(self.get_print_selection_ids())
-        ordered: list[int] = []
-        seen: set[int] = set()
+    async def reorder_print_selection(self, source_ids: list[UUID]) -> None:
+        current = set(await self.get_print_selection_ids())
+        ordered: list[UUID] = []
+        seen: set[UUID] = set()
         for source_id in source_ids:
             if source_id in current and source_id not in seen:
                 ordered.append(source_id)
                 seen.add(source_id)
-        for source_id in self.get_print_selection_ids():
+        for source_id in await self.get_print_selection_ids():
             if source_id not in seen:
                 ordered.append(source_id)
-        with self.transaction():
-            for position, source_id in enumerate(ordered, start=1):
-                self.conn.execute(
-                    "UPDATE print_selection SET position = ? WHERE source_id = ?",
-                    (-position, source_id),
-                )
-            for position, source_id in enumerate(ordered, start=1):
-                self.conn.execute(
-                    "UPDATE print_selection SET position = ? WHERE source_id = ?",
-                    (position, source_id),
-                )
-
-    def _compact_print_selection_positions(self) -> None:
-        rows = self.conn.execute(
-            "SELECT source_id FROM print_selection ORDER BY position, added_at, source_id"
-        ).fetchall()
-        for position, row in enumerate(rows, start=1):
-            self.conn.execute(
+        # Two passes through negative positions: the unique index on `position`
+        # is checked per statement, so renumbering in place would collide with
+        # a row that has not moved yet.
+        async with self.transaction():
+            await self.executemany(
                 "UPDATE print_selection SET position = ? WHERE source_id = ?",
-                (position, int(row["source_id"])),
+                [(-position, sid) for position, sid in enumerate(ordered, start=1)],
             )
+            await self.executemany(
+                "UPDATE print_selection SET position = ? WHERE source_id = ?",
+                [(position, sid) for position, sid in enumerate(ordered, start=1)],
+            )
+
+    async def _compact_print_selection_positions(self) -> None:
+        rows = await self.fetch(f"SELECT source_id FROM print_selection {_ORDERED}")
+        await self.executemany(
+            "UPDATE print_selection SET position = ? WHERE source_id = ?",
+            [(position, row["source_id"]) for position, row in enumerate(rows, start=1)],
+        )

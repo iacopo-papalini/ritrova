@@ -3,26 +3,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 import numpy as np
 
 
 @dataclass
 class Source:
-    id: int
+    id: UUID
     file_path: str
     type: str
     width: int
     height: int
-    taken_at: str | None = None
+    # Naive: EXIF records local camera time with no zone (D9).
+    taken_at: datetime | None = None
     latitude: float | None = None
     longitude: float | None = None
 
 
 @dataclass(frozen=True)
 class SourcePathMetadata:
-    source_id: int
+    source_id: UUID
     date_text: str | None
     date_precision: Literal["day", "month", "year", "unknown"]
     date_source: Literal["filename", "directory", "exif", "unknown"]
@@ -31,14 +34,14 @@ class SourcePathMetadata:
     directory_date: str | None
     exif_date: str | None
     path_tags: set[str]
-    indexed_at: str
+    indexed_at: datetime
 
 
 @dataclass(frozen=True)
 class PrintSelectionItem:
     source: Source
     position: int
-    added_at: str
+    added_at: datetime
 
 
 # ── Curation union ────────────────────────────────────────────────────
@@ -64,7 +67,7 @@ class Uncurated:
 class AssignedTo:
     """Finding is claimed by a subject (``finding_assignment.subject_id``)."""
 
-    subject_id: int
+    subject_id: UUID
 
 
 @dataclass(frozen=True)
@@ -81,23 +84,21 @@ Curation = Uncurated | AssignedTo | Excluded
 
 @dataclass
 class Finding:
-    id: int
-    source_id: int
+    id: UUID
+    source_id: UUID
+    scan_id: UUID
     bbox_x: int
     bbox_y: int
     bbox_w: int
     bbox_h: int
     embedding: np.ndarray
-    subject_id: int | None  # populated via LEFT JOIN finding_assignment.subject_id
+    subject_id: UUID | None  # populated via LEFT JOIN finding_assignment.subject_id
     cluster_id: int | None  # populated via LEFT JOIN cluster_findings.cluster_id
     confidence: float
-    detected_at: str
+    detected_at: datetime
     species: str = "human"
     frame_path: str | None = None
     embedding_dim: int = 0
-    # 0 only as an in-memory default for tests/fixtures that don't round-trip via SQLite.
-    # Real DB rows always have scan_id NOT NULL after the migration.
-    scan_id: int = 0
     frame_number: int = 0
     # Apr 2026 refactor: curation state lives on finding_assignment now.
     # exclusion_reason is None when the finding is either uncurated or
@@ -120,7 +121,7 @@ class Finding:
 
 @dataclass
 class Subject:
-    id: int
+    id: UUID
     name: str
     kind: str = "person"
     face_count: int = 0
@@ -130,15 +131,14 @@ class Subject:
 class OrphanReport:
     """Dangling-child rows found by ``FaceDB.find_orphans``.
 
-    These exist when someone (sqlite3 CLI, a GUI, a helper script) issued a
-    DELETE from a connection without ``PRAGMA foreign_keys=ON`` — cascade
-    didn't fire and children survived their parents. The app connection
-    enforces FKs, so the app itself can't produce these.
+    Postgres enforces foreign keys unconditionally, so nothing the app or a
+    psql session does can create these. The check is kept for rows that
+    predate the migration and for peace of mind.
     """
 
-    findings_missing_source: list[int]
-    findings_missing_scan: list[int]
-    scans_missing_source: list[int]
+    findings_missing_source: list[UUID]
+    findings_missing_scan: list[UUID]
+    scans_missing_source: list[UUID]
 
     @property
     def total(self) -> int:
@@ -151,9 +151,9 @@ class OrphanReport:
 
 @dataclass
 class Description:
-    id: int
-    source_id: int
-    scan_id: int
+    id: UUID
+    source_id: UUID
+    scan_id: UUID
     caption: str
     tags: set[str]
-    generated_at: str
+    generated_at: datetime

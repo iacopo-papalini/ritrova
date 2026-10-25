@@ -11,10 +11,12 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Literal, cast
+from uuid import UUID
 
-from ._base import _DBAccessor, _locked
+from ._base import _DBAccessor
 from .models import SourcePathMetadata
 
 DatePrecision = Literal["day", "month", "year", "unknown"]
@@ -75,7 +77,9 @@ class ParsedPathMetadata:
     path_tags: set[str]
 
 
-def parse_source_path_metadata(file_path: str, taken_at: str | None = None) -> ParsedPathMetadata:
+def parse_source_path_metadata(
+    file_path: str, taken_at: datetime | None = None
+) -> ParsedPathMetadata:
     """Extract chosen date + path tags from a source path.
 
     Conflict policy:
@@ -138,20 +142,13 @@ def _first_date(text: str) -> ParsedDate | None:
     return None
 
 
-def _parse_exif_date(raw: str | None) -> ParsedDate | None:
-    if not raw:
+def _parse_exif_date(raw: datetime | None) -> ParsedDate | None:
+    """``sources.taken_at`` is a real timestamp now (D9), so the colon-format
+    string parsing this used to do is gone — including its tolerance for the
+    ``0000:00:00`` sentinel, which the migration turned into NULL."""
+    if raw is None:
         return None
-    normalized = raw.strip().replace(":", "-", 2)
-    match = _YMD_DASH_RE.search(normalized)
-    if match:
-        return ParsedDate(f"{match.group(1)}-{match.group(2)}-{match.group(3)}", "day")
-    match = _YM_RE.search(normalized)
-    if match:
-        return ParsedDate(f"{match.group(1)}-{match.group(2)}", "month")
-    match = _YEAR_RE.search(normalized)
-    if match:
-        return ParsedDate(match.group(1), "year")
-    return None
+    return ParsedDate(f"{raw:%Y-%m-%d}", "day")
 
 
 def _dates_conflict(left: ParsedDate | None, right: ParsedDate | None) -> bool:
@@ -207,34 +204,40 @@ class PathMetadataMixin(_DBAccessor):
     def _decode_path_tags(raw: str) -> set[str]:
         return {t for t in raw.split(":") if t}
 
-    @_locked
-    def upsert_source_path_metadata(self, source_id: int) -> SourcePathMetadata | None:
-        source = self.get_source(source_id)
+    async def upsert_source_path_metadata(self, source_id: UUID) -> SourcePathMetadata | None:
+        source = await self.get_source(source_id)
         if source is None:
             return None
         parsed = parse_source_path_metadata(source.file_path, source.taken_at)
         indexed_at = self._now()
-        self.conn.execute(
+        await self.execute(
             """
-            INSERT OR REPLACE INTO source_path_metadata
+            INSERT INTO source_path_metadata
             (source_id, date_text, date_precision, date_source, date_conflict,
              filename_date, directory_date, exif_date, path_tags, indexed_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (source_id) DO UPDATE SET
+                date_text = EXCLUDED.date_text,
+                date_precision = EXCLUDED.date_precision,
+                date_source = EXCLUDED.date_source,
+                date_conflict = EXCLUDED.date_conflict,
+                filename_date = EXCLUDED.filename_date,
+                directory_date = EXCLUDED.directory_date,
+                exif_date = EXCLUDED.exif_date,
+                path_tags = EXCLUDED.path_tags,
+                indexed_at = EXCLUDED.indexed_at
             """,
-            (
-                source_id,
-                parsed.date_text,
-                parsed.date_precision,
-                parsed.date_source,
-                1 if parsed.date_conflict else 0,
-                parsed.filename_date,
-                parsed.directory_date,
-                parsed.exif_date,
-                self._encode_path_tags(parsed.path_tags),
-                indexed_at,
-            ),
+            source_id,
+            parsed.date_text,
+            parsed.date_precision,
+            parsed.date_source,
+            parsed.date_conflict,
+            parsed.filename_date,
+            parsed.directory_date,
+            parsed.exif_date,
+            self._encode_path_tags(parsed.path_tags),
+            indexed_at,
         )
-        self.conn.commit()
         return SourcePathMetadata(
             source_id=source_id,
             date_text=parsed.date_text,
@@ -248,11 +251,10 @@ class PathMetadataMixin(_DBAccessor):
             indexed_at=indexed_at,
         )
 
-    @_locked
-    def get_source_path_metadata(self, source_id: int) -> SourcePathMetadata | None:
-        row = self.conn.execute(
-            "SELECT * FROM source_path_metadata WHERE source_id = ?", (source_id,)
-        ).fetchone()
+    async def get_source_path_metadata(self, source_id: UUID) -> SourcePathMetadata | None:
+        row = await self.fetchrow(
+            "SELECT * FROM source_path_metadata WHERE source_id = ?", source_id
+        )
         if row is None:
             return None
         return SourcePathMetadata(
@@ -268,37 +270,35 @@ class PathMetadataMixin(_DBAccessor):
             indexed_at=row["indexed_at"],
         )
 
-    @_locked
-    def backfill_source_path_metadata(self, source_type: str | None = None) -> int:
+    async def backfill_source_path_metadata(self, source_type: str | None = None) -> int:
         if source_type:
-            rows = self.conn.execute(
+            rows = await self.fetch(
                 """
                 SELECT s.id FROM sources s
                 LEFT JOIN source_path_metadata spm ON spm.source_id = s.id
                 WHERE s.type = ? AND spm.source_id IS NULL
                 ORDER BY s.id
                 """,
-                (source_type,),
-            ).fetchall()
+                source_type,
+            )
         else:
-            rows = self.conn.execute(
+            rows = await self.fetch(
                 """
                 SELECT s.id FROM sources s
                 LEFT JOIN source_path_metadata spm ON spm.source_id = s.id
                 WHERE spm.source_id IS NULL
                 ORDER BY s.id
                 """
-            ).fetchall()
+            )
         count = 0
-        with self.transaction():
+        async with self.transaction():
             for row in rows:
-                if self.upsert_source_path_metadata(int(row["id"])) is not None:
+                if await self.upsert_source_path_metadata(row["id"]) is not None:
                     count += 1
         return count
 
-    @_locked
-    def get_all_path_tags(self, limit: int | None = None) -> list[tuple[str, int]]:
-        rows = self.conn.execute("SELECT path_tags FROM source_path_metadata").fetchall()
+    async def get_all_path_tags(self, limit: int | None = None) -> list[tuple[str, int]]:
+        rows = await self.fetch("SELECT path_tags FROM source_path_metadata")
         counts: dict[str, int] = {}
         for row in rows:
             for tag in self._decode_path_tags(row["path_tags"]):

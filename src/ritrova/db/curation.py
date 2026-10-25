@@ -8,8 +8,9 @@ AssignmentMixin; all state lives on `finding_assignment` and
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 
-from ._base import _DBAccessor, _locked
+from ._base import _DBAccessor
 from .findings import _FINDING_COLUMNS, _row_to_finding
 from .models import Finding, Source
 
@@ -27,7 +28,7 @@ class PruneReport:
 
 
 class CurationMixin(_DBAccessor):
-    def dismiss_findings(self, finding_ids: list[int]) -> None:
+    async def dismiss_findings(self, finding_ids: list[UUID]) -> None:
         """Mark findings as non-faces (statues, paintings, etc.).
 
         Writes `exclusion_reason='not_a_face'` on each (overwriting any
@@ -36,60 +37,59 @@ class CurationMixin(_DBAccessor):
         """
         if not finding_ids:
             return
-        self.set_exclusions(finding_ids, "not_a_face")  # type: ignore[attr-defined]
-        self.remove_cluster_memberships(finding_ids)  # type: ignore[attr-defined]
+        async with self.transaction():
+            await self.set_exclusions(finding_ids, "not_a_face")  # type: ignore[attr-defined]
+            await self.remove_cluster_memberships(finding_ids)  # type: ignore[attr-defined]
 
-    def unassign_finding(self, finding_id: int) -> None:
+    async def unassign_finding(self, finding_id: UUID) -> None:
         """Clear a finding's assignment — returns to 'uncurated'."""
-        self.clear_curation(finding_id)  # type: ignore[attr-defined]
+        await self.clear_curation(finding_id)  # type: ignore[attr-defined]
 
-    def unassign_findings(self, finding_ids: list[int]) -> None:
+    async def unassign_findings(self, finding_ids: list[UUID]) -> None:
         """Batch variant of unassign_finding."""
-        self.clear_curations(finding_ids)  # type: ignore[attr-defined]
+        await self.clear_curations(finding_ids)  # type: ignore[attr-defined]
 
-    def exclude_findings(self, finding_ids: list[int], cluster_id: int) -> None:
+    async def exclude_findings(self, finding_ids: list[UUID], cluster_id: int) -> None:
         """Remove findings from a cluster. ``cluster_id`` is kept in the
         signature for clarity / validation; any findings not currently in
         that cluster are left alone (no schema-level constraint to rely on,
         so we filter explicitly)."""
         if not finding_ids:
             return
-        placeholders = ",".join("?" * len(finding_ids))
-        self.conn.execute(
-            f"DELETE FROM cluster_findings WHERE finding_id IN ({placeholders}) AND cluster_id = ?",
-            (*finding_ids, cluster_id),
+        await self.execute(
+            "DELETE FROM cluster_findings WHERE finding_id = ANY(?) AND cluster_id = ?",
+            finding_ids,
+            cluster_id,
         )
-        self.conn.commit()
 
     def _together_query(
-        self, subject_ids: list[int], alone: bool = False
-    ) -> tuple[str, tuple[int | str, ...]]:
+        self, subject_ids: list[UUID], alone: bool = False
+    ) -> tuple[str, tuple[object, ...]]:
         """Build the inner subquery for together (shared by get and count)."""
-        placeholders = ",".join("?" * len(subject_ids))
         n = len(subject_ids)
         if alone:
             return (
-                f"""SELECT f.source_id FROM findings f
+                """SELECT f.source_id FROM findings f
                     JOIN finding_assignment fa ON fa.finding_id = f.id
                     WHERE fa.subject_id IS NOT NULL
                     GROUP BY f.source_id
-                    HAVING COUNT(DISTINCT CASE WHEN fa.subject_id IN ({placeholders})
+                    HAVING COUNT(DISTINCT CASE WHEN fa.subject_id = ANY(?)
                                                THEN fa.subject_id END) = ?
                     AND COUNT(DISTINCT fa.subject_id) = ?""",
-                (*subject_ids, n, n),
+                (subject_ids, n, n),
             )
         return (
-            f"""SELECT f.source_id FROM findings f
+            """SELECT f.source_id FROM findings f
                 JOIN finding_assignment fa ON fa.finding_id = f.id
-                WHERE fa.subject_id IN ({placeholders})
+                WHERE fa.subject_id = ANY(?)
                 GROUP BY f.source_id
                 HAVING COUNT(DISTINCT fa.subject_id) = ?""",
-            (*subject_ids, n),
+            (subject_ids, n),
         )
 
-    def get_sources_with_all_subjects(
+    async def get_sources_with_all_subjects(
         self,
-        subject_ids: list[int],
+        subject_ids: list[UUID],
         limit: int = 0,
         offset: int = 0,
         alone: bool = False,
@@ -100,7 +100,7 @@ class CurationMixin(_DBAccessor):
             return []
         inner, params = self._together_query(subject_ids, alone)
         type_filter = ""
-        full_params: tuple[int | str, ...] = params
+        full_params: tuple[object, ...] = params
         if source_type:
             type_filter = " WHERE s.type = ?"
             full_params = (*full_params, source_type)
@@ -108,20 +108,20 @@ class CurationMixin(_DBAccessor):
         if limit > 0:
             pagination = " LIMIT ? OFFSET ?"
             full_params = (*full_params, limit, offset)
-        rows = self.conn.execute(
+        rows = await self.fetch(
             f"""
             SELECT s.* FROM sources s
             JOIN ({inner}) matched ON matched.source_id = s.id
             {type_filter}
             ORDER BY s.file_path DESC{pagination}
             """,
-            full_params,
-        ).fetchall()
+            *full_params,
+        )
         return [Source(**dict(r)) for r in rows]
 
-    def count_sources_with_all_subjects(
+    async def count_sources_with_all_subjects(
         self,
-        subject_ids: list[int],
+        subject_ids: list[UUID],
         alone: bool = False,
         source_type: str | None = None,
     ) -> int:
@@ -130,19 +130,18 @@ class CurationMixin(_DBAccessor):
             return 0
         inner, params = self._together_query(subject_ids, alone)
         if source_type:
-            row = self.conn.execute(
+            return await self._count(
                 f"SELECT COUNT(*) FROM sources s JOIN ({inner}) m ON m.source_id = s.id "
                 f"WHERE s.type = ?",
-                (*params, source_type),
-            ).fetchone()
-        else:
-            row = self.conn.execute(f"SELECT COUNT(*) FROM ({inner})", params).fetchone()
-        return int(row[0]) if row else 0
+                *params,
+                source_type,
+            )
+        # Postgres requires a name for a derived table; SQLite did not.
+        return await self._count(f"SELECT COUNT(*) FROM ({inner}) matched", *params)
 
-    @_locked
-    def get_subject_sources(self, subject_id: int) -> list[Source]:
+    async def get_subject_sources(self, subject_id: UUID) -> list[Source]:
         """All unique sources containing a subject, newest first (by path)."""
-        rows = self.conn.execute(
+        rows = await self.fetch(
             """
             SELECT DISTINCT s.* FROM sources s
             JOIN findings f ON f.source_id = s.id
@@ -150,18 +149,17 @@ class CurationMixin(_DBAccessor):
             WHERE fa.subject_id = ?
             ORDER BY s.file_path DESC
             """,
-            (subject_id,),
-        ).fetchall()
+            subject_id,
+        )
         return [Source(**dict(r)) for r in rows]
 
-    @_locked
-    def get_subject_sources_with_findings(
-        self, subject_id: int, source_type: str
+    async def get_subject_sources_with_findings(
+        self, subject_id: UUID, source_type: str
     ) -> list[tuple[Source, list[Finding]]]:
         """Sources of a given type containing the subject, paired with the
         subject's findings on each source. Used by the Videos tab on the
         subject detail page."""
-        rows = self.conn.execute(
+        rows = await self.fetch(
             f"""
             SELECT
                 s.id        AS s_id,
@@ -180,10 +178,11 @@ class CurationMixin(_DBAccessor):
             WHERE fa.subject_id = ? AND s.type = ?
             ORDER BY s.file_path DESC, f.id
             """,
-            (subject_id, source_type),
-        ).fetchall()
+            subject_id,
+            source_type,
+        )
 
-        grouped: dict[int, tuple[Source, list[Finding]]] = {}
+        grouped: dict[UUID, tuple[Source, list[Finding]]] = {}
         for row in rows:
             finding = _row_to_finding(row)
             if finding is None:
@@ -205,15 +204,18 @@ class CurationMixin(_DBAccessor):
 
         return list(grouped.values())
 
-    @_locked
-    def prune_duplicate_findings(self, *, dry_run: bool = False) -> PruneReport:
+    async def prune_duplicate_findings(self, *, dry_run: bool = False) -> PruneReport:
         """Remove duplicate findings per (source_id, subject_id) and per
-        (source_id, cluster_id). Keeps the finding from the newest scan
-        (highest scan_id). Dismissed / excluded findings are skipped.
+        (source_id, cluster_id). Keeps the newest finding. Dismissed /
+        excluded findings are skipped.
+
+        "Newest" still means the greatest id: UUIDv7 keys are time-ordered,
+        and the migration stamped each one with the row's own creation time
+        rather than the migration's. Postgres has no ``max(uuid)`` aggregate,
+        so the comparison goes through the canonical text form — which sorts
+        the same way, the timestamp being the leading hex digits.
         """
-        # Duplicates by assigned subject: same person on same source.
-        # Join through finding_assignment; exclude excluded findings.
-        subject_dupes = self.conn.execute(
+        subject_dupes = await self.fetch(
             """
             WITH assigned AS (
                 SELECT f.id, f.source_id, fa.subject_id
@@ -223,16 +225,16 @@ class CurationMixin(_DBAccessor):
             )
             SELECT id FROM assigned
             WHERE id NOT IN (
-                SELECT MAX(id) FROM assigned GROUP BY source_id, subject_id
+                SELECT MAX(id::text)::uuid FROM assigned GROUP BY source_id, subject_id
             )
             """
-        ).fetchall()
+        )
         subject_ids = [r[0] for r in subject_dupes]
 
         # Duplicates by cluster: same cluster on same source, and the
         # finding has no subject assignment (if it did, the subject-level
         # dedup above already handles it).
-        cluster_dupes = self.conn.execute(
+        cluster_dupes = await self.fetch(
             """
             WITH clustered_uncurated AS (
                 SELECT f.id, f.source_id, cf.cluster_id
@@ -243,26 +245,17 @@ class CurationMixin(_DBAccessor):
             )
             SELECT id FROM clustered_uncurated
             WHERE id NOT IN (
-                SELECT MAX(id) FROM clustered_uncurated GROUP BY source_id, cluster_id
+                SELECT MAX(id::text)::uuid FROM clustered_uncurated GROUP BY source_id, cluster_id
             )
             """
-        ).fetchall()
+        )
         cluster_ids = [r[0] for r in cluster_dupes]
 
-        if not dry_run:
-            if subject_ids:
-                placeholders = ",".join("?" * len(subject_ids))
-                self.conn.execute(
-                    f"DELETE FROM findings WHERE id IN ({placeholders})",
-                    tuple(subject_ids),
-                )
-            if cluster_ids:
-                placeholders = ",".join("?" * len(cluster_ids))
-                self.conn.execute(
-                    f"DELETE FROM findings WHERE id IN ({placeholders})",
-                    tuple(cluster_ids),
-                )
-            if subject_ids or cluster_ids:
-                self.conn.commit()
+        if not dry_run and (subject_ids or cluster_ids):
+            async with self.transaction():
+                if subject_ids:
+                    await self.execute("DELETE FROM findings WHERE id = ANY(?)", subject_ids)
+                if cluster_ids:
+                    await self.execute("DELETE FROM findings WHERE id = ANY(?)", cluster_ids)
 
         return PruneReport(by_subject=len(subject_ids), by_cluster=len(cluster_ids))

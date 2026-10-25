@@ -21,14 +21,14 @@ class PathMixin(_DBAccessor):
         if ".." in stored_path.split("/"):
             msg = f"Path contains '..': {stored_path}"
             raise ValueError(msg)
-        # tmp/ paths are app-generated (video frames, etc.) — relative to DB directory
+        # tmp/ paths are app-generated (video frames, etc.) — relative to the data directory
         if stored_path.startswith("tmp/"):
-            return self.db_path.parent / stored_path
+            return self.data_dir / stored_path
         if self.base_dir is not None:
             return self.base_dir / stored_path
         return Path(stored_path)
 
-    def resolve_finding_image(self, finding: Finding) -> Path | None:
+    async def resolve_finding_image(self, finding: Finding) -> Path | None:
         """Resolve the image file to use for a finding's thumbnail.
 
         Photo findings: the source file.
@@ -39,8 +39,8 @@ class PathMixin(_DBAccessor):
         check.
         """
         if finding.frame_path:
-            return self.db_path.parent / finding.frame_path
-        source = self.get_source(finding.source_id)
+            return self.data_dir / finding.frame_path
+        source = await self.get_source(finding.source_id)
         if source:
             return self.resolve_path(source.file_path)
         return None

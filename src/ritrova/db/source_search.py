@@ -8,7 +8,9 @@ filter combination.
 
 from __future__ import annotations
 
-from ._base import _DBAccessor, _locked
+from uuid import UUID
+
+from ._base import _DBAccessor
 from .models import Source
 from .path_metadata import normalize_path_tag
 
@@ -17,16 +19,16 @@ class SourceSearchMixin(_DBAccessor):
     def _source_search_parts(
         self,
         *,
-        subject_ids: list[int] | None = None,
+        subject_ids: list[UUID] | None = None,
         path_tags: set[str] | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
         source_type: str | None = "photo",
         alone: bool = False,
-    ) -> tuple[list[str], list[str], list[int | str]]:
+    ) -> tuple[list[str], list[str], list[object]]:
         joins = ["LEFT JOIN source_path_metadata spm ON spm.source_id = s.id"]
         clauses: list[str] = []
-        params: list[int | str] = []
+        params: list[object] = []
 
         if subject_ids:
             inner, inner_params = self._together_query(subject_ids, alone)
@@ -48,16 +50,15 @@ class SourceSearchMixin(_DBAccessor):
         for tag in sorted(path_tags or set()):
             normalized = normalize_path_tag(tag)
             if normalized:
-                clauses.append("spm.path_tags LIKE ?")
+                clauses.append("spm.path_tags ILIKE ?")
                 params.append(f"%:{normalized}:%")
 
         return joins, clauses, params
 
-    @_locked
-    def search_sources(
+    async def search_sources(
         self,
         *,
-        subject_ids: list[int] | None = None,
+        subject_ids: list[UUID] | None = None,
         path_tags: set[str] | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
@@ -79,7 +80,7 @@ class SourceSearchMixin(_DBAccessor):
         if limit > 0:
             pagination = " LIMIT ? OFFSET ?"
             params.extend([limit, offset])
-        rows = self.conn.execute(
+        rows = await self.fetch(
             f"""
             SELECT s.* FROM sources s
             {" ".join(joins)}
@@ -91,15 +92,14 @@ class SourceSearchMixin(_DBAccessor):
                 s.id DESC
             {pagination}
             """,
-            tuple(params),
-        ).fetchall()
+            *params,
+        )
         return [Source(**dict(r)) for r in rows]
 
-    @_locked
-    def count_search_sources(
+    async def count_search_sources(
         self,
         *,
-        subject_ids: list[int] | None = None,
+        subject_ids: list[UUID] | None = None,
         path_tags: set[str] | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
@@ -115,12 +115,11 @@ class SourceSearchMixin(_DBAccessor):
             alone=alone,
         )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        row = self.conn.execute(
+        return await self._count(
             f"""
             SELECT COUNT(*) FROM sources s
             {" ".join(joins)}
             {where}
             """,
-            tuple(params),
-        ).fetchone()
-        return int(row[0]) if row else 0
+            *params,
+        )
