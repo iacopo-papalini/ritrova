@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest import TestCase
 
 import numpy as np
 import pytest
@@ -20,7 +19,8 @@ from ritrova.analysis import (
     photo_frames,
     video_frames,
 )
-from ritrova.db import FaceDB
+
+from ._postgres import PostgresTestCase
 
 
 def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
@@ -96,7 +96,7 @@ class _RemoveSpeciesStep(AnalysisStep):
 # ── SourceAnalysis tests ─────────────────────────────────────────────────
 
 
-class TestSourceAnalysis(TestCase):
+class TestSourceAnalysis(PostgresTestCase):
     def test_defaults(self) -> None:
         sa = SourceAnalysis(source_path="/photo.jpg", source_type="photo")
         assert sa.findings == []
@@ -115,7 +115,7 @@ class TestSourceAnalysis(TestCase):
 # ── Pipeline tests ───────────────────────────────────────────────────────
 
 
-class TestAnalysisPipeline(TestCase):
+class TestAnalysisPipeline(PostgresTestCase):
     def test_single_step_single_frame(self) -> None:
         pipeline = AnalysisPipeline(steps=[_AddFindingStep()])
         frames = iter([_make_frame()])
@@ -187,7 +187,7 @@ class TestAnalysisPipeline(TestCase):
 # ── Builder tests ────────────────────────────────────────────────────────
 
 
-class TestAnalysisPipelineBuilder(TestCase):
+class TestAnalysisPipelineBuilder(PostgresTestCase):
     def test_builds_pipeline_with_steps(self) -> None:
         pipeline = (
             AnalysisPipelineBuilder()
@@ -214,10 +214,10 @@ class TestAnalysisPipelineBuilder(TestCase):
 # ── Frame iterator tests ────────────────────────────────────────────────
 
 
-class TestPhotoFrames(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
-        self.tmp = tmp_path
+class TestPhotoFrames(PostgresTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.tmp = self.tmp_path
 
     def test_yields_single_frame_for_jpeg(self) -> None:
         path = self.tmp / "photo.jpg"
@@ -243,13 +243,12 @@ class TestPhotoFrames(TestCase):
 # ── Persister tests ──────────────────────────────────────────────────────
 
 
-class TestAnalysisPersister(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
-        self.db = FaceDB(tmp_path / "test.db")
+class TestAnalysisPersister(PostgresTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
         self.persister = AnalysisPersister(self.db)
 
-    def test_persists_findings(self) -> None:
+    async def test_persists_findings(self) -> None:
         analysis = SourceAnalysis(
             source_path="/photo.jpg",
             source_type="photo",
@@ -263,11 +262,11 @@ class TestAnalysisPersister(TestCase):
                 ),
             ],
         )
-        self.persister.persist(analysis, strategy_id="arcface")
-        assert self.db.get_finding_count() == 1
-        assert self.db.get_source_count() == 1
+        await self.persister.persist(analysis, strategy_id="arcface")
+        assert await self.db.get_finding_count() == 1
+        assert await self.db.get_source_count() == 1
 
-    def test_persists_description(self) -> None:
+    async def test_persists_description(self) -> None:
         analysis = SourceAnalysis(
             source_path="/photo.jpg",
             source_type="photo",
@@ -276,15 +275,15 @@ class TestAnalysisPersister(TestCase):
             caption="A dog in a park",
             tags={"dog", "park"},
         )
-        self.persister.persist(analysis, strategy_id="vlm+translator")
-        desc = self.db.get_description(
-            self.db.get_source_by_path("/photo.jpg").id  # type: ignore[union-attr]
+        await self.persister.persist(analysis, strategy_id="vlm+translator")
+        desc = await self.db.get_description(
+            (await self.db.get_source_by_path("/photo.jpg")).id  # type: ignore[union-attr]
         )
         assert desc is not None
         assert desc.caption == "A dog in a park"
         assert desc.tags == {"dog", "park"}
 
-    def test_persists_mixed_species(self) -> None:
+    async def test_persists_mixed_species(self) -> None:
         analysis = SourceAnalysis(
             source_path="/photo.jpg",
             source_type="photo",
@@ -305,37 +304,37 @@ class TestAnalysisPersister(TestCase):
                 ),
             ],
         )
-        self.persister.persist(analysis, strategy_id="composite")
-        assert self.db.get_finding_count() == 2
-        human_embs = self.db.get_all_embeddings(species="human")
-        dog_embs = self.db.get_all_embeddings(species="dog")
+        await self.persister.persist(analysis, strategy_id="composite")
+        assert await self.db.get_finding_count() == 2
+        human_embs = await self.db.get_all_embeddings(species="human")
+        dog_embs = await self.db.get_all_embeddings(species="dog")
         assert len(human_embs) == 1
         assert len(dog_embs) == 1
 
-    def test_empty_analysis_creates_source_and_scan(self) -> None:
+    async def test_empty_analysis_creates_source_and_scan(self) -> None:
         analysis = SourceAnalysis(
             source_path="/empty.jpg",
             source_type="photo",
             width=100,
             height=100,
         )
-        self.persister.persist(analysis, strategy_id="test")
-        assert self.db.get_source_by_path("/empty.jpg") is not None
-        assert self.db.get_finding_count() == 0
+        await self.persister.persist(analysis, strategy_id="test")
+        assert await self.db.get_source_by_path("/empty.jpg") is not None
+        assert await self.db.get_finding_count() == 0
 
-    def test_scan_type_defaults_to_subjects(self) -> None:
+    async def test_scan_type_defaults_to_subjects(self) -> None:
         analysis = SourceAnalysis(
             source_path="/photo.jpg",
             source_type="photo",
             width=200,
             height=200,
         )
-        self.persister.persist(analysis, strategy_id="test")
-        scans = self.db.find_scans()
+        await self.persister.persist(analysis, strategy_id="test")
+        scans = await self.db.find_scans()
         assert len(scans) == 1
         assert scans[0]["scan_type"] == "subjects"
 
-    def test_persists_frame_number(self) -> None:
+    async def test_persists_frame_number(self) -> None:
         analysis = SourceAnalysis(
             source_path="/video.mp4",
             source_type="video",
@@ -350,16 +349,16 @@ class TestAnalysisPersister(TestCase):
                 ),
             ],
         )
-        self.persister.persist(analysis, strategy_id="composite")
-        source = self.db.get_source_by_path("/video.mp4")
+        await self.persister.persist(analysis, strategy_id="composite")
+        source = await self.db.get_source_by_path("/video.mp4")
         assert source is not None
-        findings = self.db.get_source_findings(source.id)
+        findings = await self.db.get_source_findings(source.id)
         assert len(findings) == 1
         assert findings[0].frame_number == 30
 
-    def test_saves_video_frame_cache(self) -> None:
+    async def test_saves_video_frame_cache(self) -> None:
         """Persister saves frame images as JPEGs for video findings."""
-        frames_dir = self.db.db_path.parent / "tmp" / "frames"
+        frames_dir = self.db.data_dir / "tmp" / "frames"
         persister = AnalysisPersister(self.db, frames_dir=frames_dir)
 
         frame_img = Image.new("RGB", (640, 480), color="red")
@@ -378,7 +377,7 @@ class TestAnalysisPersister(TestCase):
             ],
             frame_images={60: frame_img},
         )
-        persister.persist(analysis, strategy_id="composite")
+        await persister.persist(analysis, strategy_id="composite")
 
         # Frame JPEG should exist
         assert frames_dir.exists()
@@ -387,9 +386,9 @@ class TestAnalysisPersister(TestCase):
         assert "60" in jpgs[0].name
 
         # Finding should have frame_path set
-        source = self.db.get_source_by_path("/video.mp4")
+        source = await self.db.get_source_by_path("/video.mp4")
         assert source is not None
-        findings = self.db.get_source_findings(source.id)
+        findings = await self.db.get_source_findings(source.id)
         assert len(findings) == 1
         assert findings[0].frame_path is not None
         assert "60" in findings[0].frame_path
@@ -398,10 +397,10 @@ class TestAnalysisPersister(TestCase):
 # ── Video frames tests ───────────────────────────────────────────────────
 
 
-class TestVideoFrames(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
-        self.tmp = tmp_path
+class TestVideoFrames(PostgresTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.tmp = self.tmp_path
 
     def test_yields_nothing_for_missing_file(self) -> None:
         frames = list(video_frames(Path("/nonexistent.mp4")))

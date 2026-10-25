@@ -8,27 +8,23 @@ tests in ``tests/test_undo.py``.
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest import TestCase
-
-import pytest
 from fastapi import FastAPI
 from fastapi.templating import Jinja2Templates
 from fastapi.testclient import TestClient
 
 from ritrova.app import deps
 from ritrova.app.routers import undo as undo_router
-from ritrova.db import FaceDB
 from ritrova.undo import UndoStore
 
+from .._postgres import PostgresAppTestCase
 
-class TestUndoRouterIsolated(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
-        self.db = FaceDB(tmp_path / "test.db")
+
+class TestUndoRouterIsolated(PostgresAppTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
         self.undo_store = UndoStore()
-        templates = Jinja2Templates(directory=str(tmp_path))
-        thumbnails_dir = tmp_path / "tmp" / "thumbnails"
+        templates = Jinja2Templates(directory=str(self.tmp_path))
+        thumbnails_dir = self.tmp_path / "tmp" / "thumbnails"
         thumbnails_dir.mkdir(parents=True, exist_ok=True)
         deps.configure(
             db=self.db,

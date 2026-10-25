@@ -1,9 +1,6 @@
 """Integration tests for ritrova.cluster module (real db, no mocking)."""
 
-from unittest import TestCase
-
 import numpy as np
-import pytest
 
 from ritrova.cluster import (
     _cluster_exact,
@@ -20,6 +17,8 @@ from ritrova.cluster import (
 )
 from ritrova.db import FaceDB
 
+from ._postgres import PostgresTestCase
+
 
 def _emb(seed: int, dim: int = 512) -> np.ndarray:
     rng = np.random.default_rng(seed)
@@ -27,326 +26,294 @@ def _emb(seed: int, dim: int = 512) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
-def _add_finding(db: FaceDB, path: str, seed: int, species: str = "human") -> int:
+async def _add_finding(db: FaceDB, path: str, seed: int, species: str = "human") -> int:
     from ._helpers import add_findings
 
-    pid = db.add_source(path, width=100, height=100)
+    pid = await db.add_source(path, width=100, height=100)
     dim = 768 if species in FaceDB.PET_SPECIES else 512
-    add_findings(db, [(pid, (10, 10, 50, 50), _emb(seed, dim=dim), 0.95)], species=species)
-    return db.get_source_findings(pid)[0].id
+    await add_findings(db, [(pid, (10, 10, 50, 50), _emb(seed, dim=dim), 0.95)], species=species)
+    return (await db.get_source_findings(pid))[0].id
 
 
-class TestAutoAssign(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_matches_cluster_to_subject(self) -> None:
+class TestAutoAssign(PostgresTestCase):
+    async def test_matches_cluster_to_subject(self) -> None:
         # Subject "Alice" with seed=1 embedding
-        sid = self.db.create_subject("Alice")
-        fid = _add_finding(self.db, "/a1.jpg", seed=1)
-        self.db.assign_finding_to_subject(fid, sid)
+        sid = await self.db.create_subject("Alice")
+        fid = await _add_finding(self.db, "/a1.jpg", seed=1)
+        await self.db.assign_finding_to_subject(fid, sid)
 
         # Unnamed cluster with same embedding (seed=1)
-        fid2 = _add_finding(self.db, "/b1.jpg", seed=1)
-        fid3 = _add_finding(self.db, "/b2.jpg", seed=1)
-        self.db.update_cluster_ids({fid2: 10, fid3: 10})
+        fid2 = await _add_finding(self.db, "/b1.jpg", seed=1)
+        fid3 = await _add_finding(self.db, "/b2.jpg", seed=1)
+        await self.db.update_cluster_ids({fid2: 10, fid3: 10})
 
-        result = auto_assign(self.db, min_similarity=0.50)
+        result = await auto_assign(self.db, min_similarity=0.50)
         assert result["assigned_clusters"] == 1
 
         # Verify findings assigned to Alice
-        finding = self.db.get_finding(fid2)
+        finding = await self.db.get_finding(fid2)
         assert finding is not None
         assert finding.subject_id == sid
 
-    def test_below_threshold_skips(self) -> None:
-        sid = self.db.create_subject("Alice")
-        fid = _add_finding(self.db, "/a1.jpg", seed=1)
-        self.db.assign_finding_to_subject(fid, sid)
+    async def test_below_threshold_skips(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        fid = await _add_finding(self.db, "/a1.jpg", seed=1)
+        await self.db.assign_finding_to_subject(fid, sid)
 
         # Cluster with very different embedding
-        fid2 = _add_finding(self.db, "/b1.jpg", seed=999)
-        fid3 = _add_finding(self.db, "/b2.jpg", seed=999)
-        self.db.update_cluster_ids({fid2: 10, fid3: 10})
+        fid2 = await _add_finding(self.db, "/b1.jpg", seed=999)
+        fid3 = await _add_finding(self.db, "/b2.jpg", seed=999)
+        await self.db.update_cluster_ids({fid2: 10, fid3: 10})
 
-        result = auto_assign(self.db, min_similarity=0.95)
+        result = await auto_assign(self.db, min_similarity=0.95)
         assert result["assigned_clusters"] == 0
         assert result["unmatched"] == 1
 
-    def test_sweeps_singletons(self) -> None:
-        sid = self.db.create_subject("Alice")
-        fid = _add_finding(self.db, "/a1.jpg", seed=1)
-        self.db.assign_finding_to_subject(fid, sid)
+    async def test_sweeps_singletons(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        fid = await _add_finding(self.db, "/a1.jpg", seed=1)
+        await self.db.assign_finding_to_subject(fid, sid)
 
         # Unclustered finding with same embedding
-        _add_finding(self.db, "/b1.jpg", seed=1)
+        await _add_finding(self.db, "/b1.jpg", seed=1)
 
-        result = auto_assign(self.db, min_similarity=0.50)
+        result = await auto_assign(self.db, min_similarity=0.50)
         assert result["assigned_singletons"] >= 1
 
-    def test_no_subjects(self) -> None:
-        fid = _add_finding(self.db, "/a1.jpg", seed=1)
-        fid2 = _add_finding(self.db, "/a2.jpg", seed=1)
-        self.db.update_cluster_ids({fid: 10, fid2: 10})
+    async def test_no_subjects(self) -> None:
+        fid = await _add_finding(self.db, "/a1.jpg", seed=1)
+        fid2 = await _add_finding(self.db, "/a2.jpg", seed=1)
+        await self.db.update_cluster_ids({fid: 10, fid2: 10})
 
-        result = auto_assign(self.db)
+        result = await auto_assign(self.db)
         assert result["assigned_clusters"] == 0
 
 
-class TestAutoMergeClusters(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_similar_clusters_merge(self) -> None:
+class TestAutoMergeClusters(PostgresTestCase):
+    async def test_similar_clusters_merge(self) -> None:
         # Two clusters with identical embeddings
-        fid1 = _add_finding(self.db, "/a1.jpg", seed=1)
-        fid2 = _add_finding(self.db, "/a2.jpg", seed=1)
-        fid3 = _add_finding(self.db, "/b1.jpg", seed=1)
-        fid4 = _add_finding(self.db, "/b2.jpg", seed=1)
-        self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
+        fid1 = await _add_finding(self.db, "/a1.jpg", seed=1)
+        fid2 = await _add_finding(self.db, "/a2.jpg", seed=1)
+        fid3 = await _add_finding(self.db, "/b1.jpg", seed=1)
+        fid4 = await _add_finding(self.db, "/b2.jpg", seed=1)
+        await self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
 
-        result = auto_merge_clusters(self.db, min_similarity=0.50)
+        result = await auto_merge_clusters(self.db, min_similarity=0.50)
         assert result["merged"] >= 1
 
-    def test_keeps_larger_cluster(self) -> None:
-        fid1 = _add_finding(self.db, "/a1.jpg", seed=1)
-        fid2 = _add_finding(self.db, "/a2.jpg", seed=1)
-        fid3 = _add_finding(self.db, "/a3.jpg", seed=1)
-        fid4 = _add_finding(self.db, "/b1.jpg", seed=1)
-        fid5 = _add_finding(self.db, "/b2.jpg", seed=1)
+    async def test_keeps_larger_cluster(self) -> None:
+        fid1 = await _add_finding(self.db, "/a1.jpg", seed=1)
+        fid2 = await _add_finding(self.db, "/a2.jpg", seed=1)
+        fid3 = await _add_finding(self.db, "/a3.jpg", seed=1)
+        fid4 = await _add_finding(self.db, "/b1.jpg", seed=1)
+        fid5 = await _add_finding(self.db, "/b2.jpg", seed=1)
         # Cluster 10 has 3 findings, cluster 20 has 2
-        self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 10, fid4: 20, fid5: 20})
+        await self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 10, fid4: 20, fid5: 20})
 
-        auto_merge_clusters(self.db, min_similarity=0.50)
+        await auto_merge_clusters(self.db, min_similarity=0.50)
         # All should now be in cluster 10 (larger)
-        finding = self.db.get_finding(fid4)
+        finding = await self.db.get_finding(fid4)
         assert finding is not None
         assert finding.cluster_id == 10
 
 
-class TestSuggestMerges(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
+class TestSuggestMerges(PostgresTestCase):
+    async def test_finds_pair(self) -> None:
+        fid1 = await _add_finding(self.db, "/a1.jpg", seed=1)
+        fid2 = await _add_finding(self.db, "/a2.jpg", seed=1)
+        fid3 = await _add_finding(self.db, "/b1.jpg", seed=1)
+        fid4 = await _add_finding(self.db, "/b2.jpg", seed=1)
+        await self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
 
-    def test_finds_pair(self) -> None:
-        fid1 = _add_finding(self.db, "/a1.jpg", seed=1)
-        fid2 = _add_finding(self.db, "/a2.jpg", seed=1)
-        fid3 = _add_finding(self.db, "/b1.jpg", seed=1)
-        fid4 = _add_finding(self.db, "/b2.jpg", seed=1)
-        self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
-
-        suggestions = suggest_merges(self.db, min_similarity=50.0)
+        suggestions = await suggest_merges(self.db, min_similarity=50.0)
         assert len(suggestions) >= 1
         assert suggestions[0].similarity_pct > 90
 
-    def test_respects_threshold(self) -> None:
-        fid1 = _add_finding(self.db, "/a1.jpg", seed=1)
-        fid2 = _add_finding(self.db, "/a2.jpg", seed=1)
-        fid3 = _add_finding(self.db, "/b1.jpg", seed=999)
-        fid4 = _add_finding(self.db, "/b2.jpg", seed=999)
-        self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
+    async def test_respects_threshold(self) -> None:
+        fid1 = await _add_finding(self.db, "/a1.jpg", seed=1)
+        fid2 = await _add_finding(self.db, "/a2.jpg", seed=1)
+        fid3 = await _add_finding(self.db, "/b1.jpg", seed=999)
+        fid4 = await _add_finding(self.db, "/b2.jpg", seed=999)
+        await self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
 
-        suggestions = suggest_merges(self.db, min_similarity=99.0)
+        suggestions = await suggest_merges(self.db, min_similarity=99.0)
         assert len(suggestions) == 0
 
-    def test_skips_subject_to_subject_pairs(self) -> None:
+    async def test_skips_subject_to_subject_pairs(self) -> None:
         """Two named subjects with similar embeddings should NOT be suggested."""
-        sid_a = self.db.create_subject("Alice")
-        fid1 = _add_finding(self.db, "/a1.jpg", seed=1)
-        self.db.assign_finding_to_subject(fid1, sid_a)
+        sid_a = await self.db.create_subject("Alice")
+        fid1 = await _add_finding(self.db, "/a1.jpg", seed=1)
+        await self.db.assign_finding_to_subject(fid1, sid_a)
 
-        sid_b = self.db.create_subject("Alice2")
-        fid2 = _add_finding(self.db, "/b1.jpg", seed=1)
-        self.db.assign_finding_to_subject(fid2, sid_b)
+        sid_b = await self.db.create_subject("Alice2")
+        fid2 = await _add_finding(self.db, "/b1.jpg", seed=1)
+        await self.db.assign_finding_to_subject(fid2, sid_b)
 
-        suggestions = suggest_merges(self.db, min_similarity=50.0)
+        suggestions = await suggest_merges(self.db, min_similarity=50.0)
         assert len(suggestions) == 0
 
-    def test_kind_filter(self) -> None:
-        fid1 = _add_finding(self.db, "/a1.jpg", seed=1, species="human")
-        fid2 = _add_finding(self.db, "/a2.jpg", seed=1, species="human")
-        fid3 = _add_finding(self.db, "/b1.jpg", seed=1, species="dog")
-        fid4 = _add_finding(self.db, "/b2.jpg", seed=1, species="dog")
-        self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
+    async def test_kind_filter(self) -> None:
+        fid1 = await _add_finding(self.db, "/a1.jpg", seed=1, species="human")
+        fid2 = await _add_finding(self.db, "/a2.jpg", seed=1, species="human")
+        fid3 = await _add_finding(self.db, "/b1.jpg", seed=1, species="dog")
+        fid4 = await _add_finding(self.db, "/b2.jpg", seed=1, species="dog")
+        await self.db.update_cluster_ids({fid1: 10, fid2: 10, fid3: 20, fid4: 20})
 
-        person_suggestions = suggest_merges(self.db, min_similarity=50.0, species="human")
+        person_suggestions = await suggest_merges(self.db, min_similarity=50.0, species="human")
         # Only cluster 10 is human, so no pairs
         assert len(person_suggestions) == 0
 
 
-class TestFindSimilarCluster(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
+class TestFindSimilarCluster(PostgresTestCase):
+    async def test_best_match(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        fid = await _add_finding(self.db, "/a1.jpg", seed=1)
+        await self.db.assign_finding_to_subject(fid, sid)
 
-    def test_best_match(self) -> None:
-        sid = self.db.create_subject("Alice")
-        fid = _add_finding(self.db, "/a1.jpg", seed=1)
-        self.db.assign_finding_to_subject(fid, sid)
+        fid2 = await _add_finding(self.db, "/b1.jpg", seed=1)
+        fid3 = await _add_finding(self.db, "/b2.jpg", seed=1)
+        await self.db.update_cluster_ids({fid2: 10, fid3: 10})
 
-        fid2 = _add_finding(self.db, "/b1.jpg", seed=1)
-        fid3 = _add_finding(self.db, "/b2.jpg", seed=1)
-        self.db.update_cluster_ids({fid2: 10, fid3: 10})
-
-        result = find_similar_cluster(self.db, sid)
+        result = await find_similar_cluster(self.db, sid)
         assert result == 10
 
-    def test_none_below_threshold(self) -> None:
-        sid = self.db.create_subject("Alice")
-        fid = _add_finding(self.db, "/a1.jpg", seed=1)
-        self.db.assign_finding_to_subject(fid, sid)
+    async def test_none_below_threshold(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        fid = await _add_finding(self.db, "/a1.jpg", seed=1)
+        await self.db.assign_finding_to_subject(fid, sid)
 
-        fid2 = _add_finding(self.db, "/b1.jpg", seed=999)
-        fid3 = _add_finding(self.db, "/b2.jpg", seed=999)
-        self.db.update_cluster_ids({fid2: 10, fid3: 10})
+        fid2 = await _add_finding(self.db, "/b1.jpg", seed=999)
+        fid3 = await _add_finding(self.db, "/b2.jpg", seed=999)
+        await self.db.update_cluster_ids({fid2: 10, fid3: 10})
 
-        result = find_similar_cluster(self.db, sid, min_similarity=0.99)
+        result = await find_similar_cluster(self.db, sid, min_similarity=0.99)
         assert result is None
 
 
-class TestClusterFaces(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_empty_db(self) -> None:
-        result = cluster_faces(self.db)
+class TestClusterFaces(PostgresTestCase):
+    async def test_empty_db(self) -> None:
+        result = await cluster_faces(self.db)
         assert result["total_faces"] == 0
         assert result["clusters"] == 0
 
-    def test_identical_embeddings_cluster_together(self) -> None:
-        _add_finding(self.db, "/a.jpg", seed=1)
-        _add_finding(self.db, "/b.jpg", seed=1)
-        _add_finding(self.db, "/c.jpg", seed=1)
+    async def test_identical_embeddings_cluster_together(self) -> None:
+        await _add_finding(self.db, "/a.jpg", seed=1)
+        await _add_finding(self.db, "/b.jpg", seed=1)
+        await _add_finding(self.db, "/c.jpg", seed=1)
 
-        result = cluster_faces(self.db)
+        result = await cluster_faces(self.db)
         assert result["total_faces"] == 3
         assert result["clusters"] >= 1
 
-    def test_distant_embeddings_stay_separate(self) -> None:
-        _add_finding(self.db, "/a.jpg", seed=1)
-        _add_finding(self.db, "/b.jpg", seed=1)
-        _add_finding(self.db, "/c.jpg", seed=999)
-        _add_finding(self.db, "/d.jpg", seed=999)
+    async def test_distant_embeddings_stay_separate(self) -> None:
+        await _add_finding(self.db, "/a.jpg", seed=1)
+        await _add_finding(self.db, "/b.jpg", seed=1)
+        await _add_finding(self.db, "/c.jpg", seed=999)
+        await _add_finding(self.db, "/d.jpg", seed=999)
 
-        result = cluster_faces(self.db, threshold=0.3)
+        result = await cluster_faces(self.db, threshold=0.3)
         assert result["clusters"] >= 2
 
-    def test_species_isolation(self) -> None:
+    async def test_species_isolation(self) -> None:
         """Clustering humans doesn't wipe pet clusters."""
-        _add_finding(self.db, "/dog1.jpg", seed=1, species="dog")
-        _add_finding(self.db, "/dog2.jpg", seed=1, species="dog")
-        self.db.update_cluster_ids(
+        await _add_finding(self.db, "/dog1.jpg", seed=1, species="dog")
+        await _add_finding(self.db, "/dog2.jpg", seed=1, species="dog")
+        await self.db.update_cluster_ids(
             {
-                self.db.get_all_embeddings(species="dog")[0][0]: 100,
-                self.db.get_all_embeddings(species="dog")[1][0]: 100,
+                (await self.db.get_all_embeddings(species="dog"))[0][0]: 100,
+                (await self.db.get_all_embeddings(species="dog"))[1][0]: 100,
             }
         )
 
-        _add_finding(self.db, "/h1.jpg", seed=2)
-        _add_finding(self.db, "/h2.jpg", seed=2)
+        await _add_finding(self.db, "/h1.jpg", seed=2)
+        await _add_finding(self.db, "/h2.jpg", seed=2)
 
-        cluster_faces(self.db, species="human")
+        await cluster_faces(self.db, species="human")
 
         # Pet cluster should still exist
-        dog_findings = self.db.get_cluster_findings(100)
+        dog_findings = await self.db.get_cluster_findings(100)
         assert len(dog_findings) == 2
 
 
-class TestFindSimilarUnclustered(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_finds_similar(self) -> None:
-        sid = self.db.create_subject("Alice")
-        fid = _add_finding(self.db, "/a.jpg", seed=1)
-        self.db.assign_finding_to_subject(fid, sid)
+class TestFindSimilarUnclustered(PostgresTestCase):
+    async def test_finds_similar(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        fid = await _add_finding(self.db, "/a.jpg", seed=1)
+        await self.db.assign_finding_to_subject(fid, sid)
 
         # Unclustered finding with same embedding
-        _add_finding(self.db, "/b.jpg", seed=1)
+        await _add_finding(self.db, "/b.jpg", seed=1)
 
-        results = find_similar_unclustered(self.db, sid, min_similarity=0.5)
+        results = await find_similar_unclustered(self.db, sid, min_similarity=0.5)
         assert len(results) >= 1
         assert results[0][1] > 90  # similarity percentage
 
-    def test_no_match_below_threshold(self) -> None:
-        sid = self.db.create_subject("Alice")
-        fid = _add_finding(self.db, "/a.jpg", seed=1)
-        self.db.assign_finding_to_subject(fid, sid)
+    async def test_no_match_below_threshold(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        fid = await _add_finding(self.db, "/a.jpg", seed=1)
+        await self.db.assign_finding_to_subject(fid, sid)
 
-        _add_finding(self.db, "/b.jpg", seed=999)
+        await _add_finding(self.db, "/b.jpg", seed=999)
 
-        results = find_similar_unclustered(self.db, sid, min_similarity=0.99)
+        results = await find_similar_unclustered(self.db, sid, min_similarity=0.99)
         assert len(results) == 0
 
-    def test_empty_subject(self) -> None:
-        sid = self.db.create_subject("Alice")
-        results = find_similar_unclustered(self.db, sid)
+    async def test_empty_subject(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        results = await find_similar_unclustered(self.db, sid)
         assert results == []
 
 
-class TestCompareSubjects(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_finds_swaps(self) -> None:
+class TestCompareSubjects(PostgresTestCase):
+    async def test_finds_swaps(self) -> None:
         """When a finding is closer to the other subject's centroid, it's flagged."""
-        sid_a = self.db.create_subject("Alice")
-        sid_b = self.db.create_subject("Bob")
+        sid_a = await self.db.create_subject("Alice")
+        sid_b = await self.db.create_subject("Bob")
 
         # Give Alice a finding with seed=1 centroid
-        fid_a = _add_finding(self.db, "/a.jpg", seed=1)
-        self.db.assign_finding_to_subject(fid_a, sid_a)
+        fid_a = await _add_finding(self.db, "/a.jpg", seed=1)
+        await self.db.assign_finding_to_subject(fid_a, sid_a)
 
         # Give Bob a finding with seed=999 centroid
-        fid_b = _add_finding(self.db, "/b.jpg", seed=999)
-        self.db.assign_finding_to_subject(fid_b, sid_b)
+        fid_b = await _add_finding(self.db, "/b.jpg", seed=999)
+        await self.db.assign_finding_to_subject(fid_b, sid_b)
 
         # Assign a seed=999 finding to Alice — should be flagged as swap to Bob
-        fid_wrong = _add_finding(self.db, "/wrong.jpg", seed=999)
-        self.db.assign_finding_to_subject(fid_wrong, sid_a)
+        fid_wrong = await _add_finding(self.db, "/wrong.jpg", seed=999)
+        await self.db.assign_finding_to_subject(fid_wrong, sid_a)
 
-        result = compare_subjects(self.db, sid_a, sid_b)
+        result = await compare_subjects(self.db, sid_a, sid_b)
         assert len(result["swaps_a_to_b"]) >= 1
 
-    def test_empty_subject(self) -> None:
-        sid_a = self.db.create_subject("Alice")
-        sid_b = self.db.create_subject("Bob")
-        result = compare_subjects(self.db, sid_a, sid_b)
+    async def test_empty_subject(self) -> None:
+        sid_a = await self.db.create_subject("Alice")
+        sid_b = await self.db.create_subject("Bob")
+        result = await compare_subjects(self.db, sid_a, sid_b)
         assert result["swaps_a_to_b"] == []
         assert result["swaps_b_to_a"] == []
 
 
-class TestRankSubjectsForCluster(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
+class TestRankSubjectsForCluster(PostgresTestCase):
+    async def test_ranks_by_similarity(self) -> None:
+        sid_close = await self.db.create_subject("Close")
+        fid = await _add_finding(self.db, "/close.jpg", seed=1)
+        await self.db.assign_finding_to_subject(fid, sid_close)
 
-    def test_ranks_by_similarity(self) -> None:
-        sid_close = self.db.create_subject("Close")
-        fid = _add_finding(self.db, "/close.jpg", seed=1)
-        self.db.assign_finding_to_subject(fid, sid_close)
-
-        sid_far = self.db.create_subject("Far")
-        fid2 = _add_finding(self.db, "/far.jpg", seed=999)
-        self.db.assign_finding_to_subject(fid2, sid_far)
+        sid_far = await self.db.create_subject("Far")
+        fid2 = await _add_finding(self.db, "/far.jpg", seed=999)
+        await self.db.assign_finding_to_subject(fid2, sid_far)
 
         # Cluster with seed=1 embedding
-        fid3 = _add_finding(self.db, "/c1.jpg", seed=1)
-        fid4 = _add_finding(self.db, "/c2.jpg", seed=1)
-        self.db.update_cluster_ids({fid3: 10, fid4: 10})
+        fid3 = await _add_finding(self.db, "/c1.jpg", seed=1)
+        fid4 = await _add_finding(self.db, "/c2.jpg", seed=1)
+        await self.db.update_cluster_ids({fid3: 10, fid4: 10})
 
-        ranked = rank_subjects_for_cluster(self.db, 10)
+        ranked = await rank_subjects_for_cluster(self.db, 10)
         assert len(ranked) == 2
         assert ranked[0][1] == "Close"  # most similar first
 
-    def test_empty_cluster(self) -> None:
-        assert rank_subjects_for_cluster(self.db, 999) == []
+    async def test_empty_cluster(self) -> None:
+        assert await rank_subjects_for_cluster(self.db, 999) == []
 
 
 def _make_group(n: int, seed: int, dim: int = 512) -> np.ndarray:
@@ -358,7 +325,7 @@ def _make_group(n: int, seed: int, dim: int = 512) -> np.ndarray:
     return _normalize_embeddings(embs)
 
 
-class TestClusterExact(TestCase):
+class TestClusterExact(PostgresTestCase):
     def test_identical_embeddings(self) -> None:
         embs = _make_group(5, seed=1)
         labels = _cluster_exact(embs, threshold=0.45, min_size=2)
@@ -381,7 +348,7 @@ class TestClusterExact(TestCase):
         assert all(label == -1 for label in labels)
 
 
-class TestClusterFaiss(TestCase):
+class TestClusterFaiss(PostgresTestCase):
     def test_identical_embeddings(self) -> None:
         embs = _make_group(10, seed=1)
         labels = _cluster_faiss(embs, threshold=0.45, min_size=2)

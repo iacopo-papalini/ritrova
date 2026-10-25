@@ -1,149 +1,71 @@
 """Comprehensive tests for ritrova.db module."""
 
-import sqlite3
+from datetime import datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase
+from uuid import UUID
 
+import asyncpg
 import numpy as np
 import pytest
 
 from ritrova.db import FaceDB
 from ritrova.db.path_metadata import parse_source_path_metadata
 
+# A syntactically valid id that no row can have.
+from ._helpers import MISSING_ID as _MISSING_ID
+from ._postgres import PostgresTestCase
 
-def _seed_legacy_db(
-    path: Path,
-    *,
-    sources: list[tuple[int, str, str]],
-    scans: list[tuple[int, int, str]],
-    findings: list[tuple[int, int, str | None]],
-) -> None:
-    """Write a pre-migration DB by hand: no `findings.scan_id` column.
 
-    Mimics the on-disk shape of an upgrade scenario so we can verify that
-    `FaceDB.__init__` successfully migrates + backfills + enforces NOT NULL.
-
-    `sources` rows: (id, file_path, type)
-    `scans`   rows: (id, source_id, scan_type)
-    `findings` rows: (source_id, embedding_dim, frame_path)
-    """
-    conn = sqlite3.connect(str(path))
-    conn.executescript(
-        """
-        CREATE TABLE sources (
-            id INTEGER PRIMARY KEY,
-            file_path TEXT UNIQUE NOT NULL,
-            type TEXT NOT NULL DEFAULT 'photo',
-            width INTEGER NOT NULL DEFAULT 0,
-            height INTEGER NOT NULL DEFAULT 0,
-            taken_at TEXT, latitude REAL, longitude REAL
-        );
-        CREATE TABLE scans (
-            id INTEGER PRIMARY KEY,
-            source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-            scan_type TEXT NOT NULL,
-            scanned_at TEXT NOT NULL DEFAULT '2024-01-01',
-            detection_strategy TEXT NOT NULL DEFAULT 'unknown',
-            UNIQUE (source_id, scan_type)
-        );
-        CREATE TABLE subjects (
-            id INTEGER PRIMARY KEY, name TEXT NOT NULL,
-            kind TEXT NOT NULL DEFAULT 'person',
-            created_at TEXT NOT NULL DEFAULT '2024-01-01'
-        );
-        CREATE TABLE findings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-            bbox_x INTEGER NOT NULL DEFAULT 0,
-            bbox_y INTEGER NOT NULL DEFAULT 0,
-            bbox_w INTEGER NOT NULL DEFAULT 0,
-            bbox_h INTEGER NOT NULL DEFAULT 0,
-            embedding BLOB NOT NULL,
-            person_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
-            cluster_id INTEGER,
-            confidence REAL NOT NULL DEFAULT 0.0,
-            species TEXT NOT NULL DEFAULT 'human',
-            detected_at TEXT NOT NULL DEFAULT '2024-01-01',
-            frame_path TEXT,
-            embedding_dim INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE dismissed_findings (
-            finding_id INTEGER PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE
-        );
-        CREATE UNIQUE INDEX idx_subjects_name_kind ON subjects(name, kind);
-        """
-    )
-    for sid, fp, t in sources:
-        conn.execute("INSERT INTO sources (id, file_path, type) VALUES (?, ?, ?)", (sid, fp, t))
-    for scan_id, source_id, scan_type in scans:
-        conn.execute(
-            "INSERT INTO scans (id, source_id, scan_type) VALUES (?, ?, ?)",
-            (scan_id, source_id, scan_type),
+class TestSourceOperations(PostgresTestCase):
+    async def test_add_and_get_source(self) -> None:
+        pid = await self.db.add_source(
+            "/test/photo.jpg", width=1920, height=1080, taken_at=datetime(2024, 1, 1)
         )
-    for source_id, dim, frame_path in findings:
-        emb = np.zeros(dim, dtype=np.float32)
-        emb[0] = 1.0  # non-empty blob for length() check
-        conn.execute(
-            "INSERT INTO findings (source_id, embedding, embedding_dim, frame_path) "
-            "VALUES (?, ?, ?, ?)",
-            (source_id, emb.tobytes(), dim, frame_path),
-        )
-    conn.commit()
-    conn.close()
-
-
-class TestSourceOperations(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_add_and_get_source(self) -> None:
-        pid = self.db.add_source("/test/photo.jpg", width=1920, height=1080, taken_at="2024-01-01")
-        source = self.db.get_source(pid)
+        source = await self.db.get_source(pid)
         assert source is not None
         assert source.file_path == "/test/photo.jpg"
         assert source.width == 1920
         assert source.height == 1080
-        assert source.taken_at == "2024-01-01"
+        assert source.taken_at == datetime(2024, 1, 1)
 
-    def test_get_nonexistent_source(self) -> None:
-        assert self.db.get_source(999) is None
+    async def test_get_nonexistent_source(self) -> None:
+        assert await self.db.get_source(_MISSING_ID) is None
 
-    def test_is_scanned_human(self) -> None:
-        assert not self.db.is_scanned("/test/photo.jpg", "human")
-        sid = self.db.add_source("/test/photo.jpg", width=100, height=100)
-        self.db.record_scan(sid, "human")
-        assert self.db.is_scanned("/test/photo.jpg", "human")
+    async def test_is_scanned_human(self) -> None:
+        assert not await self.db.is_scanned("/test/photo.jpg", "human")
+        sid = await self.db.add_source("/test/photo.jpg", width=100, height=100)
+        await self.db.record_scan(sid, "human")
+        assert await self.db.is_scanned("/test/photo.jpg", "human")
 
-    def test_is_scanned_pet(self) -> None:
-        assert not self.db.is_scanned("/test/photo.jpg", "pet")
-        sid = self.db.add_source("/test/photo.jpg", width=100, height=100)
-        self.db.record_scan(sid, "pet")
-        assert self.db.is_scanned("/test/photo.jpg", "pet")
+    async def test_is_scanned_pet(self) -> None:
+        assert not await self.db.is_scanned("/test/photo.jpg", "pet")
+        sid = await self.db.add_source("/test/photo.jpg", width=100, height=100)
+        await self.db.record_scan(sid, "pet")
+        assert await self.db.is_scanned("/test/photo.jpg", "pet")
 
-    def test_is_scanned_video(self) -> None:
-        assert not self.db.is_scanned("/test/video.mp4", "human")
-        sid = self.db.add_source("/test/video.mp4", source_type="video", width=100, height=100)
-        self.db.record_scan(sid, "human")
-        assert self.db.is_scanned("/test/video.mp4", "human")
+    async def test_is_scanned_video(self) -> None:
+        assert not await self.db.is_scanned("/test/video.mp4", "human")
+        sid = await self.db.add_source(
+            "/test/video.mp4", source_type="video", width=100, height=100
+        )
+        await self.db.record_scan(sid, "human")
+        assert await self.db.is_scanned("/test/video.mp4", "human")
 
-    def test_source_count(self) -> None:
-        assert self.db.get_source_count() == 0
-        self.db.add_source("/test/a.jpg", width=100, height=100)
-        self.db.add_source("/test/b.jpg", width=100, height=100)
-        assert self.db.get_source_count() == 2
+    async def test_source_count(self) -> None:
+        assert await self.db.get_source_count() == 0
+        await self.db.add_source("/test/a.jpg", width=100, height=100)
+        await self.db.add_source("/test/b.jpg", width=100, height=100)
+        assert await self.db.get_source_count() == 2
 
-    def test_duplicate_source_path_raises(self) -> None:
-        self.db.add_source("/test/photo.jpg", width=100, height=100)
+    async def test_duplicate_source_path_raises(self) -> None:
+        await self.db.add_source("/test/photo.jpg", width=100, height=100)
         with pytest.raises(Exception):  # noqa: B017
-            self.db.add_source("/test/photo.jpg", width=200, height=200)
+            await self.db.add_source("/test/photo.jpg", width=200, height=200)
 
 
-class TestPathMetadata(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
+class TestPathMetadata(PostgresTestCase):
     def test_parser_prefers_directory_when_filename_date_is_placeholder_conflict(self) -> None:
         meta = parse_source_path_metadata("2004/2004-07.Laurea/2002_01_01_14_04_46.jpg")
 
@@ -186,16 +108,18 @@ class TestPathMetadata(TestCase):
         assert "mvi" not in meta.path_tags
 
     def test_parser_falls_back_to_exif_when_path_has_no_date(self) -> None:
-        meta = parse_source_path_metadata("Domotz/portrait.jpg", taken_at="2018:04:03 10:11:12")
+        meta = parse_source_path_metadata(
+            "Domotz/portrait.jpg", taken_at=datetime(2018, 4, 3, 10, 11, 12)
+        )
 
         assert meta.date_text == "2018-04-03"
         assert meta.date_source == "exif"
         assert meta.path_tags == {"domotz", "portrait"}
 
-    def test_add_source_caches_path_metadata(self) -> None:
-        source_id = self.db.add_source("2022/2022-10_LuccaComics/PXL_20221031_120000000.jpg")
+    async def test_add_source_caches_path_metadata(self) -> None:
+        source_id = await self.db.add_source("2022/2022-10_LuccaComics/PXL_20221031_120000000.jpg")
 
-        meta = self.db.get_source_path_metadata(source_id)
+        meta = await self.db.get_source_path_metadata(source_id)
 
         assert meta is not None
         assert meta.date_text == "2022-10-31"
@@ -203,13 +127,12 @@ class TestPathMetadata(TestCase):
         assert "luccacomics" in meta.path_tags
         assert "pxl" not in meta.path_tags
 
-    def test_backfill_source_path_metadata(self) -> None:
-        source_id = self.db.add_source("varie/nonni_1.jpeg", taken_at="2010-05-01")
-        self.db.conn.execute("DELETE FROM source_path_metadata WHERE source_id = ?", (source_id,))
-        self.db.conn.commit()
+    async def test_backfill_source_path_metadata(self) -> None:
+        source_id = await self.db.add_source("varie/nonni_1.jpeg", taken_at=datetime(2010, 5, 1))
+        await self.db.execute("DELETE FROM source_path_metadata WHERE source_id = ?", source_id)
 
-        assert self.db.backfill_source_path_metadata(source_type="photo") == 1
-        meta = self.db.get_source_path_metadata(source_id)
+        assert await self.db.backfill_source_path_metadata(source_type="photo") == 1
+        meta = await self.db.get_source_path_metadata(source_id)
 
         assert meta is not None
         assert meta.date_text == "2010-05-01"
@@ -223,7 +146,7 @@ def _make_embedding(dim: int = 512) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
-def _add_source_with_finding(
+async def _add_source_with_finding(
     db: FaceDB,
     path: str = "/test/photo.jpg",
     species: str = "human",
@@ -232,25 +155,21 @@ def _add_source_with_finding(
     """Helper: add a source + one finding, return (source_id, finding_id)."""
     from ._helpers import add_findings
 
-    pid = db.add_source(path, width=100, height=100)
+    pid = await db.add_source(path, width=100, height=100)
     dim = 768 if species in FaceDB.PET_SPECIES else 512
     emb = embedding if embedding is not None else _make_embedding(dim=dim)
-    add_findings(db, [(pid, (10, 10, 50, 50), emb, 0.95)], species=species)
-    findings = db.get_source_findings(pid)
+    await add_findings(db, [(pid, (10, 10, 50, 50), emb, 0.95)], species=species)
+    findings = await db.get_source_findings(pid)
     return pid, findings[0].id
 
 
-class TestSourceSearch(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
+class TestSourceSearch(PostgresTestCase):
+    async def test_search_sources_filters_by_path_tags_and_path_date(self) -> None:
+        matching = await self.db.add_source("2022/2022-10_LuccaComics/PXL_20221031_120000000.jpg")
+        await self.db.add_source("2022/2022-11_Roma/IMG_20221102.jpg")
+        await self.db.add_source("2021/2021-10_LuccaComics/IMG_20211031.jpg")
 
-    def test_search_sources_filters_by_path_tags_and_path_date(self) -> None:
-        matching = self.db.add_source("2022/2022-10_LuccaComics/PXL_20221031_120000000.jpg")
-        self.db.add_source("2022/2022-11_Roma/IMG_20221102.jpg")
-        self.db.add_source("2021/2021-10_LuccaComics/IMG_20211031.jpg")
-
-        sources = self.db.search_sources(
+        sources = await self.db.search_sources(
             path_tags={"luccaComics"},
             date_from="2022-01-01",
             date_to="2022-12-31",
@@ -258,7 +177,7 @@ class TestSourceSearch(TestCase):
 
         assert [s.id for s in sources] == [matching]
         assert (
-            self.db.count_search_sources(
+            await self.db.count_search_sources(
                 path_tags={"luccaComics"},
                 date_from="2022-01-01",
                 date_to="2022-12-31",
@@ -266,71 +185,63 @@ class TestSourceSearch(TestCase):
             == 1
         )
 
-    def test_search_sources_sorts_unknown_dates_last(self) -> None:
-        unknown = self.db.add_source("varie/nonni_1.jpeg")
-        newest = self.db.add_source("2026/2026-04-25_Yuki/PXL_20260425_083901244.jpg")
-        older = self.db.add_source("2020/2020-12-29.Libera/20201229_165654.jpg")
+    async def test_search_sources_sorts_unknown_dates_last(self) -> None:
+        unknown = await self.db.add_source("varie/nonni_1.jpeg")
+        newest = await self.db.add_source("2026/2026-04-25_Yuki/PXL_20260425_083901244.jpg")
+        older = await self.db.add_source("2020/2020-12-29.Libera/20201229_165654.jpg")
 
-        sources = self.db.search_sources()
+        sources = await self.db.search_sources()
 
         assert [s.id for s in sources] == [newest, older, unknown]
 
-    def test_search_sources_combines_subject_and_path_tag_filters(self) -> None:
-        alice = self.db.create_subject("Alice")
-        matching_source, matching_finding = _add_source_with_finding(
+    async def test_search_sources_combines_subject_and_path_tag_filters(self) -> None:
+        alice = await self.db.create_subject("Alice")
+        matching_source, matching_finding = await _add_source_with_finding(
             self.db, "2023/2023-08_Amsterdam/IMG_20230801.jpg"
         )
-        other_source, other_finding = _add_source_with_finding(
+        other_source, other_finding = await _add_source_with_finding(
             self.db, "2023/2023-08_Roma/IMG_20230802.jpg"
         )
-        self.db.assign_finding_to_subject(matching_finding, alice)
-        self.db.assign_finding_to_subject(other_finding, alice)
+        await self.db.assign_finding_to_subject(matching_finding, alice)
+        await self.db.assign_finding_to_subject(other_finding, alice)
 
-        sources = self.db.search_sources(subject_ids=[alice], path_tags={"amsterdam"})
+        sources = await self.db.search_sources(subject_ids=[alice], path_tags={"amsterdam"})
 
         assert [s.id for s in sources] == [matching_source]
 
 
-class TestPrintSelection(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
+class TestPrintSelection(PostgresTestCase):
+    async def test_add_remove_and_reorder_print_selection(self) -> None:
+        first = await self.db.add_source("2024/2024-01-01.A/a.jpg")
+        second = await self.db.add_source("2024/2024-01-02.B/b.jpg")
 
-    def test_add_remove_and_reorder_print_selection(self) -> None:
-        first = self.db.add_source("2024/2024-01-01.A/a.jpg")
-        second = self.db.add_source("2024/2024-01-02.B/b.jpg")
+        assert await self.db.add_to_print_selection(first) == 1
+        assert await self.db.add_to_print_selection(second) == 2
+        assert await self.db.add_to_print_selection(first) == 1
+        assert await self.db.get_print_selection_ids() == [first, second]
 
-        assert self.db.add_to_print_selection(first) == 1
-        assert self.db.add_to_print_selection(second) == 2
-        assert self.db.add_to_print_selection(first) == 1
-        assert self.db.get_print_selection_ids() == [first, second]
+        await self.db.reorder_print_selection([second, first])
+        assert await self.db.get_print_selection_ids() == [second, first]
 
-        self.db.reorder_print_selection([second, first])
-        assert self.db.get_print_selection_ids() == [second, first]
+        await self.db.remove_from_print_selection(second)
+        assert await self.db.get_print_selection_ids() == [first]
+        assert (await self.db.list_print_selection())[0].position == 1
 
-        self.db.remove_from_print_selection(second)
-        assert self.db.get_print_selection_ids() == [first]
-        assert self.db.list_print_selection()[0].position == 1
-
-    def test_print_selection_rejects_videos(self) -> None:
-        video = self.db.add_source("2024/video.mp4", source_type="video")
+    async def test_print_selection_rejects_videos(self) -> None:
+        video = await self.db.add_source("2024/video.mp4", source_type="video")
 
         with pytest.raises(ValueError, match="Only photos"):
-            self.db.add_to_print_selection(video)
+            await self.db.add_to_print_selection(video)
 
 
-class TestFindingOperations(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_add_and_get_finding(self) -> None:
+class TestFindingOperations(PostgresTestCase):
+    async def test_add_and_get_finding(self) -> None:
         from ._helpers import add_findings
 
-        pid = self.db.add_source("/test/photo.jpg", width=100, height=100)
+        pid = await self.db.add_source("/test/photo.jpg", width=100, height=100)
         emb = _make_embedding()
-        add_findings(self.db, [(pid, (10, 20, 30, 40), emb, 0.95)])
-        findings = self.db.get_source_findings(pid)
+        await add_findings(self.db, [(pid, (10, 20, 30, 40), emb, 0.95)])
+        findings = await self.db.get_source_findings(pid)
         assert len(findings) == 1
         f = findings[0]
         assert f.bbox_x == 10
@@ -340,395 +251,334 @@ class TestFindingOperations(TestCase):
         assert f.confidence == pytest.approx(0.95)
         assert f.species == "human"
 
-    def test_get_finding_by_id(self) -> None:
-        _, fid = _add_source_with_finding(self.db)
-        finding = self.db.get_finding(fid)
+    async def test_get_finding_by_id(self) -> None:
+        _, fid = await _add_source_with_finding(self.db)
+        finding = await self.db.get_finding(fid)
         assert finding is not None
         assert finding.id == fid
 
-    def test_get_nonexistent_finding(self) -> None:
-        assert self.db.get_finding(999) is None
+    async def test_get_nonexistent_finding(self) -> None:
+        assert await self.db.get_finding(_MISSING_ID) is None
 
-    def test_embedding_round_trip(self) -> None:
+    async def test_embedding_round_trip(self) -> None:
         emb = _make_embedding()
-        _, fid = _add_source_with_finding(self.db, embedding=emb)
-        finding = self.db.get_finding(fid)
+        _, fid = await _add_source_with_finding(self.db, embedding=emb)
+        finding = await self.db.get_finding(fid)
         assert finding is not None
         np.testing.assert_array_almost_equal(finding.embedding, emb)
 
-    def test_finding_count(self) -> None:
-        assert self.db.get_finding_count() == 0
-        _add_source_with_finding(self.db, path="/a.jpg")
-        _add_source_with_finding(self.db, path="/b.jpg")
-        assert self.db.get_finding_count() == 2
+    async def test_finding_count(self) -> None:
+        assert await self.db.get_finding_count() == 0
+        await _add_source_with_finding(self.db, path="/a.jpg")
+        await _add_source_with_finding(self.db, path="/b.jpg")
+        assert await self.db.get_finding_count() == 2
 
-    def test_get_all_embeddings_excludes_dismissed(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        assert len(self.db.get_all_embeddings()) == 2
-        self.db.dismiss_findings([fid1])
-        assert len(self.db.get_all_embeddings()) == 1
+    async def test_get_all_embeddings_excludes_dismissed(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        assert len(await self.db.get_all_embeddings()) == 2
+        await self.db.dismiss_findings([fid1])
+        assert len(await self.db.get_all_embeddings()) == 1
 
-    def test_get_all_embeddings_species_filter(self) -> None:
-        _add_source_with_finding(self.db, path="/a.jpg", species="human")
-        _add_source_with_finding(self.db, path="/b.jpg", species="dog")
-        assert len(self.db.get_all_embeddings(species="human")) == 1
-        assert len(self.db.get_all_embeddings(species="dog")) == 1
+    async def test_get_all_embeddings_species_filter(self) -> None:
+        await _add_source_with_finding(self.db, path="/a.jpg", species="human")
+        await _add_source_with_finding(self.db, path="/b.jpg", species="dog")
+        assert len(await self.db.get_all_embeddings(species="human")) == 1
+        assert len(await self.db.get_all_embeddings(species="dog")) == 1
 
-    def test_cluster_operations(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        _, fid3 = _add_source_with_finding(self.db, path="/c.jpg")
+    async def test_cluster_operations(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        _, fid3 = await _add_source_with_finding(self.db, path="/c.jpg")
 
-        self.db.update_cluster_ids({fid1: 1, fid2: 1, fid3: 2})
-        assert sorted(self.db.get_cluster_ids()) == [1, 2]
-        assert self.db.get_cluster_finding_count(1) == 2
-        assert self.db.get_cluster_finding_count(2) == 1
+        await self.db.update_cluster_ids({fid1: 1, fid2: 1, fid3: 2})
+        assert sorted(await self.db.get_cluster_ids()) == [1, 2]
+        assert await self.db.get_cluster_finding_count(1) == 2
+        assert await self.db.get_cluster_finding_count(2) == 1
 
-        findings = self.db.get_cluster_findings(1)
+        findings = await self.db.get_cluster_findings(1)
         assert len(findings) == 2
 
-        self.db.clear_clusters()
-        assert self.db.get_cluster_ids() == []
+        await self.db.clear_clusters()
+        assert await self.db.get_cluster_ids() == []
 
-    def test_clear_clusters_species_scoped(self) -> None:
-        _, fid_human = _add_source_with_finding(self.db, path="/h.jpg", species="human")
-        _, fid_dog = _add_source_with_finding(self.db, path="/d.jpg", species="dog")
-        self.db.update_cluster_ids({fid_human: 1, fid_dog: 2})
+    async def test_clear_clusters_species_scoped(self) -> None:
+        _, fid_human = await _add_source_with_finding(self.db, path="/h.jpg", species="human")
+        _, fid_dog = await _add_source_with_finding(self.db, path="/d.jpg", species="dog")
+        await self.db.update_cluster_ids({fid_human: 1, fid_dog: 2})
 
         # Clear only human clusters
-        self.db.clear_clusters(species="human")
-        human_finding = self.db.get_finding(fid_human)
-        dog_finding = self.db.get_finding(fid_dog)
+        await self.db.clear_clusters(species="human")
+        human_finding = await self.db.get_finding(fid_human)
+        dog_finding = await self.db.get_finding(fid_dog)
         assert human_finding is not None
         assert human_finding.cluster_id is None
         assert dog_finding is not None
         assert dog_finding.cluster_id == 2
 
-    def test_get_cluster_finding_ids(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        self.db.update_cluster_ids({fid1: 5, fid2: 5})
-        ids = self.db.get_cluster_finding_ids(5)
+    async def test_get_cluster_finding_ids(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        await self.db.update_cluster_ids({fid1: 5, fid2: 5})
+        ids = await self.db.get_cluster_finding_ids(5)
         assert sorted(ids) == sorted([fid1, fid2])
 
-    def test_singleton_findings(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
+    async def test_singleton_findings(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
         # Both unclustered — both are singletons
-        singletons = self.db.get_singleton_findings()
+        singletons = await self.db.get_singleton_findings()
         assert len(singletons) == 2
 
         # Put one in a cluster of size 2 — not a singleton anymore
-        _, fid3 = _add_source_with_finding(self.db, path="/c.jpg")
-        self.db.update_cluster_ids({fid1: 1, fid3: 1})
-        singletons = self.db.get_singleton_findings()
+        _, fid3 = await _add_source_with_finding(self.db, path="/c.jpg")
+        await self.db.update_cluster_ids({fid1: 1, fid3: 1})
+        singletons = await self.db.get_singleton_findings()
         # fid2 is unclustered, fid1/fid3 in cluster of 2 — only fid2 is singleton
         assert len(singletons) == 1
         assert singletons[0].id == fid2
 
-    def test_singleton_count(self) -> None:
-        _add_source_with_finding(self.db, path="/a.jpg")
-        _add_source_with_finding(self.db, path="/b.jpg")
-        assert self.db.get_singleton_count() == 2
+    async def test_singleton_count(self) -> None:
+        await _add_source_with_finding(self.db, path="/a.jpg")
+        await _add_source_with_finding(self.db, path="/b.jpg")
+        assert await self.db.get_singleton_count() == 2
 
-    def test_dismiss_findings(self) -> None:
-        _, fid = _add_source_with_finding(self.db)
-        subject_id = self.db.create_subject("Test")
-        self.db.assign_finding_to_subject(fid, subject_id)
-        self.db.update_cluster_ids({fid: 1})
+    async def test_dismiss_findings(self) -> None:
+        _, fid = await _add_source_with_finding(self.db)
+        subject_id = await self.db.create_subject("Test")
+        await self.db.assign_finding_to_subject(fid, subject_id)
+        await self.db.update_cluster_ids({fid: 1})
 
-        self.db.dismiss_findings([fid])
-        finding = self.db.get_finding(fid)
+        await self.db.dismiss_findings([fid])
+        finding = await self.db.get_finding(fid)
         assert finding is not None
         assert finding.subject_id is None
         assert finding.cluster_id is None
 
-    def test_unassign_finding(self) -> None:
-        _, fid = _add_source_with_finding(self.db)
-        subject_id = self.db.create_subject("Test")
-        self.db.assign_finding_to_subject(fid, subject_id)
-        finding = self.db.get_finding(fid)
+    async def test_unassign_finding(self) -> None:
+        _, fid = await _add_source_with_finding(self.db)
+        subject_id = await self.db.create_subject("Test")
+        await self.db.assign_finding_to_subject(fid, subject_id)
+        finding = await self.db.get_finding(fid)
         assert finding is not None
         assert finding.subject_id == subject_id
 
-        self.db.unassign_finding(fid)
-        finding = self.db.get_finding(fid)
+        await self.db.unassign_finding(fid)
+        finding = await self.db.get_finding(fid)
         assert finding is not None
         assert finding.subject_id is None
 
-    def test_exclude_findings(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        self.db.update_cluster_ids({fid1: 1, fid2: 1})
+    async def test_exclude_findings(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        await self.db.update_cluster_ids({fid1: 1, fid2: 1})
 
-        self.db.exclude_findings([fid1], cluster_id=1)
-        finding = self.db.get_finding(fid1)
+        await self.db.exclude_findings([fid1], cluster_id=1)
+        finding = await self.db.get_finding(fid1)
         assert finding is not None
         assert finding.cluster_id is None
         # fid2 still in cluster
-        finding2 = self.db.get_finding(fid2)
+        finding2 = await self.db.get_finding(fid2)
         assert finding2 is not None
         assert finding2.cluster_id == 1
 
-    def test_merge_clusters(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        self.db.update_cluster_ids({fid1: 1, fid2: 2})
+    async def test_merge_clusters(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        await self.db.update_cluster_ids({fid1: 1, fid2: 2})
 
-        self.db.merge_clusters(source_id=2, target_id=1)
-        finding = self.db.get_finding(fid2)
+        await self.db.merge_clusters(source_id=2, target_id=1)
+        finding = await self.db.get_finding(fid2)
         assert finding is not None
         assert finding.cluster_id == 1
 
-    def test_split_cluster_findings(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        self.db.update_cluster_ids({fid1: 1, fid2: 1})
+    async def test_split_cluster_findings(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        await self.db.update_cluster_ids({fid1: 1, fid2: 1})
 
-        result = self.db.split_cluster_findings(1, [fid1])
+        result = await self.db.split_cluster_findings(1, [fid1])
         assert result is not None
         new_cluster_id, moved_ids = result
         assert moved_ids == [fid1]
-        assert self.db.get_cluster_membership(fid1) == new_cluster_id
-        assert self.db.get_cluster_membership(fid2) == 1
+        assert await self.db.get_cluster_membership(fid1) == new_cluster_id
+        assert await self.db.get_cluster_membership(fid2) == 1
 
 
-class TestSubjectOperations(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB, tmp_path: Path) -> None:
-        self.db = db
-        self.tmp_path = tmp_path
-
-    def test_create_subject(self) -> None:
-        sid = self.db.create_subject("Alice")
-        subject = self.db.get_subject(sid)
+class TestSubjectOperations(PostgresTestCase):
+    async def test_create_subject(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        subject = await self.db.get_subject(sid)
         assert subject is not None
         assert subject.name == "Alice"
         assert subject.face_count == 0
 
-    def test_create_subject_idempotent(self) -> None:
-        sid1 = self.db.create_subject("Alice")
-        sid2 = self.db.create_subject("Alice")
+    async def test_create_subject_idempotent(self) -> None:
+        sid1 = await self.db.create_subject("Alice")
+        sid2 = await self.db.create_subject("Alice")
         assert sid1 == sid2
 
-    def test_get_subjects(self) -> None:
-        self.db.create_subject("Bob")
-        self.db.create_subject("Alice")
-        subjects = self.db.get_subjects()
+    async def test_get_subjects(self) -> None:
+        await self.db.create_subject("Bob")
+        await self.db.create_subject("Alice")
+        subjects = await self.db.get_subjects()
         assert len(subjects) == 2
         # Ordered by name
         assert subjects[0].name == "Alice"
         assert subjects[1].name == "Bob"
 
-    def test_rename_subject(self) -> None:
-        sid = self.db.create_subject("Alice")
-        self.db.rename_subject(sid, "Alicia")
-        subject = self.db.get_subject(sid)
+    async def test_rename_subject(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        await self.db.rename_subject(sid, "Alicia")
+        subject = await self.db.get_subject(sid)
         assert subject is not None
         assert subject.name == "Alicia"
 
-    def test_assign_finding_to_subject(self) -> None:
-        _, fid = _add_source_with_finding(self.db)
-        sid = self.db.create_subject("Alice")
-        self.db.assign_finding_to_subject(fid, sid)
-        subject = self.db.get_subject(sid)
+    async def test_assign_finding_to_subject(self) -> None:
+        _, fid = await _add_source_with_finding(self.db)
+        sid = await self.db.create_subject("Alice")
+        await self.db.assign_finding_to_subject(fid, sid)
+        subject = await self.db.get_subject(sid)
         assert subject is not None
         assert subject.face_count == 1
 
-    def test_assign_cluster_to_subject(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        self.db.update_cluster_ids({fid1: 1, fid2: 1})
-        sid = self.db.create_subject("Alice")
-        self.db.assign_cluster_to_subject(1, sid)
-        subject = self.db.get_subject(sid)
+    async def test_assign_cluster_to_subject(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        await self.db.update_cluster_ids({fid1: 1, fid2: 1})
+        sid = await self.db.create_subject("Alice")
+        await self.db.assign_cluster_to_subject(1, sid)
+        subject = await self.db.get_subject(sid)
         assert subject is not None
         assert subject.face_count == 2
 
-    def test_merge_subjects(self) -> None:
-        sid_a = self.db.create_subject("Alice")
-        sid_b = self.db.create_subject("Alice2")
-        _, fid = _add_source_with_finding(self.db)
-        self.db.assign_finding_to_subject(fid, sid_a)
+    async def test_merge_subjects(self) -> None:
+        sid_a = await self.db.create_subject("Alice")
+        sid_b = await self.db.create_subject("Alice2")
+        _, fid = await _add_source_with_finding(self.db)
+        await self.db.assign_finding_to_subject(fid, sid_a)
 
-        self.db.merge_subjects(sid_a, sid_b)
+        await self.db.merge_subjects(sid_a, sid_b)
         # Source deleted
-        assert self.db.get_subject(sid_a) is None
+        assert await self.db.get_subject(sid_a) is None
         # Target has the finding
-        subject = self.db.get_subject(sid_b)
+        subject = await self.db.get_subject(sid_b)
         assert subject is not None
         assert subject.face_count == 1
 
-    def test_delete_subject(self) -> None:
-        sid = self.db.create_subject("Alice")
-        _, fid = _add_source_with_finding(self.db)
-        self.db.assign_finding_to_subject(fid, sid)
+    async def test_delete_subject(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        _, fid = await _add_source_with_finding(self.db)
+        await self.db.assign_finding_to_subject(fid, sid)
 
-        self.db.delete_subject(sid)
-        assert self.db.get_subject(sid) is None
+        await self.db.delete_subject(sid)
+        assert await self.db.get_subject(sid) is None
         # Finding should be unassigned, not deleted
-        finding = self.db.get_finding(fid)
+        finding = await self.db.get_finding(fid)
         assert finding is not None
         assert finding.subject_id is None
 
-    def test_search_subjects(self) -> None:
-        self.db.create_subject("Alice")
-        self.db.create_subject("Bob")
-        self.db.create_subject("Alicia")
-        results = self.db.search_subjects("Ali")
+    async def test_search_subjects(self) -> None:
+        await self.db.create_subject("Alice")
+        await self.db.create_subject("Bob")
+        await self.db.create_subject("Alicia")
+        results = await self.db.search_subjects("Ali")
         assert len(results) == 2
 
-    def test_get_subject_findings(self) -> None:
-        sid = self.db.create_subject("Alice")
-        _, fid = _add_source_with_finding(self.db)
-        self.db.assign_finding_to_subject(fid, sid)
-        findings = self.db.get_subject_findings(sid)
+    async def test_get_subject_findings(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        _, fid = await _add_source_with_finding(self.db)
+        await self.db.assign_finding_to_subject(fid, sid)
+        findings = await self.db.get_subject_findings(sid)
         assert len(findings) == 1
         assert findings[0].id == fid
 
-    def test_get_subject_sources(self) -> None:
-        sid = self.db.create_subject("Alice")
-        source_id, fid = _add_source_with_finding(self.db)
-        self.db.assign_finding_to_subject(fid, sid)
-        sources = self.db.get_subject_sources(sid)
+    async def test_get_subject_sources(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        source_id, fid = await _add_source_with_finding(self.db)
+        await self.db.assign_finding_to_subject(fid, sid)
+        sources = await self.db.get_subject_sources(sid)
         assert len(sources) == 1
         assert sources[0].id == source_id
 
-    def test_record_scan_returns_id(self) -> None:
-        sid = self.db.add_source("/test/p.jpg", width=10, height=10)
-        scan_id = self.db.record_scan(sid, "human")
-        assert isinstance(scan_id, int)
-        assert scan_id > 0
+    async def test_record_scan_returns_id(self) -> None:
+        sid = await self.db.add_source("/test/p.jpg", width=10, height=10)
+        scan_id = await self.db.record_scan(sid, "human")
+        assert isinstance(scan_id, UUID)
 
-    def test_add_findings_batch_requires_scan_id_keyword(self) -> None:
-        sid = self.db.add_source("/test/p.jpg", width=10, height=10)
+    async def test_add_findings_batch_requires_scan_id_keyword(self) -> None:
+        sid = await self.db.add_source("/test/p.jpg", width=10, height=10)
         emb = _make_embedding()
         # Positional scan_id is rejected (kwarg-only).
         with pytest.raises(TypeError):
-            self.db.add_findings_batch([(sid, (0, 0, 10, 10), emb, 0.9)], 1)
+            await self.db.add_findings_batch([(sid, (0, 0, 10, 10), emb, 0.9)], 1)
         # Missing entirely is rejected too.
         with pytest.raises(TypeError):
-            self.db.add_findings_batch([(sid, (0, 0, 10, 10), emb, 0.9)])
+            await self.db.add_findings_batch([(sid, (0, 0, 10, 10), emb, 0.9)])
 
-    def test_delete_scan_cascades_to_findings(self) -> None:
-        sid = self.db.add_source("/test/p.jpg", width=10, height=10)
-        scan_id = self.db.record_scan(sid, "human")
-        self.db.add_findings_batch([(sid, (0, 0, 10, 10), _make_embedding(), 0.9)], scan_id=scan_id)
-        assert len(self.db.get_source_findings(sid)) == 1
+    async def test_delete_scan_cascades_to_findings(self) -> None:
+        sid = await self.db.add_source("/test/p.jpg", width=10, height=10)
+        scan_id = await self.db.record_scan(sid, "human")
+        await self.db.add_findings_batch(
+            [(sid, (0, 0, 10, 10), _make_embedding(), 0.9)], scan_id=scan_id
+        )
+        assert len(await self.db.get_source_findings(sid)) == 1
 
-        result = self.db.delete_scan(scan_id)
+        result = await self.db.delete_scan(scan_id)
         assert result["deleted_findings"] == 1
         assert result["deleted_with_assignments"] == 0
-        assert self.db.get_source_findings(sid) == []
+        assert await self.db.get_source_findings(sid) == []
         # Scan row is gone.
-        assert (
-            self.db.conn.execute("SELECT 1 FROM scans WHERE id = ?", (scan_id,)).fetchone() is None
-        )
+        assert await self.db.fetchrow("SELECT 1 FROM scans WHERE id = ?", scan_id) is None
 
-    def test_delete_scan_counts_manual_assignments(self) -> None:
-        subject = self.db.create_subject("Alice")
-        sid = self.db.add_source("/test/p.jpg", width=10, height=10)
-        scan_id = self.db.record_scan(sid, "human")
-        self.db.add_findings_batch(
+    async def test_delete_scan_counts_manual_assignments(self) -> None:
+        subject = await self.db.create_subject("Alice")
+        sid = await self.db.add_source("/test/p.jpg", width=10, height=10)
+        scan_id = await self.db.record_scan(sid, "human")
+        await self.db.add_findings_batch(
             [
                 (sid, (0, 0, 10, 10), _make_embedding(), 0.9),
                 (sid, (5, 5, 10, 10), _make_embedding(), 0.9),
             ],
             scan_id=scan_id,
         )
-        findings = self.db.get_source_findings(sid)
-        self.db.assign_finding_to_subject(findings[0].id, subject)
+        findings = await self.db.get_source_findings(sid)
+        await self.db.assign_finding_to_subject(findings[0].id, subject)
 
-        result = self.db.delete_scan(scan_id)
+        result = await self.db.delete_scan(scan_id)
         assert result["deleted_findings"] == 2
         assert result["deleted_with_assignments"] == 1
 
-    def test_delete_scan_unknown_id_raises(self) -> None:
+    async def test_delete_scan_unknown_id_raises(self) -> None:
         with pytest.raises(ValueError, match="No such scan"):
-            self.db.delete_scan(99999)
+            await self.db.delete_scan(_MISSING_ID)
 
-    def test_find_scans_by_id_and_pattern(self) -> None:
-        s1 = self.db.add_source("/2024/jan/a.jpg", width=10, height=10)
-        s2 = self.db.add_source("/2024/feb/b.jpg", width=10, height=10)
-        s3 = self.db.add_source("/2025/jan/c.jpg", width=10, height=10)
-        sc1 = self.db.record_scan(s1, "human")
-        sc2 = self.db.record_scan(s2, "human")
-        self.db.record_scan(s3, "human")
+    async def test_find_scans_by_id_and_pattern(self) -> None:
+        s1 = await self.db.add_source("/2024/jan/a.jpg", width=10, height=10)
+        s2 = await self.db.add_source("/2024/feb/b.jpg", width=10, height=10)
+        s3 = await self.db.add_source("/2025/jan/c.jpg", width=10, height=10)
+        sc1 = await self.db.record_scan(s1, "human")
+        sc2 = await self.db.record_scan(s2, "human")
+        await self.db.record_scan(s3, "human")
 
         # Pattern only — both 2024 sources match.
-        rows = self.db.find_scans(source_pattern="*2024*")
+        rows = await self.db.find_scans(source_pattern="*2024*")
         assert {r["id"] for r in rows} == {sc1, sc2}
 
         # ID only — the single scan.
-        rows = self.db.find_scans(scan_id=sc1)
+        rows = await self.db.find_scans(scan_id=sc1)
         assert len(rows) == 1 and rows[0]["id"] == sc1
         assert rows[0]["finding_count"] == 0
 
         # Both filters — intersection.
-        rows = self.db.find_scans(scan_id=sc1, source_pattern="*feb*")
+        rows = await self.db.find_scans(scan_id=sc1, source_pattern="*feb*")
         assert rows == []  # sc1 is on /jan/, doesn't match /feb/
 
         # No filters — everything.
-        rows = self.db.find_scans()
+        rows = await self.db.find_scans()
         assert len(rows) == 3
 
-    def test_findings_table_has_not_null_scan_id_after_migration(self) -> None:
-        info = self.db.conn.execute("PRAGMA table_info(findings)").fetchall()
-        scan_col = next(c for c in info if c["name"] == "scan_id")
-        assert scan_col["notnull"] == 1, "scan_id must be NOT NULL post-migration"
-
-    def test_backfill_links_legacy_findings_by_embedding_dim(self) -> None:
-        """Build a pre-migration DB by hand (no `scan_id` column), then open it via
-        FaceDB and assert the migration links each legacy finding to the right scan
-        based on embedding dimension."""
-        path = self.tmp_path / "legacy.db"
-        _seed_legacy_db(
-            path,
-            sources=[(1, "/legacy.jpg", "photo")],
-            scans=[(1, 1, "human"), (2, 1, "pet")],  # both scan types on same source
-            findings=[
-                # (source_id, dim, frame_path) — scan_id deliberately omitted
-                (1, 512, None),  # → human scan
-                (1, 768, None),  # → pet scan
-            ],
-        )
-
-        db = FaceDB(path)  # triggers ALTER + backfill + NOT NULL rebuild
-        try:
-            findings = db.get_source_findings(1)
-            assert {f.embedding_dim or len(f.embedding): f.scan_id for f in findings} == {
-                512: 1,
-                768: 2,
-            }
-        finally:
-            db.close()
-
-    def test_backfill_creates_synthetic_scan_for_orphan(self) -> None:
-        """A pre-migration finding whose scan row no longer exists → synthetic
-        `legacy_backfill` scan created and linked to it."""
-        path = self.tmp_path / "orphan.db"
-        _seed_legacy_db(
-            path,
-            sources=[(1, "/orphan.jpg", "photo")],
-            scans=[],  # no scan rows — finding is fully orphaned
-            findings=[(1, 512, None)],
-        )
-
-        db = FaceDB(path)
-        try:
-            scans = db.find_scans()
-            assert len(scans) == 1
-            assert scans[0]["scan_type"] == "human"
-            assert scans[0]["detection_strategy"] == "legacy_backfill"
-            assert scans[0]["finding_count"] == 1
-            # And the finding got linked to that synthetic scan.
-            findings = db.get_source_findings(1)
-            assert findings[0].scan_id == scans[0]["id"]
-        finally:
-            db.close()
-
-    def test_get_subject_sources_with_findings_videos(self) -> None:
+    async def test_get_subject_sources_with_findings_videos(self) -> None:
         """Filter to videos only; return each video paired with the subject's findings on it.
 
         Regression guard: previously `SELECT s.*, f.*` collided on `id` and `dict(sqlite3.Row)`
@@ -737,20 +587,20 @@ class TestSubjectOperations(TestCase):
         `get_source_findings` returns (which is unambiguous), and uses two findings per video
         so an off-by-one or id-substitution bug is detectable even when ids happen to align.
         """
-        sid = self.db.create_subject("Alice")
+        sid = await self.db.create_subject("Alice")
 
         # Two video sources, each with TWO findings assigned to Alice. Multiple findings per
         # source means the buggy "all findings inherit source.id" output would collapse to a
         # single finding (set len == 1) instead of the expected 2.
-        v1_sid = self.db.add_source(
+        v1_sid = await self.db.add_source(
             "/test/movies/wedding.mp4", source_type="video", width=100, height=100
         )
-        v2_sid = self.db.add_source(
+        v2_sid = await self.db.add_source(
             "/test/movies/party.mp4", source_type="video", width=100, height=100
         )
         from ._helpers import add_findings
 
-        add_findings(
+        await add_findings(
             self.db,
             [
                 (v1_sid, (0, 0, 10, 10), _make_embedding(), 0.9),
@@ -759,7 +609,7 @@ class TestSubjectOperations(TestCase):
             species="human",
             frame_path="tmp/frames/v1.jpg",
         )
-        add_findings(
+        await add_findings(
             self.db,
             [
                 (v2_sid, (0, 0, 10, 10), _make_embedding(), 0.9),
@@ -768,19 +618,21 @@ class TestSubjectOperations(TestCase):
             species="human",
             frame_path="tmp/frames/v2.jpg",
         )
-        for f in self.db.get_source_findings(v1_sid) + self.db.get_source_findings(v2_sid):
-            self.db.assign_finding_to_subject(f.id, sid)
+        for f in await self.db.get_source_findings(v1_sid) + await self.db.get_source_findings(
+            v2_sid
+        ):
+            await self.db.assign_finding_to_subject(f.id, sid)
 
         # A photo source with the same subject — should be excluded by the type filter.
-        photo_sid, photo_fid = _add_source_with_finding(self.db, path="/test/photos/p.jpg")
-        self.db.assign_finding_to_subject(photo_fid, sid)
+        photo_sid, photo_fid = await _add_source_with_finding(self.db, path="/test/photos/p.jpg")
+        await self.db.assign_finding_to_subject(photo_fid, sid)
 
-        videos = self.db.get_subject_sources_with_findings(sid, source_type="video")
+        videos = await self.db.get_subject_sources_with_findings(sid, source_type="video")
         assert {src.id for src, _ in videos} == {v1_sid, v2_sid}
 
         canonical = {
-            v1_sid: {f.id for f in self.db.get_source_findings(v1_sid)},
-            v2_sid: {f.id for f in self.db.get_source_findings(v2_sid)},
+            v1_sid: {f.id for f in await self.db.get_source_findings(v1_sid)},
+            v2_sid: {f.id for f in await self.db.get_source_findings(v2_sid)},
         }
         for src, findings in videos:
             assert src.type == "video"
@@ -791,24 +643,20 @@ class TestSubjectOperations(TestCase):
                 assert f.source_id == src.id
                 assert f.frame_path is not None
 
-    def test_subject_kind_person(self) -> None:
-        sid = self.db.create_subject("Alice", kind="person")
-        subject = self.db.get_subject(sid)
+    async def test_subject_kind_person(self) -> None:
+        sid = await self.db.create_subject("Alice", kind="person")
+        subject = await self.db.get_subject(sid)
         assert subject is not None
         assert subject.kind == "person"
 
-    def test_subject_kind_pet(self) -> None:
-        sid = self.db.create_subject("Figaro", kind="pet")
-        subject = self.db.get_subject(sid)
+    async def test_subject_kind_pet(self) -> None:
+        sid = await self.db.create_subject("Figaro", kind="pet")
+        subject = await self.db.get_subject(sid)
         assert subject is not None
         assert subject.kind == "pet"
 
 
-class TestSpeciesFilter(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
+class TestSpeciesFilter(PostgresTestCase):
     def test_human_filter(self) -> None:
         clause, params = self.db.species_filter("human")
         assert "species = ?" in clause
@@ -819,35 +667,31 @@ class TestSpeciesFilter(TestCase):
         assert "IN" in clause
         assert len(params) == len(self.db.PET_SPECIES)
 
-    def test_unnamed_clusters_species(self) -> None:
-        _add_source_with_finding(self.db, path="/a.jpg", species="human")
-        _add_source_with_finding(self.db, path="/b.jpg", species="human")
-        _add_source_with_finding(self.db, path="/c.jpg", species="dog")
-        _add_source_with_finding(self.db, path="/d.jpg", species="dog")
+    async def test_unnamed_clusters_species(self) -> None:
+        await _add_source_with_finding(self.db, path="/a.jpg", species="human")
+        await _add_source_with_finding(self.db, path="/b.jpg", species="human")
+        await _add_source_with_finding(self.db, path="/c.jpg", species="dog")
+        await _add_source_with_finding(self.db, path="/d.jpg", species="dog")
 
         # Get finding ids and cluster them
-        human_embs = self.db.get_all_embeddings(species="human")
-        dog_embs = self.db.get_all_embeddings(species="dog")
-        self.db.update_cluster_ids(
+        human_embs = await self.db.get_all_embeddings(species="human")
+        dog_embs = await self.db.get_all_embeddings(species="dog")
+        await self.db.update_cluster_ids(
             {human_embs[0][0]: 1, human_embs[1][0]: 1, dog_embs[0][0]: 2, dog_embs[1][0]: 2}
         )
 
-        human_clusters = self.db.get_unnamed_clusters(species="human")
+        human_clusters = await self.db.get_unnamed_clusters(species="human")
         assert len(human_clusters) == 1
         assert human_clusters[0]["cluster_id"] == 1
 
-        pet_clusters = self.db.get_unnamed_clusters(species="pet")
+        pet_clusters = await self.db.get_unnamed_clusters(species="pet")
         assert len(pet_clusters) == 1
         assert pet_clusters[0]["cluster_id"] == 2
 
 
-class TestStats(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_empty_db_stats(self) -> None:
-        stats = self.db.get_stats()
+class TestStats(PostgresTestCase):
+    async def test_empty_db_stats(self) -> None:
+        stats = await self.db.get_stats()
         assert stats["total_sources"] == 0
         assert stats["total_findings"] == 0
         assert stats["total_subjects"] == 0
@@ -856,16 +700,16 @@ class TestStats(TestCase):
         assert stats["unclustered_findings"] == 0
         assert stats["dismissed_findings"] == 0
 
-    def test_populated_stats(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        _, fid3 = _add_source_with_finding(self.db, path="/c.jpg")
+    async def test_populated_stats(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        _, fid3 = await _add_source_with_finding(self.db, path="/c.jpg")
 
-        sid = self.db.create_subject("Alice")
-        self.db.assign_finding_to_subject(fid1, sid)
-        self.db.update_cluster_ids({fid2: 1, fid3: 1})
+        sid = await self.db.create_subject("Alice")
+        await self.db.assign_finding_to_subject(fid1, sid)
+        await self.db.update_cluster_ids({fid2: 1, fid3: 1})
 
-        stats = self.db.get_stats()
+        stats = await self.db.get_stats()
         assert stats["total_sources"] == 3
         assert stats["total_findings"] == 3
         assert stats["total_subjects"] == 1
@@ -873,87 +717,84 @@ class TestStats(TestCase):
         assert stats["unnamed_clusters"] == 1
         assert stats["unclustered_findings"] == 1  # fid1 assigned but unclustered
 
-    def test_stats_unnamed_clusters_matches_reviewable_cluster_count(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        _, fid3 = _add_source_with_finding(self.db, path="/c.jpg")
+    async def test_stats_unnamed_clusters_matches_reviewable_cluster_count(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        _, fid3 = await _add_source_with_finding(self.db, path="/c.jpg")
 
-        self.db.update_cluster_ids({fid1: 1, fid2: 1, fid3: 2})
+        await self.db.update_cluster_ids({fid1: 1, fid2: 1, fid3: 2})
 
-        stats = self.db.get_stats()
-        assert stats["unnamed_clusters"] == self.db.get_unnamed_cluster_count()
-        assert stats["unnamed_clusters"] == len(self.db.get_unnamed_clusters())
+        stats = await self.db.get_stats()
+        assert stats["unnamed_clusters"] == await self.db.get_unnamed_cluster_count()
+        assert stats["unnamed_clusters"] == len(await self.db.get_unnamed_clusters())
         assert stats["unnamed_clusters"] == 1
 
 
-class TestGetUnclusteredEmbeddings(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_returns_unclustered_unassigned(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        _, fid3 = _add_source_with_finding(self.db, path="/c.jpg")
+class TestGetUnclusteredEmbeddings(PostgresTestCase):
+    async def test_returns_unclustered_unassigned(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        _, fid3 = await _add_source_with_finding(self.db, path="/c.jpg")
 
         # Cluster fid1, assign fid2 to a subject
-        self.db.update_cluster_ids({fid1: 1})
-        sid = self.db.create_subject("Alice")
-        self.db.assign_finding_to_subject(fid2, sid)
+        await self.db.update_cluster_ids({fid1: 1})
+        sid = await self.db.create_subject("Alice")
+        await self.db.assign_finding_to_subject(fid2, sid)
 
-        result = self.db.get_unclustered_embeddings(species="human")
+        result = await self.db.get_unclustered_embeddings(species="human")
         assert len(result) == 1
         assert result[0][0] == fid3
 
-    def test_excludes_dismissed(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        self.db.dismiss_findings([fid1])
-        result = self.db.get_unclustered_embeddings(species="human")
+    async def test_excludes_dismissed(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        await self.db.dismiss_findings([fid1])
+        result = await self.db.get_unclustered_embeddings(species="human")
         assert len(result) == 1
         assert result[0][0] == fid2
 
-    def test_species_filter(self) -> None:
-        _add_source_with_finding(self.db, path="/a.jpg", species="human")
-        _add_source_with_finding(self.db, path="/b.jpg", species="dog")
-        assert len(self.db.get_unclustered_embeddings(species="human")) == 1
-        assert len(self.db.get_unclustered_embeddings(species="dog")) == 1
-        assert len(self.db.get_unclustered_embeddings(species="pet")) == 1
+    async def test_species_filter(self) -> None:
+        await _add_source_with_finding(self.db, path="/a.jpg", species="human")
+        await _add_source_with_finding(self.db, path="/b.jpg", species="dog")
+        assert len(await self.db.get_unclustered_embeddings(species="human")) == 1
+        assert len(await self.db.get_unclustered_embeddings(species="dog")) == 1
+        assert len(await self.db.get_unclustered_embeddings(species="pet")) == 1
 
 
-class TestExport(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_export_json_structure(self) -> None:
+class TestExport(PostgresTestCase):
+    async def test_export_json_structure(self) -> None:
         import json
 
-        sid = self.db.create_subject("Alice")
-        _, fid = _add_source_with_finding(self.db)
-        self.db.assign_finding_to_subject(fid, sid)
+        sid = await self.db.create_subject("Alice")
+        _, fid = await _add_source_with_finding(self.db)
+        await self.db.assign_finding_to_subject(fid, sid)
 
-        data = json.loads(self.db.export_json())
+        data = json.loads(await self.db.export_json())
         assert "subjects" in data
         assert "unnamed_findings" in data
         assert len(data["subjects"]) == 1
         assert data["subjects"][0]["name"] == "Alice"
         assert len(data["subjects"][0]["sources"]) == 1
 
-    def test_export_empty_db(self) -> None:
+    async def test_export_empty_db(self) -> None:
         import json
 
-        data = json.loads(self.db.export_json())
+        data = json.loads(await self.db.export_json())
         assert data["subjects"] == []
         assert data["unnamed_findings"] == []
 
 
 class TestPathResolution(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
-        self.base = tmp_path / "photos"
-        self.base.mkdir()
-        self.db = FaceDB(tmp_path / "test.db", base_dir=self.base)
+    """``resolve_path`` / ``to_relative`` are pure — no database involved."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.base = (Path(self._tmp.name) / "photos").resolve()
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.db = FaceDB(None, data_dir=Path(self._tmp.name), base_dir=self.base)  # type: ignore[arg-type]
+
+    async def tearDown(self) -> None:
+        await self._tmp.cleanup()
 
     def test_resolve_relative_path(self) -> None:
         resolved = self.db.resolve_path("subfolder/photo.jpg")
@@ -979,476 +820,303 @@ class TestPathResolution(TestCase):
         assert rel == "/somewhere/else/photo.jpg"
 
     def test_no_base_dir_passthrough(self) -> None:
-        db_no_base = FaceDB(self.db.db_path.parent / "test2.db")
+        db_no_base = FaceDB(None, data_dir=self.base, base_dir=None)  # type: ignore[arg-type]
         assert db_no_base.resolve_path("photo.jpg") == Path("photo.jpg")
         assert db_no_base.to_relative("/abs/photo.jpg") == "/abs/photo.jpg"
-        db_no_base.close()
 
 
-class TestCircles(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_create_circle_idempotent(self) -> None:
-        cid1 = self.db.create_circle("family")
-        cid2 = self.db.create_circle("family")
+class TestCircles(PostgresTestCase):
+    async def test_create_circle_idempotent(self) -> None:
+        cid1 = await self.db.create_circle("family")
+        cid2 = await self.db.create_circle("family")
         assert cid1 == cid2
 
-    def test_create_circle_rejects_blank(self) -> None:
+    async def test_create_circle_rejects_blank(self) -> None:
         with pytest.raises(ValueError):
-            self.db.create_circle("   ")
+            await self.db.create_circle("   ")
 
-    def test_list_circles_returns_user_created_only(self) -> None:
-        self.db.create_circle("family")
-        names = [c.name for c in self.db.list_circles()]
+    async def test_list_circles_returns_user_created_only(self) -> None:
+        await self.db.create_circle("family")
+        names = [c.name for c in await self.db.list_circles()]
         # No auto-seeded circles — the user manages the set.
         assert names == ["family"]
 
-    def test_membership_add_remove_roundtrip(self) -> None:
-        sid = self.db.create_subject("Alice")
-        cid = self.db.create_circle("family", description="nuclear only")
-        assert self.db.add_subject_to_circle(sid, cid) is True
+    async def test_membership_add_remove_roundtrip(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        cid = await self.db.create_circle("family", description="nuclear only")
+        assert await self.db.add_subject_to_circle(sid, cid) is True
         # second add is a no-op
-        assert self.db.add_subject_to_circle(sid, cid) is False
-        circles = self.db.get_subject_circles(sid)
+        assert await self.db.add_subject_to_circle(sid, cid) is False
+        circles = await self.db.get_subject_circles(sid)
         assert [c.name for c in circles] == ["family"]
-        assert self.db.remove_subject_from_circle(sid, cid) is True
-        assert self.db.get_subject_circles(sid) == []
+        assert await self.db.remove_subject_from_circle(sid, cid) is True
+        assert await self.db.get_subject_circles(sid) == []
 
-    def test_member_count_reflects_state(self) -> None:
-        cid = self.db.create_circle("friends")
-        self.db.add_subject_to_circle(self.db.create_subject("A"), cid)
-        self.db.add_subject_to_circle(self.db.create_subject("B"), cid)
-        assert self.db.get_circle(cid).member_count == 2
+    async def test_member_count_reflects_state(self) -> None:
+        cid = await self.db.create_circle("friends")
+        await self.db.add_subject_to_circle(await self.db.create_subject("A"), cid)
+        await self.db.add_subject_to_circle(await self.db.create_subject("B"), cid)
+        assert (await self.db.get_circle(cid)).member_count == 2
 
-    def test_delete_subject_cascades_to_memberships(self) -> None:
-        sid = self.db.create_subject("Alice")
-        cid = self.db.create_circle("family")
-        self.db.add_subject_to_circle(sid, cid)
-        self.db.delete_subject(sid)
-        assert self.db.get_circle(cid).member_count == 0
+    async def test_delete_subject_cascades_to_memberships(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        cid = await self.db.create_circle("family")
+        await self.db.add_subject_to_circle(sid, cid)
+        await self.db.delete_subject(sid)
+        assert (await self.db.get_circle(cid)).member_count == 0
 
-    def test_delete_circle_cascades_to_memberships(self) -> None:
-        sid = self.db.create_subject("Alice")
-        cid = self.db.create_circle("acquaintances")
-        self.db.add_subject_to_circle(sid, cid)
-        self.db.delete_circle(cid)
-        assert self.db.get_subject_circles(sid) == []
+    async def test_delete_circle_cascades_to_memberships(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        cid = await self.db.create_circle("acquaintances")
+        await self.db.add_subject_to_circle(sid, cid)
+        await self.db.delete_circle(cid)
+        assert await self.db.get_subject_circles(sid) == []
 
-    def test_subjects_in_any_circle(self) -> None:
-        fam = self.db.create_circle("family")
-        acq = self.db.create_circle("acquaintances")
+    async def test_subjects_in_any_circle(self) -> None:
+        fam = await self.db.create_circle("family")
+        acq = await self.db.create_circle("acquaintances")
         a, b, c = (
-            self.db.create_subject("A"),
-            self.db.create_subject("B"),
-            self.db.create_subject("C"),
+            await self.db.create_subject("A"),
+            await self.db.create_subject("B"),
+            await self.db.create_subject("C"),
         )
-        self.db.add_subject_to_circle(a, fam)
-        self.db.add_subject_to_circle(b, acq)
-        assert self.db.subjects_in_any_circle([fam, acq]) == {a, b}
-        assert self.db.subjects_in_any_circle([fam]) == {a}
-        assert self.db.subjects_in_any_circle([]) == set()
-        assert c not in self.db.subjects_in_any_circle([fam, acq])
+        await self.db.add_subject_to_circle(a, fam)
+        await self.db.add_subject_to_circle(b, acq)
+        assert await self.db.subjects_in_any_circle([fam, acq]) == {a, b}
+        assert await self.db.subjects_in_any_circle([fam]) == {a}
+        assert await self.db.subjects_in_any_circle([]) == set()
+        assert c not in await self.db.subjects_in_any_circle([fam, acq])
 
-    def test_rename_circle(self) -> None:
-        cid = self.db.create_circle("frineds")  # typo
-        self.db.rename_circle(cid, "friends")
-        assert self.db.get_circle(cid).name == "friends"
-
-
-def _build_pre_refactor_db(
-    path: Path,
-    *,
-    subject_ids: dict[int, int] | None = None,
-    cluster_ids: dict[int, int] | None = None,
-    dismissed_ids: list[int] | None = None,
-    strangers_circle_member_ids: list[int] | None = None,
-) -> None:
-    """Build a DB with the pre-Apr-2026 schema (findings has person_id /
-    cluster_id columns; separate dismissed_findings table) plus the given
-    state. Opening it with FaceDB triggers the migration and drops the
-    old columns."""
-    conn = sqlite3.connect(str(path))
-    conn.executescript(
-        """
-        CREATE TABLE sources (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_path TEXT UNIQUE NOT NULL,
-            type TEXT NOT NULL DEFAULT 'photo',
-            width INTEGER NOT NULL DEFAULT 0,
-            height INTEGER NOT NULL DEFAULT 0,
-            taken_at TEXT, latitude REAL, longitude REAL
-        );
-        CREATE TABLE scans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-            scan_type TEXT NOT NULL,
-            scanned_at TEXT NOT NULL DEFAULT '2024-01-01',
-            detection_strategy TEXT NOT NULL DEFAULT 'unknown',
-            UNIQUE (source_id, scan_type)
-        );
-        CREATE TABLE subjects (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            kind TEXT NOT NULL DEFAULT 'person',
-            created_at TEXT NOT NULL DEFAULT '2024-01-01'
-        );
-        CREATE TABLE findings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-            bbox_x INTEGER NOT NULL DEFAULT 0,
-            bbox_y INTEGER NOT NULL DEFAULT 0,
-            bbox_w INTEGER NOT NULL DEFAULT 0,
-            bbox_h INTEGER NOT NULL DEFAULT 0,
-            embedding BLOB NOT NULL,
-            person_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
-            cluster_id INTEGER,
-            confidence REAL NOT NULL DEFAULT 0.0,
-            species TEXT NOT NULL DEFAULT 'human',
-            detected_at TEXT NOT NULL DEFAULT '2024-01-01',
-            frame_path TEXT,
-            embedding_dim INTEGER NOT NULL DEFAULT 0,
-            scan_id INTEGER REFERENCES scans(id) ON DELETE CASCADE,
-            frame_number INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE dismissed_findings (
-            finding_id INTEGER PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE
-        );
-        CREATE TABLE circles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            description TEXT,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE subject_circles (
-            subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-            circle_id INTEGER NOT NULL REFERENCES circles(id) ON DELETE CASCADE,
-            added_at TEXT NOT NULL,
-            PRIMARY KEY (subject_id, circle_id)
-        );
-        CREATE UNIQUE INDEX idx_subjects_name_kind ON subjects(name, kind);
-        """
-    )
-    # Seed a minimal source + scan + findings so subject_ids/cluster_ids have targets.
-    conn.execute("INSERT INTO sources (id, file_path) VALUES (1, '/migration-test.jpg')")
-    conn.execute("INSERT INTO scans (id, source_id, scan_type) VALUES (1, 1, 'subjects')")
-    emb = np.zeros(512, dtype=np.float32)
-    emb[0] = 1.0
-    # Collect all finding ids referenced by the seeds.
-    all_fids: set[int] = set()
-    if subject_ids:
-        all_fids.update(subject_ids.keys())
-    if cluster_ids:
-        all_fids.update(cluster_ids.keys())
-    if dismissed_ids:
-        all_fids.update(dismissed_ids)
-    for fid in sorted(all_fids):
-        conn.execute(
-            "INSERT INTO findings (id, source_id, embedding, scan_id) VALUES (?, 1, ?, 1)",
-            (fid, emb.tobytes()),
-        )
-    if subject_ids:
-        # Create subjects referenced by the id map.
-        for subject_id in set(subject_ids.values()):
-            conn.execute(
-                "INSERT INTO subjects (id, name, created_at) VALUES (?, ?, '2024-01-01')",
-                (subject_id, f"Subject {subject_id}"),
-            )
-        for fid, sid in subject_ids.items():
-            # legacy pre-refactor column — intentional; tests the migration path.
-            conn.execute("UPDATE findings SET person_id = ? WHERE id = ?", (sid, fid))
-    if cluster_ids:
-        for fid, cid in cluster_ids.items():
-            conn.execute("UPDATE findings SET cluster_id = ? WHERE id = ?", (cid, fid))
-    if dismissed_ids:
-        for fid in dismissed_ids:
-            conn.execute("INSERT INTO dismissed_findings (finding_id) VALUES (?)", (fid,))
-    if strangers_circle_member_ids:
-        conn.execute(
-            "INSERT INTO circles (id, name, created_at) VALUES (1, 'Strangers', '2024-01-01')"
-        )
-        for sid in strangers_circle_member_ids:
-            conn.execute(
-                "INSERT INTO subject_circles (subject_id, circle_id, added_at) "
-                "VALUES (?, 1, '2024-01-01')",
-                (sid,),
-            )
-    conn.commit()
-    conn.close()
+    async def test_rename_circle(self) -> None:
+        cid = await self.db.create_circle("frineds")  # typo
+        await self.db.rename_circle(cid, "friends")
+        assert (await self.db.get_circle(cid)).name == "friends"
 
 
-class TestFindingAssignmentMigration(TestCase):
-    """Apr 2026 refactor: open a DB with the pre-refactor schema, verify
-    FaceDB's migration copies state into the new tables and drops the
-    obsolete columns + dismissed_findings table."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
-        self.tmp_path = tmp_path
-
-    def test_clusters_migrated(self) -> None:
-        path = self.tmp_path / "old.db"
-        _build_pre_refactor_db(path, cluster_ids={10: 7, 11: 7})
-        db = FaceDB(path)
-        rows = db.conn.execute(
-            "SELECT finding_id, cluster_id FROM cluster_findings ORDER BY finding_id"
-        ).fetchall()
-        assert [(r[0], r[1]) for r in rows] == [(10, 7), (11, 7)]
-        db.close()
-
-    def test_named_subjects_migrated(self) -> None:
-        path = self.tmp_path / "old.db"
-        _build_pre_refactor_db(path, subject_ids={10: 100})
-        db = FaceDB(path)
-        row = db.conn.execute(
-            "SELECT subject_id, exclusion_reason FROM finding_assignment WHERE finding_id = ?",
-            (10,),
-        ).fetchone()
-        assert (row[0], row[1]) == (100, None)
-        db.close()
-
-    def test_dismissed_findings_migrated(self) -> None:
-        path = self.tmp_path / "old.db"
-        _build_pre_refactor_db(path, dismissed_ids=[10])
-        db = FaceDB(path)
-        row = db.conn.execute(
-            "SELECT subject_id, exclusion_reason FROM finding_assignment WHERE finding_id = ?",
-            (10,),
-        ).fetchone()
-        assert (row[0], row[1]) == (None, "not_a_face")
-        db.close()
-
-    def test_strangers_dissolved_to_exclusion_reason(self) -> None:
-        path = self.tmp_path / "old.db"
-        _build_pre_refactor_db(
-            path,
-            subject_ids={10: 100},
-            strangers_circle_member_ids=[100],
-        )
-        db = FaceDB(path)
-        assert db.get_subject(100) is None
-        assert db.get_circle_by_name("Strangers") is None
-        row = db.conn.execute(
-            "SELECT subject_id, exclusion_reason FROM finding_assignment WHERE finding_id = ?",
-            (10,),
-        ).fetchone()
-        assert (row[0], row[1]) == (None, "stranger")
-        db.close()
-
-    def test_migration_is_idempotent(self) -> None:
-        """Reopening a migrated DB doesn't duplicate rows."""
-        path = self.tmp_path / "old.db"
-        _build_pre_refactor_db(path, subject_ids={10: 100}, cluster_ids={10: 7})
-        db1 = FaceDB(path)
-        db1.close()
-        db2 = FaceDB(path)
-        assert db2.conn.execute("SELECT COUNT(*) FROM finding_assignment").fetchone()[0] == 1
-        assert db2.conn.execute("SELECT COUNT(*) FROM cluster_findings").fetchone()[0] == 1
-        db2.close()
-
-    def test_old_columns_dropped_after_migration(self) -> None:
-        """After opening, findings.person_id / cluster_id and
-        dismissed_findings are gone."""
-        path = self.tmp_path / "old.db"
-        _build_pre_refactor_db(path, subject_ids={10: 100})
-        db = FaceDB(path)
-        cols = {r[1] for r in db.conn.execute("PRAGMA table_info(findings)").fetchall()}
-        assert "person_id" not in cols
-        assert "cluster_id" not in cols
-        row = db.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='dismissed_findings'"
-        ).fetchone()
-        assert row is None
-        db.close()
-
-
-class TestFindingCuration(TestCase):
+class TestFindingCuration(PostgresTestCase):
     """``Finding.curation`` reifies the (subject_id, exclusion_reason) XOR."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_uncurated_when_both_none(self) -> None:
+    async def test_uncurated_when_both_none(self) -> None:
         from ritrova.db.models import Uncurated
 
-        _, fid = _add_source_with_finding(self.db, path="/a.jpg")
-        finding = self.db.get_finding(fid)
+        _, fid = await _add_source_with_finding(self.db, path="/a.jpg")
+        finding = await self.db.get_finding(fid)
         assert finding is not None
         assert finding.curation == Uncurated()
 
-    def test_assigned_to_when_subject_set(self) -> None:
+    async def test_assigned_to_when_subject_set(self) -> None:
         from ritrova.db.models import AssignedTo
 
-        sid = self.db.create_subject("Alice")
-        _, fid = _add_source_with_finding(self.db, path="/a.jpg")
-        self.db.assign_finding_to_subject(fid, sid)
-        finding = self.db.get_finding(fid)
+        sid = await self.db.create_subject("Alice")
+        _, fid = await _add_source_with_finding(self.db, path="/a.jpg")
+        await self.db.assign_finding_to_subject(fid, sid)
+        finding = await self.db.get_finding(fid)
         assert finding is not None
         assert finding.curation == AssignedTo(subject_id=sid)
 
-    def test_excluded_when_exclusion_reason_set(self) -> None:
+    async def test_excluded_when_exclusion_reason_set(self) -> None:
         from ritrova.db.models import Excluded
 
-        _, fid = _add_source_with_finding(self.db, path="/a.jpg")
-        self.db.set_exclusions([fid], "stranger")
-        finding = self.db.get_finding(fid)
+        _, fid = await _add_source_with_finding(self.db, path="/a.jpg")
+        await self.db.set_exclusions([fid], "stranger")
+        finding = await self.db.get_finding(fid)
         assert finding is not None
         assert finding.curation == Excluded(reason="stranger")
 
         # Flip the same finding to not_a_face via the dismiss path.
-        self.db.dismiss_findings([fid])
-        finding = self.db.get_finding(fid)
+        await self.db.dismiss_findings([fid])
+        finding = await self.db.get_finding(fid)
         assert finding is not None
         assert finding.curation == Excluded(reason="not_a_face")
 
 
-class TestFindingAssignmentConstraints(TestCase):
+class TestFindingAssignmentConstraints(PostgresTestCase):
     """XOR CHECK + enum CHECK on finding_assignment."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, db: FaceDB) -> None:
-        self.db = db
-
-    def test_check_constraint_blocks_both_null(self) -> None:
-        _, fid = _add_source_with_finding(self.db, path="/a.jpg")
-        with pytest.raises(sqlite3.IntegrityError):
-            self.db.conn.execute(
+    async def test_check_constraint_blocks_both_null(self) -> None:
+        _, fid = await _add_source_with_finding(self.db, path="/a.jpg")
+        with pytest.raises(asyncpg.exceptions.IntegrityConstraintViolationError):
+            await self.db.execute(
                 "INSERT INTO finding_assignment(finding_id, subject_id, exclusion_reason, curated_at) "
-                "VALUES (?, NULL, NULL, '2026-04-19')",
-                (fid,),
+                "VALUES (?, NULL, NULL, '2026-04-19T00:00:00+00:00')",
+                fid,
             )
 
-    def test_check_constraint_blocks_both_set(self) -> None:
-        _, fid = _add_source_with_finding(self.db, path="/a.jpg")
-        sid = self.db.create_subject("Alice")
-        with pytest.raises(sqlite3.IntegrityError):
-            self.db.conn.execute(
+    async def test_check_constraint_blocks_both_set(self) -> None:
+        _, fid = await _add_source_with_finding(self.db, path="/a.jpg")
+        sid = await self.db.create_subject("Alice")
+        with pytest.raises(asyncpg.exceptions.IntegrityConstraintViolationError):
+            await self.db.execute(
                 "INSERT INTO finding_assignment(finding_id, subject_id, exclusion_reason, curated_at) "
-                "VALUES (?, ?, 'stranger', '2026-04-19')",
-                (fid, sid),
+                "VALUES (?, ?, 'stranger', '2026-04-19T00:00:00+00:00')",
+                fid,
+                sid,
             )
 
-    def test_check_constraint_blocks_bad_reason(self) -> None:
-        _, fid = _add_source_with_finding(self.db, path="/a.jpg")
-        with pytest.raises(sqlite3.IntegrityError):
-            self.db.conn.execute(
+    async def test_check_constraint_blocks_bad_reason(self) -> None:
+        _, fid = await _add_source_with_finding(self.db, path="/a.jpg")
+        with pytest.raises(asyncpg.exceptions.IntegrityConstraintViolationError):
+            await self.db.execute(
                 "INSERT INTO finding_assignment(finding_id, subject_id, exclusion_reason, curated_at) "
-                "VALUES (?, NULL, 'bogus', '2026-04-19')",
-                (fid,),
+                "VALUES (?, NULL, 'bogus', '2026-04-19T00:00:00+00:00')",
+                fid,
             )
 
 
-class TestAssignmentMixin(TestCase):
+class TestAssignmentMixin(PostgresTestCase):
     """New helpers for reading/writing finding_assignment and cluster_findings
     (the target API after the Apr 2026 refactor; existing call sites still
     use the old denormalized columns — they'll be switched in Commit C)."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, db: FaceDB) -> None:
-        self.db = db
-
     # finding_assignment
 
-    def test_set_subject_then_get_curation(self) -> None:
-        _, fid = _add_source_with_finding(self.db)
-        sid = self.db.create_subject("Alice")
-        self.db.set_subject(fid, sid)
-        assert self.db.get_curation(fid) == (sid, None)
+    async def test_set_subject_then_get_curation(self) -> None:
+        _, fid = await _add_source_with_finding(self.db)
+        sid = await self.db.create_subject("Alice")
+        await self.db.set_subject(fid, sid)
+        assert await self.db.get_curation(fid) == (sid, None)
 
-    def test_set_exclusion_stranger(self) -> None:
-        _, fid = _add_source_with_finding(self.db)
-        self.db.set_exclusion(fid, "stranger")
-        assert self.db.get_curation(fid) == (None, "stranger")
+    async def test_set_exclusion_stranger(self) -> None:
+        _, fid = await _add_source_with_finding(self.db)
+        await self.db.set_exclusion(fid, "stranger")
+        assert await self.db.get_curation(fid) == (None, "stranger")
 
-    def test_set_exclusion_rejects_bad_reason(self) -> None:
-        _, fid = _add_source_with_finding(self.db)
+    async def test_set_exclusion_rejects_bad_reason(self) -> None:
+        _, fid = await _add_source_with_finding(self.db)
         with pytest.raises(ValueError):
-            self.db.set_exclusion(fid, "bogus")
+            await self.db.set_exclusion(fid, "bogus")
 
-    def test_set_subject_overwrites_exclusion(self) -> None:
+    async def test_set_subject_overwrites_exclusion(self) -> None:
         """Picking a name on a previously-marked stranger implicitly unmarks."""
-        _, fid = _add_source_with_finding(self.db)
-        sid = self.db.create_subject("Alice")
-        self.db.set_exclusion(fid, "stranger")
-        self.db.set_subject(fid, sid)
-        assert self.db.get_curation(fid) == (sid, None)
+        _, fid = await _add_source_with_finding(self.db)
+        sid = await self.db.create_subject("Alice")
+        await self.db.set_exclusion(fid, "stranger")
+        await self.db.set_subject(fid, sid)
+        assert await self.db.get_curation(fid) == (sid, None)
 
-    def test_set_exclusion_overwrites_subject(self) -> None:
+    async def test_set_exclusion_overwrites_subject(self) -> None:
         """Marking as stranger clears a prior assignment."""
-        _, fid = _add_source_with_finding(self.db)
-        sid = self.db.create_subject("Alice")
-        self.db.set_subject(fid, sid)
-        self.db.set_exclusion(fid, "stranger")
-        assert self.db.get_curation(fid) == (None, "stranger")
+        _, fid = await _add_source_with_finding(self.db)
+        sid = await self.db.create_subject("Alice")
+        await self.db.set_subject(fid, sid)
+        await self.db.set_exclusion(fid, "stranger")
+        assert await self.db.get_curation(fid) == (None, "stranger")
 
-    def test_get_curation_returns_none_when_uncurated(self) -> None:
-        _, fid = _add_source_with_finding(self.db)
-        assert self.db.get_curation(fid) is None
+    async def test_get_curation_returns_none_when_uncurated(self) -> None:
+        _, fid = await _add_source_with_finding(self.db)
+        assert await self.db.get_curation(fid) is None
 
-    def test_clear_curation(self) -> None:
-        _, fid = _add_source_with_finding(self.db)
-        sid = self.db.create_subject("Alice")
-        self.db.set_subject(fid, sid)
-        self.db.clear_curation(fid)
-        assert self.db.get_curation(fid) is None
+    async def test_clear_curation(self) -> None:
+        _, fid = await _add_source_with_finding(self.db)
+        sid = await self.db.create_subject("Alice")
+        await self.db.set_subject(fid, sid)
+        await self.db.clear_curation(fid)
+        assert await self.db.get_curation(fid) is None
 
-    def test_clear_curations_batch(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        self.db.set_exclusion(fid1, "stranger")
-        self.db.set_exclusion(fid2, "not_a_face")
-        self.db.clear_curations([fid1, fid2])
-        assert self.db.get_curation(fid1) is None
-        assert self.db.get_curation(fid2) is None
+    async def test_clear_curations_batch(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        await self.db.set_exclusion(fid1, "stranger")
+        await self.db.set_exclusion(fid2, "not_a_face")
+        await self.db.clear_curations([fid1, fid2])
+        assert await self.db.get_curation(fid1) is None
+        assert await self.db.get_curation(fid2) is None
 
-    def test_set_exclusions_batch(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        self.db.set_exclusions([fid1, fid2], "stranger")
-        assert self.db.get_curation(fid1) == (None, "stranger")
-        assert self.db.get_curation(fid2) == (None, "stranger")
+    async def test_set_exclusions_batch(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        await self.db.set_exclusions([fid1, fid2], "stranger")
+        assert await self.db.get_curation(fid1) == (None, "stranger")
+        assert await self.db.get_curation(fid2) == (None, "stranger")
 
     # cluster_findings
 
-    def test_set_and_get_cluster_membership(self) -> None:
-        _, fid = _add_source_with_finding(self.db)
-        self.db.set_cluster_memberships({fid: 42})
-        assert self.db.get_cluster_membership(fid) == 42
+    async def test_set_and_get_cluster_membership(self) -> None:
+        _, fid = await _add_source_with_finding(self.db)
+        await self.db.set_cluster_memberships({fid: 42})
+        assert await self.db.get_cluster_membership(fid) == 42
 
-    def test_set_cluster_memberships_bulk(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        self.db.set_cluster_memberships({fid1: 7, fid2: 9})
-        assert self.db.get_cluster_membership(fid1) == 7
-        assert self.db.get_cluster_membership(fid2) == 9
+    async def test_set_cluster_memberships_bulk(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        await self.db.set_cluster_memberships({fid1: 7, fid2: 9})
+        assert await self.db.get_cluster_membership(fid1) == 7
+        assert await self.db.get_cluster_membership(fid2) == 9
 
-    def test_remove_cluster_memberships(self) -> None:
-        _, fid = _add_source_with_finding(self.db)
-        self.db.set_cluster_memberships({fid: 42})
-        self.db.remove_cluster_memberships([fid])
-        assert self.db.get_cluster_membership(fid) is None
+    async def test_remove_cluster_memberships(self) -> None:
+        _, fid = await _add_source_with_finding(self.db)
+        await self.db.set_cluster_memberships({fid: 42})
+        await self.db.remove_cluster_memberships([fid])
+        assert await self.db.get_cluster_membership(fid) is None
 
-    def test_clear_species_cluster_memberships(self) -> None:
+    async def test_clear_species_cluster_memberships(self) -> None:
         """Clearing dogs leaves humans alone."""
-        _, human_fid = _add_source_with_finding(self.db, path="/h.jpg", species="human")
-        _, dog_fid = _add_source_with_finding(self.db, path="/d.jpg", species="dog")
-        self.db.set_cluster_memberships({human_fid: 1, dog_fid: 2})
-        self.db.clear_species_cluster_memberships("dog")
-        assert self.db.get_cluster_membership(human_fid) == 1
-        assert self.db.get_cluster_membership(dog_fid) is None
+        _, human_fid = await _add_source_with_finding(self.db, path="/h.jpg", species="human")
+        _, dog_fid = await _add_source_with_finding(self.db, path="/d.jpg", species="dog")
+        await self.db.set_cluster_memberships({human_fid: 1, dog_fid: 2})
+        await self.db.clear_species_cluster_memberships("dog")
+        assert await self.db.get_cluster_membership(human_fid) == 1
+        assert await self.db.get_cluster_membership(dog_fid) is None
 
-    def test_merge_cluster_memberships(self) -> None:
-        _, fid1 = _add_source_with_finding(self.db, path="/a.jpg")
-        _, fid2 = _add_source_with_finding(self.db, path="/b.jpg")
-        self.db.set_cluster_memberships({fid1: 1, fid2: 1})
-        moved = self.db.merge_cluster_memberships(source_cluster=1, target_cluster=5)
+    async def test_merge_cluster_memberships(self) -> None:
+        _, fid1 = await _add_source_with_finding(self.db, path="/a.jpg")
+        _, fid2 = await _add_source_with_finding(self.db, path="/b.jpg")
+        await self.db.set_cluster_memberships({fid1: 1, fid2: 1})
+        moved = await self.db.merge_cluster_memberships(source_cluster=1, target_cluster=5)
         assert moved == 2
-        assert self.db.get_cluster_membership(fid1) == 5
-        assert self.db.get_cluster_membership(fid2) == 5
+        assert await self.db.get_cluster_membership(fid1) == 5
+        assert await self.db.get_cluster_membership(fid2) == 5
 
-    def test_merge_same_cluster_is_noop(self) -> None:
-        _, fid = _add_source_with_finding(self.db)
-        self.db.set_cluster_memberships({fid: 1})
-        assert self.db.merge_cluster_memberships(1, 1) == 0
+    async def test_merge_same_cluster_is_noop(self) -> None:
+        _, fid = await _add_source_with_finding(self.db)
+        await self.db.set_cluster_memberships({fid: 1})
+        assert await self.db.merge_cluster_memberships(1, 1) == 0
+
+
+class TestSchemaInvariants(PostgresTestCase):
+    """What the Alembic baseline guarantees, asserted against the live catalog.
+
+    These replace the old SQLite in-place-migration tests: the migration
+    they exercised is gone, but the invariants it existed to establish
+    still matter.
+    """
+
+    async def test_findings_scan_id_is_not_null(self) -> None:
+        nullable = await self.db.fetchval(
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_name = 'findings' AND column_name = 'scan_id'"
+        )
+        assert nullable == "NO"
+
+    async def test_denormalized_finding_columns_are_gone(self) -> None:
+        columns = {
+            r[0]
+            for r in await self.db.fetch(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'findings'"
+            )
+        }
+        assert "person_id" not in columns
+        assert "cluster_id" not in columns
+
+    async def test_dismissed_findings_table_is_gone(self) -> None:
+        present = await self.db.fetchval(
+            "SELECT to_regclass('public.dismissed_findings') IS NOT NULL"
+        )
+        assert present is False
+
+    async def test_surrogate_keys_are_uuid(self) -> None:
+        rows = await self.db.fetch(
+            "SELECT table_name, data_type FROM information_schema.columns "
+            "WHERE column_name = 'id' AND table_schema = 'public' "
+            "AND table_name = ANY(?)",
+            ["sources", "scans", "subjects", "findings", "descriptions", "circles"],
+        )
+        assert {r[0] for r in rows} == {
+            "sources",
+            "scans",
+            "subjects",
+            "findings",
+            "descriptions",
+            "circles",
+        }
+        assert {r[1] for r in rows} == {"uuid"}

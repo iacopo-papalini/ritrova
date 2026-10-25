@@ -8,18 +8,15 @@ the happy-path 200 with suggestion, and undo round-trip via the
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest import TestCase
+from uuid import UUID
 
 import numpy as np
-import pytest
-from fastapi.testclient import TestClient
 from PIL import Image
 
-from ritrova.app import create_app
 from ritrova.app.deps import get_findings_service
-from ritrova.db import FaceDB
 from tests._helpers import add_findings
+
+from .._postgres import PostgresAppTestCase
 
 
 def _unit(seed: int, dim: int = 512) -> np.ndarray:
@@ -28,19 +25,16 @@ def _unit(seed: int, dim: int = 512) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
-class TestCreateManualFindingRouter(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
-        self.tmp = tmp_path
-        db_path = tmp_path / "test.db"
-        self.db = FaceDB(db_path)
-        self.app = create_app(str(db_path))
-        self.client = TestClient(self.app)
+class TestCreateManualFindingRouter(PostgresAppTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.tmp = self.tmp_path
+        self.client = self.make_client()
 
-        self.image_path = tmp_path / "photo.jpg"
+        self.image_path = self.tmp_path / "photo.jpg"
         Image.new("RGB", (400, 300), color="red").save(self.image_path, "JPEG")
-        self.source_id = self.db.add_source(str(self.image_path), width=400, height=300)
-        self.scan_id = self.db.record_scan(self.source_id, "subjects")
+        self.source_id = await self.db.add_source(str(self.image_path), width=400, height=300)
+        self.scan_id = await self.db.record_scan(self.source_id, "subjects")
 
         # Stub the embedding path on the app's cached service.
         self.fake_emb = _unit(seed=3)
@@ -55,7 +49,7 @@ class TestCreateManualFindingRouter(TestCase):
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["ok"] is True
-        assert isinstance(body["finding_id"], int)
+        assert UUID(body["finding_id"])
         assert "undo_token" in body
         assert body["message"] == "Added manual face"
         # No subjects yet → no suggestion.
@@ -89,9 +83,9 @@ class TestCreateManualFindingRouter(TestCase):
         )
         assert resp.status_code == 422
 
-    def test_video_source_422(self) -> None:
-        vid = self.db.add_source("/movie.mp4", source_type="video", width=400, height=300)
-        self.db.record_scan(vid, "subjects")
+    async def test_video_source_422(self) -> None:
+        vid = await self.db.add_source("/movie.mp4", source_type="video", width=400, height=300)
+        await self.db.record_scan(vid, "subjects")
         resp = self.client.post(
             f"/api/sources/{vid}/findings",
             json={"bbox": [10, 10, 60, 60], "species": "human"},
@@ -99,26 +93,26 @@ class TestCreateManualFindingRouter(TestCase):
         assert resp.status_code == 422
         assert "video" in resp.json()["error"].lower()
 
-    def test_missing_subjects_scan_422(self) -> None:
+    async def test_missing_subjects_scan_422(self) -> None:
         unscanned_path = self.tmp / "noscan.jpg"
         Image.new("RGB", (400, 300), color="blue").save(unscanned_path, "JPEG")
-        unscanned_id = self.db.add_source(str(unscanned_path), width=400, height=300)
+        unscanned_id = await self.db.add_source(str(unscanned_path), width=400, height=300)
         resp = self.client.post(
             f"/api/sources/{unscanned_id}/findings",
             json={"bbox": [10, 10, 60, 60], "species": "human"},
         )
         assert resp.status_code == 422
 
-    def test_suggestion_returned_for_matching_subject(self) -> None:
-        sid = self.db.create_subject("Alice", kind="person")
-        seed_src = self.db.add_source("/seed.jpg", width=100, height=100)
-        add_findings(
+    async def test_suggestion_returned_for_matching_subject(self) -> None:
+        sid = await self.db.create_subject("Alice", kind="person")
+        seed_src = await self.db.add_source("/seed.jpg", width=100, height=100)
+        await add_findings(
             self.db,
             [(seed_src, (0, 0, 50, 50), self.fake_emb, 0.9) for _ in range(3)],
             species="human",
         )
-        for f in self.db.get_source_findings(seed_src):
-            self.db.assign_finding_to_subject(f.id, sid)
+        for f in await self.db.get_source_findings(seed_src):
+            await self.db.assign_finding_to_subject(f.id, sid)
 
         resp = self.client.post(
             f"/api/sources/{self.source_id}/findings",
@@ -126,10 +120,10 @@ class TestCreateManualFindingRouter(TestCase):
         )
         body = resp.json()
         assert body["suggestion"] is not None
-        assert body["suggestion"]["subject_id"] == sid
+        assert body["suggestion"]["subject_id"] == str(sid)
         assert body["suggestion"]["name"] == "Alice"
 
-    def test_undo_deletes_created_finding(self) -> None:
+    async def test_undo_deletes_created_finding(self) -> None:
         resp = self.client.post(
             f"/api/sources/{self.source_id}/findings",
             json={"bbox": [10, 10, 60, 60], "species": "human"},
@@ -137,8 +131,8 @@ class TestCreateManualFindingRouter(TestCase):
         body = resp.json()
         finding_id = body["finding_id"]
         token = body["undo_token"]
-        assert self.db.get_finding(finding_id) is not None
+        assert await self.db.get_finding(finding_id) is not None
 
         undo_resp = self.client.post(f"/api/undo/{token}")
         assert undo_resp.status_code == 200
-        assert self.db.get_finding(finding_id) is None
+        assert await self.db.get_finding(finding_id) is None

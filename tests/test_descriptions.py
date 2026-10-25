@@ -2,183 +2,182 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest import TestCase
-
-import pytest
-
-from ritrova.db import FaceDB
 from ritrova.describer import Describer, _parse_vlm_response
 
+from ._helpers import MISSING_ID
+from ._postgres import PostgresTestCase
 
-class TestDescriptionsDB(TestCase):
+
+class TestDescriptionsDB(PostgresTestCase):
     """DB-level tests for the descriptions table and helpers."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
-        self.db = FaceDB(tmp_path / "test.db")
-        self.source_id = self.db.add_source("/photo1.jpg", width=100, height=100)
-        self.scan_id = self.db.record_scan(
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.source_id = await self.db.add_source("/photo1.jpg", width=100, height=100)
+        self.scan_id = await self.db.record_scan(
             self.source_id, "describe", detection_strategy="qwen2.5-vl-3b"
         )
 
-    def test_add_and_get_description(self) -> None:
-        desc_id = self.db.add_description(
+    async def test_add_and_get_description(self) -> None:
+        desc_id = await self.db.add_description(
             self.source_id,
             self.scan_id,
             caption="Un gruppo di persone a tavola in giardino",
             tags={"giardino", "cena", "gruppo", "estate"},
         )
-        assert desc_id > 0
+        assert desc_id is not None
 
-        desc = self.db.get_description(self.source_id)
+        desc = await self.db.get_description(self.source_id)
         assert desc is not None
         assert desc.source_id == self.source_id
         assert desc.scan_id == self.scan_id
         assert desc.caption == "Un gruppo di persone a tavola in giardino"
         assert desc.tags == {"giardino", "cena", "gruppo", "estate"}
 
-    def test_get_description_returns_none_for_missing(self) -> None:
-        assert self.db.get_description(999) is None
+    async def test_get_description_returns_none_for_missing(self) -> None:
+        assert await self.db.get_description(MISSING_ID) is None
 
-    def test_get_description_returns_most_recent(self) -> None:
+    async def test_get_description_returns_most_recent(self) -> None:
         """When multiple descriptions exist for a source, return the latest."""
-        self.db.add_description(self.source_id, self.scan_id, caption="Old caption", tags={"old"})
-        scan2 = self.db.record_scan(
+        await self.db.add_description(
+            self.source_id, self.scan_id, caption="Old caption", tags={"old"}
+        )
+        scan2 = await self.db.record_scan(
             self.source_id, "describe_v2", detection_strategy="qwen2.5-vl-7b"
         )
-        self.db.add_description(self.source_id, scan2, caption="New caption", tags={"new"})
-        desc = self.db.get_description(self.source_id)
+        await self.db.add_description(self.source_id, scan2, caption="New caption", tags={"new"})
+        desc = await self.db.get_description(self.source_id)
         assert desc is not None
         assert desc.caption == "New caption"
         assert desc.tags == {"new"}
 
-    def test_get_all_tags(self) -> None:
-        self.db.add_description(
+    async def test_get_all_tags(self) -> None:
+        await self.db.add_description(
             self.source_id,
             self.scan_id,
             caption="test",
             tags={"mare", "estate", "spiaggia"},
         )
-        src2 = self.db.add_source("/photo2.jpg", width=100, height=100)
-        scan2 = self.db.record_scan(src2, "describe", detection_strategy="qwen2.5-vl-3b")
-        self.db.add_description(src2, scan2, caption="test", tags={"montagna", "estate", "neve"})
-        tags = self.db.get_all_tags()
+        src2 = await self.db.add_source("/photo2.jpg", width=100, height=100)
+        scan2 = await self.db.record_scan(src2, "describe", detection_strategy="qwen2.5-vl-3b")
+        await self.db.add_description(
+            src2, scan2, caption="test", tags={"montagna", "estate", "neve"}
+        )
+        tags = await self.db.get_all_tags()
         assert tags == {"estate", "mare", "montagna", "neve", "spiaggia"}
 
-    def test_get_all_tags_empty(self) -> None:
-        assert self.db.get_all_tags() == set()
+    async def test_get_all_tags_empty(self) -> None:
+        assert await self.db.get_all_tags() == set()
 
-    def test_search_by_single_tag(self) -> None:
-        self.db.add_description(
+    async def test_search_by_single_tag(self) -> None:
+        await self.db.add_description(
             self.source_id, self.scan_id, caption="test", tags={"mare", "estate"}
         )
-        src2 = self.db.add_source("/photo2.jpg", width=100, height=100)
-        scan2 = self.db.record_scan(src2, "describe", detection_strategy="qwen2.5-vl-3b")
-        self.db.add_description(src2, scan2, caption="test", tags={"montagna", "neve"})
-        results = self.db.search_sources_by_tags_and_caption(tag_filters={"mare"})
+        src2 = await self.db.add_source("/photo2.jpg", width=100, height=100)
+        scan2 = await self.db.record_scan(src2, "describe", detection_strategy="qwen2.5-vl-3b")
+        await self.db.add_description(src2, scan2, caption="test", tags={"montagna", "neve"})
+        results = await self.db.search_sources_by_tags_and_caption(tag_filters={"mare"})
         assert results == [self.source_id]
 
-    def test_search_by_multiple_tags_is_and(self) -> None:
+    async def test_search_by_multiple_tags_is_and(self) -> None:
         """Multiple tags must ALL match (AND semantics)."""
-        self.db.add_description(
+        await self.db.add_description(
             self.source_id,
             self.scan_id,
             caption="test",
             tags={"mare", "estate", "cena"},
         )
         # mare AND estate -> match
-        assert self.db.search_sources_by_tags_and_caption(tag_filters={"mare", "estate"}) == [
+        assert await self.db.search_sources_by_tags_and_caption(tag_filters={"mare", "estate"}) == [
             self.source_id
         ]
         # mare AND neve -> no match
-        assert self.db.search_sources_by_tags_and_caption(tag_filters={"mare", "neve"}) == []
+        assert await self.db.search_sources_by_tags_and_caption(tag_filters={"mare", "neve"}) == []
 
-    def test_search_by_caption_keyword(self) -> None:
-        self.db.add_description(
+    async def test_search_by_caption_keyword(self) -> None:
+        await self.db.add_description(
             self.source_id,
             self.scan_id,
             caption="Un gruppo di persone a tavola in giardino",
             tags={"giardino"},
         )
-        results = self.db.search_sources_by_tags_and_caption(caption_query="giardino")
+        results = await self.db.search_sources_by_tags_and_caption(caption_query="giardino")
         assert results == [self.source_id]
-        assert self.db.search_sources_by_tags_and_caption(caption_query="spiaggia") == []
+        assert await self.db.search_sources_by_tags_and_caption(caption_query="spiaggia") == []
 
-    def test_search_combined_tags_and_caption(self) -> None:
-        self.db.add_description(
+    async def test_search_combined_tags_and_caption(self) -> None:
+        await self.db.add_description(
             self.source_id,
             self.scan_id,
             caption="Cena estiva in giardino",
             tags={"giardino", "cena", "estate"},
         )
         # Both match -> returned
-        assert self.db.search_sources_by_tags_and_caption(
+        assert await self.db.search_sources_by_tags_and_caption(
             tag_filters={"cena"}, caption_query="giardino"
         ) == [self.source_id]
         # Tag matches but caption doesn't -> not returned
         assert (
-            self.db.search_sources_by_tags_and_caption(
+            await self.db.search_sources_by_tags_and_caption(
                 tag_filters={"cena"}, caption_query="spiaggia"
             )
             == []
         )
 
-    def test_search_no_filters_returns_empty(self) -> None:
-        self.db.add_description(self.source_id, self.scan_id, caption="test", tags={"test"})
-        assert self.db.search_sources_by_tags_and_caption() == []
+    async def test_search_no_filters_returns_empty(self) -> None:
+        await self.db.add_description(self.source_id, self.scan_id, caption="test", tags={"test"})
+        assert await self.db.search_sources_by_tags_and_caption() == []
 
-    def test_tag_exact_match_no_substring(self) -> None:
+    async def test_tag_exact_match_no_substring(self) -> None:
         """Searching for 'mare' must not match 'tramonto' or 'maremma'."""
-        self.db.add_description(
+        await self.db.add_description(
             self.source_id,
             self.scan_id,
             caption="test",
             tags={"tramonto", "maremma"},
         )
-        assert self.db.search_sources_by_tags_and_caption(tag_filters={"mare"}) == []
+        assert await self.db.search_sources_by_tags_and_caption(tag_filters={"mare"}) == []
 
-    def test_get_undescribed_source_ids(self) -> None:
-        src2 = self.db.add_source("/photo2.jpg", width=100, height=100)
-        undescribed = self.db.get_undescribed_source_ids()
+    async def test_get_undescribed_source_ids(self) -> None:
+        src2 = await self.db.add_source("/photo2.jpg", width=100, height=100)
+        undescribed = await self.db.get_undescribed_source_ids()
         assert self.source_id in undescribed
         assert src2 in undescribed
 
-        self.db.add_description(self.source_id, self.scan_id, caption="test", tags={"test"})
-        undescribed = self.db.get_undescribed_source_ids()
+        await self.db.add_description(self.source_id, self.scan_id, caption="test", tags={"test"})
+        undescribed = await self.db.get_undescribed_source_ids()
         assert self.source_id not in undescribed
         assert src2 in undescribed
 
-    def test_description_cascade_on_scan_delete(self) -> None:
+    async def test_description_cascade_on_scan_delete(self) -> None:
         """Deleting a scan must cascade-delete its descriptions."""
-        self.db.add_description(self.source_id, self.scan_id, caption="test", tags={"test"})
-        assert self.db.get_description(self.source_id) is not None
-        self.db.delete_scan(self.scan_id)
-        assert self.db.get_description(self.source_id) is None
+        await self.db.add_description(self.source_id, self.scan_id, caption="test", tags={"test"})
+        assert await self.db.get_description(self.source_id) is not None
+        await self.db.delete_scan(self.scan_id)
+        assert await self.db.get_description(self.source_id) is None
 
-    def test_description_cascade_on_source_delete(self) -> None:
+    async def test_description_cascade_on_source_delete(self) -> None:
         """Deleting a source must cascade-delete its descriptions."""
-        self.db.add_description(self.source_id, self.scan_id, caption="test", tags={"test"})
-        self.db.conn.execute("DELETE FROM sources WHERE id = ?", (self.source_id,))
-        self.db.conn.commit()
-        assert self.db.get_description(self.source_id) is None
+        await self.db.add_description(self.source_id, self.scan_id, caption="test", tags={"test"})
+        await self.db.execute("DELETE FROM sources WHERE id = ?", self.source_id)
+        assert await self.db.get_description(self.source_id) is None
 
-    def test_tags_roundtrip_preserves_content(self) -> None:
+    async def test_tags_roundtrip_preserves_content(self) -> None:
         """Tags with special characters survive encode/decode."""
         original = {"san valentino", "mare", "2024"}
-        self.db.add_description(self.source_id, self.scan_id, caption="test", tags=original)
-        desc = self.db.get_description(self.source_id)
+        await self.db.add_description(self.source_id, self.scan_id, caption="test", tags=original)
+        desc = await self.db.get_description(self.source_id)
         assert desc is not None
         assert desc.tags == original
 
-    def test_empty_tags_set(self) -> None:
-        self.db.add_description(self.source_id, self.scan_id, caption="No tags", tags=set())
-        desc = self.db.get_description(self.source_id)
+    async def test_empty_tags_set(self) -> None:
+        await self.db.add_description(self.source_id, self.scan_id, caption="No tags", tags=set())
+        desc = await self.db.get_description(self.source_id)
         assert desc is not None
         assert desc.tags == set()
 
 
-class TestDescriberParsing(TestCase):
+class TestDescriberParsing(PostgresTestCase):
     """Tests for VLM response parsing (no model needed)."""
 
     def test_parse_clean_json(self) -> None:
@@ -270,7 +269,7 @@ class TestDescriberParsing(TestCase):
         assert out.tags == {"cat"}
 
 
-class TestDescriberKwargs(TestCase):
+class TestDescriberKwargs(PostgresTestCase):
     """VLM generation tuning knobs — defaults and propagation."""
 
     def test_default_max_tokens_is_128(self) -> None:

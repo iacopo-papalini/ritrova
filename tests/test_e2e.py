@@ -1,5 +1,6 @@
 """E2E browser tests for Ritrova using Playwright."""
 
+import asyncio
 import threading
 import time
 from collections.abc import Generator
@@ -13,6 +14,8 @@ from ritrova.app import create_app
 from ritrova.db import FaceDB
 
 from ._helpers import add_findings
+from ._postgres import _TABLES
+from .conftest import TEST_DSN
 
 
 def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
@@ -21,65 +24,93 @@ def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
+async def _truncate(db: FaceDB) -> None:
+    """These modules seed a server of their own, so they start from empty."""
+    await db.execute(f"TRUNCATE {', '.join(_TABLES)} RESTART IDENTITY")
+
+
 @pytest.fixture(scope="module")
 def app_url(tmp_path_factory: pytest.TempPathFactory) -> Generator[str]:
     """Start a real Ritrova server with test data, return its URL."""
     tmp = tmp_path_factory.mktemp("e2e")
-    db_path = tmp / "test.db"
-    db = FaceDB(str(db_path))
 
-    # Create test image
-    from PIL import Image
+    async def _seed() -> None:
+        db = await FaceDB.connect(TEST_DSN, data_dir=tmp)
+        await _truncate(db)
 
-    img = Image.new("RGB", (200, 200), color="blue")
-    img_path = tmp / "photo.jpg"
-    img.save(str(img_path), "JPEG")
+        # Create test image
+        from PIL import Image
 
-    # Seed data: 2 subjects with findings
-    sid_alice = db.create_subject("Alice")
-    source_id = db.add_source(str(img_path), width=200, height=200)
-    add_findings(db, [(source_id, (10, 10, 50, 50), _emb(1), 0.95)], species="human")
-    findings = db.get_source_findings(source_id)
-    db.assign_finding_to_subject(findings[0].id, sid_alice)
+        img = Image.new("RGB", (200, 200), color="blue")
+        img_path = tmp / "photo.jpg"
+        img.save(str(img_path), "JPEG")
 
-    sid_bob = db.create_subject("Bob")
-    source_id2 = db.add_source(str(img_path) + "2", width=200, height=200)
-    add_findings(db, [(source_id2, (10, 10, 50, 50), _emb(2), 0.95)], species="human")
-    findings2 = db.get_source_findings(source_id2)
-    db.assign_finding_to_subject(findings2[0].id, sid_bob)
+        # Seed data: 2 subjects with findings
+        sid_alice = await db.create_subject("Alice")
+        source_id = await db.add_source(str(img_path), width=200, height=200)
+        await add_findings(db, [(source_id, (10, 10, 50, 50), _emb(1), 0.95)], species="human")
+        findings = await db.get_source_findings(source_id)
+        await db.assign_finding_to_subject(findings[0].id, sid_alice)
 
-    # Subject with gnarly characters: apostrophe, emoji, brackets
-    sid_weird = db.create_subject("Al'ice \U0001f9d1<test>")
-    source_id5 = db.add_source(str(img_path) + "5", width=200, height=200)
-    add_findings(db, [(source_id5, (10, 10, 50, 50), _emb(5), 0.95)], species="human")
-    findings5 = db.get_source_findings(source_id5)
-    db.assign_finding_to_subject(findings5[0].id, sid_weird)
+        sid_bob = await db.create_subject("Bob")
+        source_id2 = await db.add_source(str(img_path) + "2", width=200, height=200)
+        await add_findings(db, [(source_id2, (10, 10, 50, 50), _emb(2), 0.95)], species="human")
+        findings2 = await db.get_source_findings(source_id2)
+        await db.assign_finding_to_subject(findings2[0].id, sid_bob)
 
-    # An unassigned cluster
-    source_id3 = db.add_source(str(img_path) + "3", width=200, height=200)
-    add_findings(db, [(source_id3, (10, 10, 50, 50), _emb(3), 0.95)], species="human")
-    source_id4 = db.add_source(str(img_path) + "4", width=200, height=200)
-    add_findings(db, [(source_id4, (10, 10, 50, 50), _emb(3), 0.95)], species="human")
-    f3 = db.get_source_findings(source_id3)
-    f4 = db.get_source_findings(source_id4)
-    db.update_cluster_ids({f3[0].id: 100, f4[0].id: 100})
+        # Subject with gnarly characters: apostrophe, emoji, brackets
+        sid_weird = await db.create_subject("Al'ice \U0001f9d1<test>")
+        source_id5 = await db.add_source(str(img_path) + "5", width=200, height=200)
+        await add_findings(db, [(source_id5, (10, 10, 50, 50), _emb(5), 0.95)], species="human")
+        findings5 = await db.get_source_findings(source_id5)
+        await db.assign_finding_to_subject(findings5[0].id, sid_weird)
 
-    db.close()
+        # An unassigned cluster
+        source_id3 = await db.add_source(str(img_path) + "3", width=200, height=200)
+        await add_findings(db, [(source_id3, (10, 10, 50, 50), _emb(3), 0.95)], species="human")
+        source_id4 = await db.add_source(str(img_path) + "4", width=200, height=200)
+        await add_findings(db, [(source_id4, (10, 10, 50, 50), _emb(3), 0.95)], species="human")
+        f3 = await db.get_source_findings(source_id3)
+        f4 = await db.get_source_findings(source_id4)
+        await db.update_cluster_ids({f3[0].id: 100, f4[0].id: 100})
 
-    app = create_app(str(db_path))
+        await db.close()
+
+    # A loop may already be running here, and asyncio.run cannot nest. A thread
+    # swallows what it raises, so the failure is carried out explicitly —
+    # otherwise seeding errors surface much later as an empty page.
+    seed_error: list[BaseException] = []
+
+    def _run_seed() -> None:
+        try:
+            asyncio.run(_seed())
+        except BaseException as exc:  # noqa: BLE001
+            seed_error.append(exc)
+
+    seeder = threading.Thread(target=_run_seed)
+    seeder.start()
+    seeder.join()
+    if seed_error:
+        raise seed_error[0]
+
+    app = create_app(TEST_DSN, tmp)
     port = 18787
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     # Wait for server to be ready
-    for _ in range(50):
-        try:
-            import httpx
+    import httpx
 
-            httpx.get(f"http://127.0.0.1:{port}/")
+    for _ in range(100):
+        try:
+            httpx.get(f"http://127.0.0.1:{port}/", timeout=2.0)
             break
-        except httpx.ConnectError:
+        except httpx.ConnectError, httpx.ReadError:
             time.sleep(0.1)
+    else:
+        # Yielding the URL anyway would surface later as an unexplained
+        # ERR_ABORTED in the browser rather than as a startup failure.
+        raise RuntimeError(f"server on port {port} never became ready")
     yield f"http://127.0.0.1:{port}"
     server.should_exit = True
 

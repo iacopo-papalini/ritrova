@@ -56,33 +56,33 @@ class TestFaceDetectionStep(TestCase):
         )
         return detector
 
-    def test_appends_findings(self) -> None:
+    async def test_appends_findings(self) -> None:
         step = FaceDetectionStep(self._mock_detector())
-        result = step.analyse(_frame(), _state())
+        result = await step.analyse(_frame(), _state())
         assert len(result.findings) == 1
         assert result.findings[0].species == "human"
         assert result.findings[0].confidence == 0.95
 
-    def test_filters_low_confidence(self) -> None:
+    async def test_filters_low_confidence(self) -> None:
         low = [Detection(bbox=(10, 10, 50, 50), embedding=_emb(1), confidence=0.3)]
         step = FaceDetectionStep(self._mock_detector(low), min_confidence=0.65)
-        result = step.analyse(_frame(), _state())
+        result = await step.analyse(_frame(), _state())
         assert result.findings == []
 
-    def test_preserves_existing_findings(self) -> None:
+    async def test_preserves_existing_findings(self) -> None:
         state = _state()
         state.findings.append(
             AnalysisFinding(bbox=(0, 0, 10, 10), embedding=_emb(99), confidence=0.5, species="dog")
         )
         step = FaceDetectionStep(self._mock_detector())
-        result = step.analyse(_frame(), state)
+        result = await step.analyse(_frame(), state)
         assert len(result.findings) == 2
         assert result.findings[0].species == "dog"
         assert result.findings[1].species == "human"
 
-    def test_sets_frame_number(self) -> None:
+    async def test_sets_frame_number(self) -> None:
         step = FaceDetectionStep(self._mock_detector())
-        result = step.analyse(_frame(frame_number=7), _state())
+        result = await step.analyse(_frame(frame_number=7), _state())
         assert result.findings[0].frame_number == 7
 
 
@@ -106,13 +106,13 @@ class TestPetDetectionStep(TestCase):
         )
         return detector
 
-    def test_appends_pet_findings(self) -> None:
+    async def test_appends_pet_findings(self) -> None:
         step = PetDetectionStep(self._mock_detector())
-        result = step.analyse(_frame(), _state())
+        result = await step.analyse(_frame(), _state())
         assert len(result.findings) == 1
         assert result.findings[0].species == "dog"
 
-    def test_preserves_species_from_detection(self) -> None:
+    async def test_preserves_species_from_detection(self) -> None:
         cat = [
             Detection(
                 bbox=(10, 10, 40, 40),
@@ -122,10 +122,10 @@ class TestPetDetectionStep(TestCase):
             )
         ]
         step = PetDetectionStep(self._mock_detector(cat))
-        result = step.analyse(_frame(), _state())
+        result = await step.analyse(_frame(), _state())
         assert result.findings[0].species == "cat"
 
-    def test_filters_low_confidence(self) -> None:
+    async def test_filters_low_confidence(self) -> None:
         low = [
             Detection(
                 bbox=(10, 10, 50, 50),
@@ -135,7 +135,7 @@ class TestPetDetectionStep(TestCase):
             )
         ]
         step = PetDetectionStep(self._mock_detector(low), min_confidence=0.5)
-        result = step.analyse(_frame(), _state())
+        result = await step.analyse(_frame(), _state())
         assert result.findings == []
 
 
@@ -156,9 +156,9 @@ class TestCaptionStep(TestCase):
         )
         return describer
 
-    def test_sets_caption_and_tags(self) -> None:
+    async def test_sets_caption_and_tags(self) -> None:
         step = CaptionStep(self._mock_describer())
-        result = step.analyse(_frame(), _state())
+        result = await step.analyse(_frame(), _state())
         assert result.caption == "A dog in a park"
         assert result.tags == {"dog", "park"}
 
@@ -167,14 +167,14 @@ class TestCaptionStep(TestCase):
         step = CaptionStep(self._mock_describer())
         assert step.name == "fake-vlm"
 
-    def test_skips_non_zero_frames(self) -> None:
+    async def test_skips_non_zero_frames(self) -> None:
         step = CaptionStep(self._mock_describer())
-        result = step.analyse(_frame(frame_number=5), _state())
+        result = await step.analyse(_frame(frame_number=5), _state())
         assert result.caption == ""
 
-    def test_empty_caption_leaves_state_unchanged(self) -> None:
+    async def test_empty_caption_leaves_state_unchanged(self) -> None:
         step = CaptionStep(self._mock_describer(caption=""))
-        result = step.analyse(_frame(), _state())
+        result = await step.analyse(_frame(), _state())
         assert result.caption == ""
         assert result.tags == set()
 
@@ -189,32 +189,32 @@ class TestTranslationStep(TestCase):
         translator.translate.return_value = ("Un cane nel parco", {"cane", "parco"})
         return translator
 
-    def test_translates_caption_and_tags(self) -> None:
+    async def test_translates_caption_and_tags(self) -> None:
         translator = self._mock_translator()
         step = TranslationStep(translator)
         state = _state()
         state.caption = "A dog in a park"
         state.tags = {"dog", "park"}
-        result = step.analyse(_frame(), state)
+        result = await step.analyse(_frame(), state)
         assert result.caption == "Un cane nel parco"
         assert result.tags == {"cane", "parco"}
         translator.translate.assert_called_once_with("A dog in a park", {"dog", "park"})
 
-    def test_noop_when_caption_empty(self) -> None:
+    async def test_noop_when_caption_empty(self) -> None:
         translator = self._mock_translator()
         step = TranslationStep(translator)
         state = _state()
         state.caption = ""
-        result = step.analyse(_frame(), state)
+        result = await step.analyse(_frame(), state)
         translator.translate.assert_not_called()
         assert result.caption == ""
 
-    def test_noop_on_non_zero_frames(self) -> None:
+    async def test_noop_on_non_zero_frames(self) -> None:
         translator = self._mock_translator()
         step = TranslationStep(translator)
         state = _state()
         state.caption = "A dog in a park"
-        step.analyse(_frame(frame_number=3), state)
+        await step.analyse(_frame(frame_number=3), state)
         translator.translate.assert_not_called()
 
     def test_step_name_is_translator_model_id(self) -> None:
@@ -226,17 +226,17 @@ class TestTranslationStep(TestCase):
 
 
 class TestDeduplicationStep(TestCase):
-    def test_keeps_unique_findings(self) -> None:
+    async def test_keeps_unique_findings(self) -> None:
         state = _state()
         state.findings = [
             AnalysisFinding(bbox=(0, 0, 10, 10), embedding=_emb(1), confidence=0.9),
             AnalysisFinding(bbox=(50, 50, 10, 10), embedding=_emb(2), confidence=0.8),
         ]
         step = DeduplicationStep(threshold=0.6)
-        result = step.analyse(_frame(), state)
+        result = await step.analyse(_frame(), state)
         assert len(result.findings) == 2
 
-    def test_merges_similar_keeps_best_confidence(self) -> None:
+    async def test_merges_similar_keeps_best_confidence(self) -> None:
         emb = _emb(1)
         state = _state()
         state.findings = [
@@ -248,12 +248,12 @@ class TestDeduplicationStep(TestCase):
             ),
         ]
         step = DeduplicationStep(threshold=0.6)
-        result = step.analyse(_frame(), state)
+        result = await step.analyse(_frame(), state)
         assert len(result.findings) == 1
         assert result.findings[0].confidence == 0.95
         assert result.findings[0].frame_number == 5
 
-    def test_dedup_per_species(self) -> None:
+    async def test_dedup_per_species(self) -> None:
         """Same embedding but different species should not merge."""
         emb = _emb(1)
         state = _state()
@@ -266,10 +266,10 @@ class TestDeduplicationStep(TestCase):
             ),
         ]
         step = DeduplicationStep(threshold=0.6)
-        result = step.analyse(_frame(), state)
+        result = await step.analyse(_frame(), state)
         assert len(result.findings) == 2
 
-    def test_empty_findings(self) -> None:
+    async def test_empty_findings(self) -> None:
         step = DeduplicationStep()
-        result = step.analyse(_frame(), _state())
+        result = await step.analyse(_frame(), _state())
         assert result.findings == []

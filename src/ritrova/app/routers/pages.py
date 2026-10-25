@@ -75,7 +75,7 @@ async def cluster_detail(
     face_paths = {
         f.id: sources[f.source_id].file_path if f.source_id in sources else "" for f in findings
     }
-    ranked = rank_subjects_for_cluster(db, cluster_id)
+    ranked = await rank_subjects_for_cluster(db, cluster_id)
     species = findings[0].species if findings else "human"
     kind = kind_for_species(species)
     queue = await db.get_unnamed_clusters(species=species)
@@ -117,7 +117,7 @@ async def singletons_faces_html(
 ) -> HTMLResponse:
     db = get_db()
     findings = await db.get_singleton_findings(species=species, limit=limit, offset=offset)
-    face_hints = compute_singleton_hints(db, findings, species)
+    face_hints = await compute_singleton_hints(db, findings, species)
     total = await db.get_singleton_count(species=species)
     return get_templates().TemplateResponse(
         name="partials/singleton_grid.html",
@@ -259,7 +259,7 @@ async def singletons_page(request: Request, kind: KindType) -> HTMLResponse:
     face_paths = {
         f.id: sources[f.source_id].file_path if f.source_id in sources else "" for f in findings
     }
-    face_hints = compute_singleton_hints(db, findings, species)
+    face_hints = await compute_singleton_hints(db, findings, species)
     return get_templates().TemplateResponse(
         name="singletons.html",
         context={
@@ -297,7 +297,7 @@ async def compare_page(
     subject_a = None
     subject_b = None
     if a is not None and b is not None and a != b:
-        result = compare_subjects(db, a, b)
+        result = await compare_subjects(db, a, b)
         subject_a = await db.get_subject(a)
         subject_b = await db.get_subject(b)
     return get_templates().TemplateResponse(
@@ -323,7 +323,7 @@ async def find_similar_page(
     subject = await db.get_subject(subject_id)
     if not subject:
         raise HTTPException(404, "Subject not found")
-    candidates = find_similar_unclustered(db, subject_id, min_similarity=min_sim / 100)
+    candidates = await find_similar_unclustered(db, subject_id, min_similarity=min_sim / 100)
     return get_templates().TemplateResponse(
         name="find_similar.html",
         context={

@@ -10,14 +10,9 @@ Two layers:
 from __future__ import annotations
 
 import time
-from pathlib import Path
-from unittest import TestCase
 
 import numpy as np
-import pytest
-from fastapi.testclient import TestClient
 
-from ritrova.app import create_app
 from ritrova.db import FaceDB
 from ritrova.undo import (
     DismissPayload,
@@ -26,6 +21,7 @@ from ritrova.undo import (
 )
 
 from ._helpers import add_findings
+from ._postgres import PostgresAppTestCase
 
 
 def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
@@ -34,18 +30,18 @@ def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
-def _add_finding(db: FaceDB, path: str, seed: int = 42) -> tuple[int, int]:
+async def _add_finding(db: FaceDB, path: str, seed: int = 42) -> tuple[int, int]:
     """Add source + one human finding, return (source_id, finding_id)."""
-    pid = db.add_source(path, width=100, height=100)
-    add_findings(db, [(pid, (10, 10, 50, 50), _emb(seed), 0.95)])
-    findings = db.get_source_findings(pid)
+    pid = await db.add_source(path, width=100, height=100)
+    await add_findings(db, [(pid, (10, 10, 50, 50), _emb(seed), 0.95)])
+    findings = await db.get_source_findings(pid)
     return pid, findings[0].id
 
 
 # ── Unit tests for UndoStore ──────────────────────────────────────────
 
 
-class TestUndoStore(TestCase):
+class TestUndoStore(PostgresAppTestCase):
     def setUp(self) -> None:
         self.store = UndoStore(ttl=60.0)
 
@@ -100,12 +96,10 @@ class TestUndoStore(TestCase):
 # ── Integration tests: the three undoable cluster endpoints ──────────
 
 
-class TestUndoEndpoints(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
-        self.db = FaceDB(tmp_path / "test.db")
-        self.app = create_app(str(tmp_path / "test.db"))
-        self.client = TestClient(self.app)
+class TestUndoEndpoints(PostgresAppTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.client = self.make_client()
 
     def test_peek_empty(self) -> None:
         resp = self.client.get("/api/undo/peek")
@@ -118,17 +112,17 @@ class TestUndoEndpoints(TestCase):
 
     # ── cluster dismiss ─────────────────────────
 
-    def test_undo_cluster_dismiss_restores_assignments(self) -> None:
+    async def test_undo_cluster_dismiss_restores_assignments(self) -> None:
         """Dismissing a cluster must be fully reversible: findings return to
         their prior ``(subject_id, cluster_id)`` and dismissed_findings is
         cleared for them."""
-        sid = self.db.create_subject("Alice")
-        _, fid1 = _add_finding(self.db, "/a.jpg", seed=1)
-        _, fid2 = _add_finding(self.db, "/b.jpg", seed=2)
-        self.db.update_cluster_ids({fid1: 7, fid2: 7})
+        sid = await self.db.create_subject("Alice")
+        _, fid1 = await _add_finding(self.db, "/a.jpg", seed=1)
+        _, fid2 = await _add_finding(self.db, "/b.jpg", seed=2)
+        await self.db.update_cluster_ids({fid1: 7, fid2: 7})
         # fid1 is both clustered AND assigned; fid2 only clustered. Undo must
         # restore both fields exactly.
-        self.db.assign_finding_to_subject(fid1, sid)
+        await self.db.assign_finding_to_subject(fid1, sid)
 
         resp = self.client.post("/api/clusters/7/dismiss")
         assert resp.status_code == 200
@@ -139,7 +133,7 @@ class TestUndoEndpoints(TestCase):
 
         # Mid-flight state: both findings NULLed and in dismissed_findings.
         for fid in (fid1, fid2):
-            f = self.db.get_finding(fid)
+            f = await self.db.get_finding(fid)
             assert f is not None
             assert f.cluster_id is None
             assert f.subject_id is None
@@ -147,8 +141,8 @@ class TestUndoEndpoints(TestCase):
         resp = self.client.post(f"/api/undo/{body['undo_token']}")
         assert resp.status_code == 200
 
-        f1 = self.db.get_finding(fid1)
-        f2 = self.db.get_finding(fid2)
+        f1 = await self.db.get_finding(fid1)
+        f2 = await self.db.get_finding(fid2)
         assert f1 is not None and f2 is not None
         assert f1.cluster_id == 7
         assert f1.subject_id == sid
@@ -157,11 +151,12 @@ class TestUndoEndpoints(TestCase):
 
         # Exclusion rows cleared for those findings (the 'not_a_face' row
         # inserted by dismiss should be gone after undo).
-        row = self.db.conn.execute(
+        row = await self.db.fetchrow(
             "SELECT COUNT(*) FROM finding_assignment "
             "WHERE finding_id IN (?, ?) AND exclusion_reason = 'not_a_face'",
-            (fid1, fid2),
-        ).fetchone()
+            fid1,
+            fid2,
+        )
         assert row[0] == 0
 
         # One-shot: replaying undo fails.
@@ -170,11 +165,11 @@ class TestUndoEndpoints(TestCase):
 
     # ── cluster merge ───────────────────────────
 
-    def test_undo_cluster_merge_flips_cluster_id_back(self) -> None:
-        _, fid_s1 = _add_finding(self.db, "/s1.jpg", seed=1)
-        _, fid_s2 = _add_finding(self.db, "/s2.jpg", seed=2)
-        _, fid_t = _add_finding(self.db, "/t1.jpg", seed=3)
-        self.db.update_cluster_ids({fid_s1: 2, fid_s2: 2, fid_t: 1})
+    async def test_undo_cluster_merge_flips_cluster_id_back(self) -> None:
+        _, fid_s1 = await _add_finding(self.db, "/s1.jpg", seed=1)
+        _, fid_s2 = await _add_finding(self.db, "/s2.jpg", seed=2)
+        _, fid_t = await _add_finding(self.db, "/t1.jpg", seed=3)
+        await self.db.update_cluster_ids({fid_s1: 2, fid_s2: 2, fid_t: 1})
 
         resp = self.client.post(
             "/api/clusters/merge",
@@ -185,7 +180,7 @@ class TestUndoEndpoints(TestCase):
         assert "undo_token" in body
         # Mid-flight: all three findings now in cluster 1.
         for fid in (fid_s1, fid_s2, fid_t):
-            f = self.db.get_finding(fid)
+            f = await self.db.get_finding(fid)
             assert f is not None
             assert f.cluster_id == 1
 
@@ -193,26 +188,26 @@ class TestUndoEndpoints(TestCase):
         assert resp.status_code == 200
 
         # Source findings back in cluster 2; target untouched in 1.
-        assert self.db.get_finding(fid_s1).cluster_id == 2  # type: ignore[union-attr]
-        assert self.db.get_finding(fid_s2).cluster_id == 2  # type: ignore[union-attr]
-        assert self.db.get_finding(fid_t).cluster_id == 1  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_s1)).cluster_id == 2  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_s2)).cluster_id == 2  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_t)).cluster_id == 1  # type: ignore[union-attr]
 
     # ── cluster assign ──────────────────────────
 
-    def test_undo_cluster_assign_only_reverts_newly_assigned(self) -> None:
+    async def test_undo_cluster_assign_only_reverts_newly_assigned(self) -> None:
         """Undo must NULL out only the rows the assign actually touched (those
         that were NULL before). Findings already assigned to another subject
         should not be affected by the undo."""
-        alice = self.db.create_subject("Alice")
-        bob = self.db.create_subject("Bob")
-        _, fid_unassigned1 = _add_finding(self.db, "/u1.jpg", seed=1)
-        _, fid_unassigned2 = _add_finding(self.db, "/u2.jpg", seed=2)
-        _, fid_pre_bob = _add_finding(self.db, "/pb.jpg", seed=3)
-        self.db.update_cluster_ids({fid_unassigned1: 5, fid_unassigned2: 5, fid_pre_bob: 5})
+        alice = await self.db.create_subject("Alice")
+        bob = await self.db.create_subject("Bob")
+        _, fid_unassigned1 = await _add_finding(self.db, "/u1.jpg", seed=1)
+        _, fid_unassigned2 = await _add_finding(self.db, "/u2.jpg", seed=2)
+        _, fid_pre_bob = await _add_finding(self.db, "/pb.jpg", seed=3)
+        await self.db.update_cluster_ids({fid_unassigned1: 5, fid_unassigned2: 5, fid_pre_bob: 5})
         # One finding in the cluster is already Bob's — assign_cluster_to_subject
         # leaves it alone (no new assignment row where one already exists) and
         # undo must not touch it.
-        self.db.assign_finding_to_subject(fid_pre_bob, bob)
+        await self.db.assign_finding_to_subject(fid_pre_bob, bob)
 
         resp = self.client.post(
             "/api/clusters/5/assign",
@@ -230,24 +225,24 @@ class TestUndoEndpoints(TestCase):
 
         # Mid-flight: the two previously-unassigned findings now point at Alice;
         # Bob's untouched.
-        assert self.db.get_finding(fid_unassigned1).subject_id == alice  # type: ignore[union-attr]
-        assert self.db.get_finding(fid_unassigned2).subject_id == alice  # type: ignore[union-attr]
-        assert self.db.get_finding(fid_pre_bob).subject_id == bob  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_unassigned1)).subject_id == alice  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_unassigned2)).subject_id == alice  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_pre_bob)).subject_id == bob  # type: ignore[union-attr]
 
         resp = self.client.post(f"/api/undo/{token}")
         assert resp.status_code == 200
 
-        assert self.db.get_finding(fid_unassigned1).subject_id is None  # type: ignore[union-attr]
-        assert self.db.get_finding(fid_unassigned2).subject_id is None  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_unassigned1)).subject_id is None  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_unassigned2)).subject_id is None  # type: ignore[union-attr]
         # Critically, Bob's finding is still Bob's — undo didn't over-reach.
-        assert self.db.get_finding(fid_pre_bob).subject_id == bob  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_pre_bob)).subject_id == bob  # type: ignore[union-attr]
 
     # ── peek + clobbering ───────────────────────
 
-    def test_peek_returns_latest_pending_after_clobber(self) -> None:
-        _, fid_a = _add_finding(self.db, "/a.jpg", seed=1)
-        _, fid_b = _add_finding(self.db, "/b.jpg", seed=2)
-        self.db.update_cluster_ids({fid_a: 10, fid_b: 20})
+    async def test_peek_returns_latest_pending_after_clobber(self) -> None:
+        _, fid_a = await _add_finding(self.db, "/a.jpg", seed=1)
+        _, fid_b = await _add_finding(self.db, "/b.jpg", seed=2)
+        await self.db.update_cluster_ids({fid_a: 10, fid_b: 20})
 
         self.client.post("/api/clusters/10/dismiss")
         second = self.client.post("/api/clusters/20/dismiss").json()
@@ -268,15 +263,15 @@ class TestUndoEndpoints(TestCase):
         assert isinstance(token, str)
         return token
 
-    def test_undo_subject_delete_restores_row_and_assignments(self) -> None:
+    async def test_undo_subject_delete_restores_row_and_assignments(self) -> None:
         """Delete subject + undo: subject row is recreated with the original id,
         and every finding previously assigned to it gets its subject_id back."""
-        alice = self.db.create_subject("Alice")
-        _, fid1 = _add_finding(self.db, "/a1.jpg", seed=1)
-        _, fid2 = _add_finding(self.db, "/a2.jpg", seed=2)
-        self.db.assign_finding_to_subject(fid1, alice)
-        self.db.assign_finding_to_subject(fid2, alice)
-        original_row = self.db.get_subject_row(alice)
+        alice = await self.db.create_subject("Alice")
+        _, fid1 = await _add_finding(self.db, "/a1.jpg", seed=1)
+        _, fid2 = await _add_finding(self.db, "/a2.jpg", seed=2)
+        await self.db.assign_finding_to_subject(fid1, alice)
+        await self.db.assign_finding_to_subject(fid2, alice)
+        original_row = await self.db.get_subject_row(alice)
         assert original_row is not None
 
         resp = self.client.post(f"/api/subjects/{alice}/delete", follow_redirects=False)
@@ -285,43 +280,43 @@ class TestUndoEndpoints(TestCase):
         assert resp.status_code in (303, 307)
 
         # Mid-flight: subject gone, findings unassigned.
-        assert self.db.get_subject(alice) is None
-        assert self.db.get_finding(fid1).subject_id is None  # type: ignore[union-attr]
-        assert self.db.get_finding(fid2).subject_id is None  # type: ignore[union-attr]
+        assert await self.db.get_subject(alice) is None
+        assert (await self.db.get_finding(fid1)).subject_id is None  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid2)).subject_id is None  # type: ignore[union-attr]
 
         token = self._pending_token()
         resp = self.client.post(f"/api/undo/{token}")
         assert resp.status_code == 200
 
         # Subject row restored verbatim — same id, name, kind, created_at.
-        restored = self.db.get_subject_row(alice)
+        restored = await self.db.get_subject_row(alice)
         assert restored == original_row
         # Findings reassigned.
-        assert self.db.get_finding(fid1).subject_id == alice  # type: ignore[union-attr]
-        assert self.db.get_finding(fid2).subject_id == alice  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid1)).subject_id == alice  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid2)).subject_id == alice  # type: ignore[union-attr]
 
-    def test_undo_subject_delete_with_zero_findings(self) -> None:
+    async def test_undo_subject_delete_with_zero_findings(self) -> None:
         """Deleting an unused subject must still be undoable (no findings to
         restore — just the row)."""
-        orphan = self.db.create_subject("NobodyCares")
-        original_row = self.db.get_subject_row(orphan)
+        orphan = await self.db.create_subject("NobodyCares")
+        original_row = await self.db.get_subject_row(orphan)
         self.client.post(f"/api/subjects/{orphan}/delete", follow_redirects=False)
-        assert self.db.get_subject(orphan) is None
+        assert await self.db.get_subject(orphan) is None
 
         self.client.post(f"/api/undo/{self._pending_token()}")
-        assert self.db.get_subject_row(orphan) == original_row
+        assert await self.db.get_subject_row(orphan) == original_row
 
-    def test_undo_subject_merge_recreates_source_and_unswaps_findings(self) -> None:
+    async def test_undo_subject_merge_recreates_source_and_unswaps_findings(self) -> None:
         """Source subject is re-INSERTed with its original id; findings that
         moved source -> target are flipped back. Target subject is untouched."""
-        source = self.db.create_subject("Bob")
-        target = self.db.create_subject("Uncle Bob")
-        _, fid_s = _add_finding(self.db, "/s.jpg", seed=1)
-        _, fid_t = _add_finding(self.db, "/t.jpg", seed=2)
-        self.db.assign_finding_to_subject(fid_s, source)
-        self.db.assign_finding_to_subject(fid_t, target)
-        source_row = self.db.get_subject_row(source)
-        target_row = self.db.get_subject_row(target)
+        source = await self.db.create_subject("Bob")
+        target = await self.db.create_subject("Uncle Bob")
+        _, fid_s = await _add_finding(self.db, "/s.jpg", seed=1)
+        _, fid_t = await _add_finding(self.db, "/t.jpg", seed=2)
+        await self.db.assign_finding_to_subject(fid_s, source)
+        await self.db.assign_finding_to_subject(fid_t, target)
+        source_row = await self.db.get_subject_row(source)
+        target_row = await self.db.get_subject_row(target)
 
         resp = self.client.post(
             "/api/subjects/merge",
@@ -330,32 +325,32 @@ class TestUndoEndpoints(TestCase):
         )
         assert resp.status_code in (303, 307)
         # Mid-flight: source gone, its finding re-pointed at target.
-        assert self.db.get_subject(source) is None
-        assert self.db.get_finding(fid_s).subject_id == target  # type: ignore[union-attr]
-        assert self.db.get_finding(fid_t).subject_id == target  # type: ignore[union-attr]
+        assert await self.db.get_subject(source) is None
+        assert (await self.db.get_finding(fid_s)).subject_id == target  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_t)).subject_id == target  # type: ignore[union-attr]
 
         self.client.post(f"/api/undo/{self._pending_token()}")
 
         # Source restored with the same row, source's finding back on source,
         # target's own finding untouched.
-        assert self.db.get_subject_row(source) == source_row
-        assert self.db.get_subject_row(target) == target_row
-        assert self.db.get_finding(fid_s).subject_id == source  # type: ignore[union-attr]
-        assert self.db.get_finding(fid_t).subject_id == target  # type: ignore[union-attr]
+        assert await self.db.get_subject_row(source) == source_row
+        assert await self.db.get_subject_row(target) == target_row
+        assert (await self.db.get_finding(fid_s)).subject_id == source  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_t)).subject_id == target  # type: ignore[union-attr]
 
     # ── Round 2B: mass-update ops ────────────
 
-    def test_undo_findings_dismiss_restores_assignments(self) -> None:
+    async def test_undo_findings_dismiss_restores_assignments(self) -> None:
         """Dismissing individual findings (not a whole cluster) is reversible:
         findings return to their prior subject_id/cluster_id and are removed
         from dismissed_findings."""
-        alice = self.db.create_subject("Alice")
-        _, fid1 = _add_finding(self.db, "/d1.jpg", seed=10)
-        _, fid2 = _add_finding(self.db, "/d2.jpg", seed=11)
-        self.db.update_cluster_ids({fid1: 3, fid2: 3})
-        self.db.assign_finding_to_subject(fid1, alice)
+        alice = await self.db.create_subject("Alice")
+        _, fid1 = await _add_finding(self.db, "/d1.jpg", seed=10)
+        _, fid2 = await _add_finding(self.db, "/d2.jpg", seed=11)
+        await self.db.update_cluster_ids({fid1: 3, fid2: 3})
+        await self.db.assign_finding_to_subject(fid1, alice)
 
-        resp = self.client.post("/api/findings/dismiss", json={"face_ids": [fid1, fid2]})
+        resp = self.client.post("/api/findings/dismiss", json={"face_ids": [str(fid1), str(fid2)]})
         assert resp.status_code == 200
         body = resp.json()
         assert body["dismissed"] == 2
@@ -363,7 +358,7 @@ class TestUndoEndpoints(TestCase):
 
         # Mid-flight: dismissed, NULLed.
         for fid in (fid1, fid2):
-            f = self.db.get_finding(fid)
+            f = await self.db.get_finding(fid)
             assert f is not None
             assert f.cluster_id is None
             assert f.subject_id is None
@@ -371,22 +366,22 @@ class TestUndoEndpoints(TestCase):
         resp = self.client.post(f"/api/undo/{body['undo_token']}")
         assert resp.status_code == 200
 
-        f1 = self.db.get_finding(fid1)
-        f2 = self.db.get_finding(fid2)
+        f1 = await self.db.get_finding(fid1)
+        f2 = await self.db.get_finding(fid2)
         assert f1 is not None and f2 is not None
         assert f1.cluster_id == 3 and f1.subject_id == alice
         assert f2.cluster_id == 3 and f2.subject_id is None
 
-    def test_undo_findings_exclude_restores_cluster_id(self) -> None:
+    async def test_undo_findings_exclude_restores_cluster_id(self) -> None:
         """Excluding faces from a cluster sets cluster_id to NULL; undo
         restores it."""
-        _, fid1 = _add_finding(self.db, "/e1.jpg", seed=20)
-        _, fid2 = _add_finding(self.db, "/e2.jpg", seed=21)
-        _, fid_stay = _add_finding(self.db, "/e3.jpg", seed=22)
-        self.db.update_cluster_ids({fid1: 8, fid2: 8, fid_stay: 8})
+        _, fid1 = await _add_finding(self.db, "/e1.jpg", seed=20)
+        _, fid2 = await _add_finding(self.db, "/e2.jpg", seed=21)
+        _, fid_stay = await _add_finding(self.db, "/e3.jpg", seed=22)
+        await self.db.update_cluster_ids({fid1: 8, fid2: 8, fid_stay: 8})
 
         resp = self.client.post(
-            "/api/findings/exclude", json={"face_ids": [fid1, fid2], "cluster_id": 8}
+            "/api/findings/exclude", json={"face_ids": [str(fid1), str(fid2)], "cluster_id": 8}
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -394,28 +389,28 @@ class TestUndoEndpoints(TestCase):
         assert "undo_token" in body
 
         # Mid-flight: excluded findings have NULL cluster_id; fid_stay untouched.
-        assert self.db.get_finding(fid1).cluster_id is None  # type: ignore[union-attr]
-        assert self.db.get_finding(fid2).cluster_id is None  # type: ignore[union-attr]
-        assert self.db.get_finding(fid_stay).cluster_id == 8  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid1)).cluster_id is None  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid2)).cluster_id is None  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_stay)).cluster_id == 8  # type: ignore[union-attr]
 
         resp = self.client.post(f"/api/undo/{body['undo_token']}")
         assert resp.status_code == 200
 
-        assert self.db.get_finding(fid1).cluster_id == 8  # type: ignore[union-attr]
-        assert self.db.get_finding(fid2).cluster_id == 8  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid1)).cluster_id == 8  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid2)).cluster_id == 8  # type: ignore[union-attr]
 
-    def test_undo_claim_faces_restores_prior_subject_ids(self) -> None:
+    async def test_undo_claim_faces_restores_prior_subject_ids(self) -> None:
         """claim-faces overwrites subject_id; undo restores each finding's
         prior value (including NULL for unassigned and a different subject)."""
-        alice = self.db.create_subject("Alice")
-        bob = self.db.create_subject("Bob")
-        _, fid_none = _add_finding(self.db, "/c1.jpg", seed=30)
-        _, fid_bob = _add_finding(self.db, "/c2.jpg", seed=31)
-        self.db.assign_finding_to_subject(fid_bob, bob)
+        alice = await self.db.create_subject("Alice")
+        bob = await self.db.create_subject("Bob")
+        _, fid_none = await _add_finding(self.db, "/c1.jpg", seed=30)
+        _, fid_bob = await _add_finding(self.db, "/c2.jpg", seed=31)
+        await self.db.assign_finding_to_subject(fid_bob, bob)
 
         resp = self.client.post(
             f"/api/subjects/{alice}/claim-faces",
-            json={"face_ids": [fid_none, fid_bob], "force": True},
+            json={"face_ids": [str(fid_none), str(fid_bob)], "force": True},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -423,29 +418,29 @@ class TestUndoEndpoints(TestCase):
         assert "undo_token" in body
 
         # Mid-flight: both assigned to Alice.
-        assert self.db.get_finding(fid_none).subject_id == alice  # type: ignore[union-attr]
-        assert self.db.get_finding(fid_bob).subject_id == alice  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_none)).subject_id == alice  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_bob)).subject_id == alice  # type: ignore[union-attr]
 
         resp = self.client.post(f"/api/undo/{body['undo_token']}")
         assert resp.status_code == 200
 
         # Restored: fid_none back to NULL, fid_bob back to Bob.
-        assert self.db.get_finding(fid_none).subject_id is None  # type: ignore[union-attr]
-        assert self.db.get_finding(fid_bob).subject_id == bob  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_none)).subject_id is None  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid_bob)).subject_id == bob  # type: ignore[union-attr]
 
-    def test_undo_swap_findings_restores_prior_subject_ids(self) -> None:
+    async def test_undo_swap_findings_restores_prior_subject_ids(self) -> None:
         """swap reassigns findings to a target subject; undo restores each
         finding's prior subject_id."""
-        alice = self.db.create_subject("Alice")
-        bob = self.db.create_subject("Bob")
-        _, fid1 = _add_finding(self.db, "/w1.jpg", seed=40)
-        _, fid2 = _add_finding(self.db, "/w2.jpg", seed=41)
-        self.db.assign_finding_to_subject(fid1, alice)
-        self.db.assign_finding_to_subject(fid2, alice)
+        alice = await self.db.create_subject("Alice")
+        bob = await self.db.create_subject("Bob")
+        _, fid1 = await _add_finding(self.db, "/w1.jpg", seed=40)
+        _, fid2 = await _add_finding(self.db, "/w2.jpg", seed=41)
+        await self.db.assign_finding_to_subject(fid1, alice)
+        await self.db.assign_finding_to_subject(fid2, alice)
 
         resp = self.client.post(
             "/api/findings/swap",
-            json={"face_ids": [fid1, fid2], "target_subject_id": bob},
+            json={"face_ids": [str(fid1), str(fid2)], "target_subject_id": str(bob)},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -453,44 +448,44 @@ class TestUndoEndpoints(TestCase):
         assert "undo_token" in body
 
         # Mid-flight: both now Bob's.
-        assert self.db.get_finding(fid1).subject_id == bob  # type: ignore[union-attr]
-        assert self.db.get_finding(fid2).subject_id == bob  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid1)).subject_id == bob  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid2)).subject_id == bob  # type: ignore[union-attr]
 
         resp = self.client.post(f"/api/undo/{body['undo_token']}")
         assert resp.status_code == 200
 
         # Restored back to Alice.
-        assert self.db.get_finding(fid1).subject_id == alice  # type: ignore[union-attr]
-        assert self.db.get_finding(fid2).subject_id == alice  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid1)).subject_id == alice  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid2)).subject_id == alice  # type: ignore[union-attr]
 
-    def test_undo_finding_unassign_restores_subject_id(self) -> None:
+    async def test_undo_finding_unassign_restores_subject_id(self) -> None:
         """Removing a face from a person makes it vanish from the grid;
         undo must restore the assignment."""
-        alice = self.db.create_subject("Alice")
-        _, fid = _add_finding(self.db, "/un1.jpg", seed=50)
-        self.db.assign_finding_to_subject(fid, alice)
+        alice = await self.db.create_subject("Alice")
+        _, fid = await _add_finding(self.db, "/un1.jpg", seed=50)
+        await self.db.assign_finding_to_subject(fid, alice)
 
         resp = self.client.post(f"/api/findings/{fid}/unassign")
         assert resp.status_code == 200
         body = resp.json()
         assert "undo_token" in body
-        assert self.db.get_finding(fid).subject_id is None  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid)).subject_id is None  # type: ignore[union-attr]
 
         resp = self.client.post(f"/api/undo/{body['undo_token']}")
         assert resp.status_code == 200
-        assert self.db.get_finding(fid).subject_id == alice  # type: ignore[union-attr]
+        assert (await self.db.get_finding(fid)).subject_id == alice  # type: ignore[union-attr]
 
     # ── cluster name ───────────────────────────
 
-    def test_undo_cluster_name_deletes_subject_and_frees_findings(self) -> None:
+    async def test_undo_cluster_name_deletes_subject_and_frees_findings(self) -> None:
         """cluster/name creates a subject + assigns the cluster in one shot.
         Undo must remove the subject entirely AND free the findings it grabbed."""
-        _, fid1 = _add_finding(self.db, "/c1.jpg", seed=1)
-        _, fid2 = _add_finding(self.db, "/c2.jpg", seed=2)
-        self.db.update_cluster_ids({fid1: 42, fid2: 42})
+        _, fid1 = await _add_finding(self.db, "/c1.jpg", seed=1)
+        _, fid2 = await _add_finding(self.db, "/c2.jpg", seed=2)
+        await self.db.update_cluster_ids({fid1: 42, fid2: 42})
 
         # Pre-state: no subject with this name.
-        assert not any(s.name == "Freshly Named" for s in self.db.get_subjects())
+        assert not any(s.name == "Freshly Named" for s in await self.db.get_subjects())
 
         resp = self.client.post(
             "/api/clusters/42/name",
@@ -499,15 +494,15 @@ class TestUndoEndpoints(TestCase):
         )
         assert resp.status_code in (303, 307)
 
-        created = next(s for s in self.db.get_subjects() if s.name == "Freshly Named")
-        assert self.db.get_finding(fid1).subject_id == created.id  # type: ignore[union-attr]
+        created = next(s for s in await self.db.get_subjects() if s.name == "Freshly Named")
+        assert (await self.db.get_finding(fid1)).subject_id == created.id  # type: ignore[union-attr]
 
         self.client.post(f"/api/undo/{self._pending_token()}")
 
         # Subject gone, findings back to NULL subject_id but still in the cluster.
-        assert not any(s.name == "Freshly Named" for s in self.db.get_subjects())
+        assert not any(s.name == "Freshly Named" for s in await self.db.get_subjects())
         for fid in (fid1, fid2):
-            f = self.db.get_finding(fid)
+            f = await self.db.get_finding(fid)
             assert f is not None
             assert f.subject_id is None
             assert f.cluster_id == 42

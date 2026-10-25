@@ -10,6 +10,7 @@ Dedicated server on port 18788 to avoid colliding with test_e2e.py's fixture.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections.abc import Generator
@@ -17,12 +18,14 @@ from collections.abc import Generator
 import numpy as np
 import pytest
 import uvicorn
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Error, Page, expect
 
 from ritrova.app import create_app
 from ritrova.db import FaceDB
 
 from ._helpers import add_findings
+from ._postgres import _TABLES
+from .conftest import TEST_DSN
 
 
 def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
@@ -31,50 +34,78 @@ def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
+async def _truncate(db: FaceDB) -> None:
+    """These modules seed a server of their own, so they start from empty."""
+    await db.execute(f"TRUNCATE {', '.join(_TABLES)} RESTART IDENTITY")
+
+
 @pytest.fixture(scope="module")
 def app_url(tmp_path_factory: pytest.TempPathFactory) -> Generator[str]:
     """Dedicated server with a DB seeded for undo flows."""
     tmp = tmp_path_factory.mktemp("e2e_undo")
-    db_path = tmp / "test.db"
-    db = FaceDB(str(db_path))
 
-    from PIL import Image
+    async def _seed() -> None:
+        db = await FaceDB.connect(TEST_DSN, data_dir=tmp)
+        await _truncate(db)
 
-    img = Image.new("RGB", (200, 200), color="blue")
-    img_path = tmp / "photo.jpg"
-    img.save(str(img_path), "JPEG")
+        from PIL import Image
 
-    def _seed_cluster(cluster_id: int, seed_base: int, n: int = 2) -> None:
-        for i in range(n):
-            sid = db.add_source(f"{img_path}_{cluster_id}_{i}", width=200, height=200)
-            add_findings(
-                db,
-                [(sid, (10, 10, 50, 50), _emb(seed_base + i), 0.95)],
-                species="human",
-            )
-            fid = db.get_source_findings(sid)[0].id
-            db.update_cluster_ids({fid: cluster_id})
+        img = Image.new("RGB", (200, 200), color="blue")
+        img_path = tmp / "photo.jpg"
+        img.save(str(img_path), "JPEG")
 
-    # Cluster 200 — dismiss target.
-    _seed_cluster(200, seed_base=200)
-    # Cluster 400 — assign target. Needs an existing subject to assign to.
-    db.create_subject("Alice")
-    _seed_cluster(400, seed_base=400)
-    db.close()
+        async def _seed_cluster(cluster_id: int, seed_base: int, n: int = 2) -> None:
+            for i in range(n):
+                sid = await db.add_source(f"{img_path}_{cluster_id}_{i}", width=200, height=200)
+                await add_findings(
+                    db,
+                    [(sid, (10, 10, 50, 50), _emb(seed_base + i), 0.95)],
+                    species="human",
+                )
+                fid = (await db.get_source_findings(sid))[0].id
+                await db.update_cluster_ids({fid: cluster_id})
 
-    app = create_app(str(db_path))
+        # Cluster 200 — dismiss target.
+        await _seed_cluster(200, seed_base=200)
+        # Cluster 400 — assign target. Needs an existing subject to assign to.
+        await db.create_subject("Alice")
+        await _seed_cluster(400, seed_base=400)
+        await db.close()
+
+    # A loop may already be running here, and asyncio.run cannot nest. A thread
+    # swallows what it raises, so the failure is carried out explicitly —
+    # otherwise seeding errors surface much later as an empty page.
+    seed_error: list[BaseException] = []
+
+    def _run_seed() -> None:
+        try:
+            asyncio.run(_seed())
+        except BaseException as exc:  # noqa: BLE001
+            seed_error.append(exc)
+
+    seeder = threading.Thread(target=_run_seed)
+    seeder.start()
+    seeder.join()
+    if seed_error:
+        raise seed_error[0]
+
+    app = create_app(TEST_DSN, tmp)
     port = 18788
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-    for _ in range(50):
-        try:
-            import httpx
+    import httpx
 
-            httpx.get(f"http://127.0.0.1:{port}/")
+    for _ in range(100):
+        try:
+            httpx.get(f"http://127.0.0.1:{port}/", timeout=2.0)
             break
-        except httpx.ConnectError:
+        except httpx.ConnectError, httpx.ReadError:
             time.sleep(0.1)
+    else:
+        # Yielding the URL anyway would surface later as an unexplained
+        # ERR_ABORTED in the browser rather than as a startup failure.
+        raise RuntimeError(f"server on port {port} never became ready")
     yield f"http://127.0.0.1:{port}"
     server.should_exit = True
 
@@ -87,12 +118,17 @@ def _capture_api(page: Page) -> list[tuple[str, int, str]]:
     responses: list[tuple[str, int, str]] = []
 
     def _on_response(r):  # type: ignore[no-untyped-def]
-        if "/api/" in r.url:
+        if "/api/" not in r.url:
+            return
+        # Reading the body of an in-flight thumbnail aborts the navigation
+        # that requested it, so only JSON is read.
+        body = ""
+        if "application/json" in (r.headers.get("content-type") or ""):
             try:
                 body = r.text()
-            except Exception:
+            except Error:
                 body = ""
-            responses.append((r.url, r.status, body))
+        responses.append((r.url, r.status, body))
 
     page.on("response", _on_response)
     return responses
@@ -139,9 +175,9 @@ class TestClusterDismissUndo:
         expect(undo_btn).to_be_visible()
 
         # Clicking Undo fires POST /api/undo/<token>.
-        with page.expect_request("**/api/undo/*") as req_info:
+        with page.expect_response("**/api/undo/*") as req_info:
             undo_btn.click()
-        assert req_info.value.method == "POST"
+        assert req_info.value.request.method == "POST"
         page.wait_for_load_state("networkidle")
 
         # Cluster is restored: re-opening its page succeeds and faces render.
@@ -178,9 +214,9 @@ class TestClusterAssignUndo:
         toast = page.locator("[role='status']", has_text="Assigned 2 faces to Alice")
         expect(toast).to_be_visible(timeout=5000)
 
-        with page.expect_request("**/api/undo/*") as req_info:
+        with page.expect_response("**/api/undo/*") as req_info:
             toast.locator("button", has_text="Undo").click()
-        assert req_info.value.method == "POST"
+        assert req_info.value.request.method == "POST"
         page.wait_for_load_state("networkidle")
 
         # Assign endpoint was called and returned a success or a 303 redirect

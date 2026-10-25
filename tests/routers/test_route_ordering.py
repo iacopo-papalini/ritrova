@@ -16,21 +16,16 @@ This test walks every registered route and asserts:
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest import TestCase
-
-import pytest
-from fastapi.testclient import TestClient
 from starlette.routing import Route
 
-from ritrova.app import create_app
+from .._helpers import MISSING_ID
+from .._postgres import PostgresAppTestCase
 
 
-class TestRouteOrdering(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
-        self.app = create_app(str(tmp_path / "test.db"))
-        self.client = TestClient(self.app)
+class TestRouteOrdering(PostgresAppTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.client = self.make_client()
 
     def test_api_routes_registered_before_kind_catchall(self) -> None:
         first_kind_idx: int | None = None
@@ -53,7 +48,7 @@ class TestRouteOrdering(TestCase):
     def test_api_finding_thumbnail_missing_returns_json_not_html(self) -> None:
         """The /{kind}/... catch-all returns the HTML 404 page — if it were
         shadowing /api/findings/{id}/thumbnail we'd see text/html here."""
-        resp = self.client.get("/api/findings/999999/thumbnail")
+        resp = self.client.get(f"/api/findings/{MISSING_ID}/thumbnail")
         assert resp.status_code == 404
         # FastAPI's default JSON error handler returns application/json.
         # The shadow path would be HTMLResponse('…', status_code=404).

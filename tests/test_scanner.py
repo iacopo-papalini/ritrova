@@ -6,11 +6,10 @@ that still apply to the slim discovery-only module.
 """
 
 from pathlib import Path
-from unittest import TestCase
-
-import pytest
 
 from ritrova.scanner import find_images, find_videos
+
+from ._postgres import PostgresTestCase
 
 
 def _stub_file(path: Path) -> None:
@@ -18,10 +17,10 @@ def _stub_file(path: Path) -> None:
     path.write_bytes(b"x")
 
 
-class TestFindImages(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_tmp(self, tmp_path: Path) -> None:
-        self.tmp = tmp_path
+class TestFindImages(PostgresTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.tmp = self.tmp_path
 
     def test_discovers_jpg(self) -> None:
         _stub_file(self.tmp / "photo.jpg")
@@ -51,10 +50,10 @@ class TestFindImages(TestCase):
         assert [p.name for p in result] == ["good.jpg"]
 
 
-class TestFindVideos(TestCase):
-    @pytest.fixture(autouse=True)
-    def _setup_tmp(self, tmp_path: Path) -> None:
-        self.tmp = tmp_path
+class TestFindVideos(PostgresTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.tmp = self.tmp_path
 
     def test_discovers_mp4(self) -> None:
         _stub_file(self.tmp / "clip.mp4")
@@ -77,7 +76,7 @@ class TestFindVideos(TestCase):
         assert [p.name for p in result] == ["good.mp4"]
 
 
-class TestGetExifGps(TestCase):
+class TestGetExifGps(PostgresTestCase):
     """get_exif_gps must never raise on malformed EXIF — one bad photo would
     otherwise abort the whole scan-photos pass (regression: 2026-04-13 benchmark)."""
 

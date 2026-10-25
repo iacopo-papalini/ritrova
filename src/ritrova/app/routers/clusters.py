@@ -43,7 +43,7 @@ async def _next_similar_cluster(subject_id: UUID, cluster_id: int) -> str:
     kind = kind_for_species(species)
     fallback = f"/{kind}/clusters"
 
-    next_cluster = find_similar_cluster(db, subject_id, species=species)
+    next_cluster = await find_similar_cluster(db, subject_id, species=species)
     if next_cluster:
         return f"/clusters/{next_cluster}?suggested_person={subject_id}"
     return fallback
@@ -147,18 +147,18 @@ async def merge_suggestions_html(
 
 
 @router.get("/api/clusters/{cluster_id}/hint")
-def cluster_hint_api(cluster_id: int) -> JSONResponse:
+async def cluster_hint_api(cluster_id: int) -> JSONResponse:
     """Return the best matching subject for a cluster."""
-    hint = compute_cluster_hint(get_db(), cluster_id)
+    hint = await compute_cluster_hint(get_db(), cluster_id)
     if hint is None:
         return JSONResponse({"name": None})
     return JSONResponse(hint)
 
 
 @router.get("/api/clusters/{cluster_id}/hint-html", response_class=HTMLResponse)
-def cluster_hint_html(request: Request, cluster_id: int) -> HTMLResponse:
+async def cluster_hint_html(request: Request, cluster_id: int) -> HTMLResponse:
     """Return an HTML fragment with the assign button for the best hint."""
-    hint = compute_cluster_hint(get_db(), cluster_id)
+    hint = await compute_cluster_hint(get_db(), cluster_id)
     return get_templates().TemplateResponse(
         name="partials/cluster_hint.html",
         context={"hint": hint, "cluster_id": cluster_id},
