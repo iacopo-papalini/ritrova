@@ -2,7 +2,7 @@
 
 > Personal photo archive for a single household. Detects and clusters faces in photos and videos using ArcFace embeddings. Detects dogs and cats using YOLO and SigLIP. Serves a web UI for naming, searching, and curating people and animals across years of photos. Holds 61K+ faces and 100K+ photos. Built for Apple Silicon with CoreML; most scanning works cross-platform.
 
-This is the core-knowledge tree, maintained by Kipi. Every chapter is incrementally built from code scans and curated user-data. Strategic decisions live in `decisions/` and are written by `/grillme` or imported via `/kipi process`.
+This is the core-knowledge tree, maintained by Kipi. Every chapter is incrementally built from code scans and curated user-data. Strategic decisions live in `decisions/`; they are written by hand, or imported from `user-data/` via `/kipi process`.
 
 ## Architecture
 
@@ -75,7 +75,5 @@ See [`decisions/`](./decisions/) for ADRs (architecture decision records). Twelv
 - `/kipi process` — process files dropped in `user-data/`
 - `/kipi update` — reconcile recent code changes
 - `/kipi status` — coverage report
-- `/kipi-verify light|deep` — read-only audit: citations, ADRs, staleness, install
-- `/grillme` — drive out tradeoffs adversarially, files an ADR into `decisions/`
 
 _Last updated: 2026-10-24_

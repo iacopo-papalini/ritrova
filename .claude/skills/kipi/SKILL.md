@@ -31,12 +31,8 @@ When in doubt about which KB the user means, **ask before doing anything destruc
 | `update` | Reconcile recent code changes against existing knowledge files |
 | `trim [path]` | Re-apply the map principle to existing chapters — cut excessive detail, keep insight |
 | `status [--recursive]` | Coverage report; with `--recursive`, walk into included KBs |
-| `upgrade` | Sync project skill + hook script to the latest source version. See CHANGELOG.md at source. |
-| `verify` | → **`/kipi-verify`**, a separate shared skill. Read-only KB audit; not implemented here |
 
 If no subcommand is given, list the menu and ask.
-
-`/kipi verify` is not a Kipi subcommand. Auditing lives in the shared `/kipi-verify` skill (`light` or `deep`) so it stays current without an upgrade and can check this install itself. If the user asks for it here, point them there.
 
 ## State (per KB)
 
@@ -98,21 +94,15 @@ A "KB" (knowledge base) lives at `<some-path>/core-knowledge/`. Large monorepos 
 /kipi process        ← classify files you dropped in user-data/ (specs, transcripts, notes)
 /kipi update         ← after code changes: reconcile existing chapters with what's new
 /kipi status         ← coverage report: what's documented, what's stale, what's missing
-/kipi upgrade        ← sync this project's installed skill + hook to the latest source version
-
-/kipi-verify light   ← separate skill: audit the KB (citations, ADRs, staleness, install)
-/kipi-verify deep    ← the above plus prose/ADR judgment checks
 ```
-
-`/kipi-verify` reports and never writes — each finding names the subcommand that fixes it.
 
 **Side-channel findings**
 
 While scanning, Kipi spots bugs, smells, and open questions and writes them to `KIPI_FINDINGS.md` (sibling of `core-knowledge/`). These never pollute the knowledge base — they're a separate backlog for you to triage.
 
-**ADRs and `/grillme`**
+**ADRs**
 
-Architecture decisions live in `core-knowledge/decisions/`. Use `/grillme` to write a new ADR through an adversarial Q&A session; it files the result directly here.
+Architecture decisions live in `core-knowledge/decisions/`. They are curated by hand. Dropping one into `user-data/` lets `/kipi process` file it there.
 
 ---
 
@@ -192,49 +182,6 @@ Also list:
 
 With `--recursive`: for each included child KB, recurse and print its full status under a heading. Stop infinite recursion with a visited-set.
 
-### upgrade
-
-Sync the project's installed skill (`.claude/skills/kipi/SKILL.md`) and hook (`.claude/hooks/kipi-handshake.sh`) with the latest source templates. Never touches user content (chapters, decisions, manifest, state, KIPI_FINDINGS.md).
-
-The version is project-wide, stored at `.claude/skills/kipi/.version` (single integer). It applies to all KBs in this project — sub-modules don't have their own version.
-
-1. **Resolve source location.**
-   - If `.claude/skills/kipi/upgrade-source` exists, read its first line as the source location.
-   - Otherwise default to `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/kipi-setup/`: `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`.
-   - **Local source** (path starts with `/`, `~`, `./` or `$`; expand environment variables first): the directory should contain `CHANGELOG.md` and `templates/`. If it's a symlink, follow it. If missing, tell the user how to install the source skill (or set `upgrade-source` to a remote URL) and stop.
-   - **Remote source** (starts with `http://` or `https://`): treated as a base URL. `CHANGELOG.md` is fetched from `<base>/CHANGELOG.md`, templates from `<base>/templates/<filename>`. Use `curl -fsSL` (or `gh api` for github.com URLs that need auth). Cache fetched files to a tmpdir for the duration of this command.
-2. **Read source version.** Parse `CHANGELOG.md` — find all `## N — date` headings, take the highest N as `source_version`. If CHANGELOG is missing or unparseable, refuse to upgrade.
-3. **Read installed version.** Read `.claude/skills/kipi/.version` (single integer). If the file is missing, treat as `0` (pre-versioned install).
-4. **Compare:**
-   - `installed >= source`: print "Already up to date (v\<n\>)" and exit.
-   - `installed > source`: refuse — local is newer than source. Tell the user something is wrong with the source (or they're pointing at an outdated mirror).
-   - `installed < source`: continue.
-5. **Print changelog.** Show every entry from `installed + 1` through `source` (inclusive) so the user knows what they're getting.
-6. **Diff each tracked file:**
-   - `.claude/skills/kipi/SKILL.md` ← source's `templates/kipi-skill.md`
-   - `.claude/hooks/kipi-handshake.sh` ← source's `templates/kipi-handshake.sh`
-   - **Do not** diff or touch `core-knowledge/index.md`, manifest.json, state.json, or any chapter.
-   - If a file's diff is empty (already in sync), skip silently.
-7. **Approve per file.** For each non-empty diff, show it and ask: **[A]** apply (overwrite), **[B]** skip (keep local). If the local file has been hand-customized, applying loses the customization — say so explicitly when the diff is large.
-8. **Apply approved diffs.** Write the new files.
-8.5. **Refresh the `CLAUDE.md` Kipi pointer.** The project's `CLAUDE.md` carries a Kipi pointer block (source: `templates/claude-md-pointer.md`) wrapped in `<!-- kipi-pointer:do-not-remove -->` … `<!-- /kipi-pointer -->` markers. The pointer was introduced in v5 — pre-v5 installs won't have it yet. Treat it as a **managed block**, not a tracked file: only the bytes between the markers belong to Kipi.
-
-   Fetch the source block (`templates/claude-md-pointer.md`) and compare against `<project-root>/CLAUDE.md`:
-
-   - **`CLAUDE.md` does not exist**: ask **[A]** create with the pointer block, **[B]** skip.
-   - **Marker absent, file exists**: ask **[A]** append the block (one blank line before), **[B]** skip.
-   - **Marker present, block matches source**: in sync; skip silently.
-   - **Marker present, block differs**: prepare a diff that replaces only the bytes between the markers. Ask **[A]** apply, **[B]** skip.
-
-   Never touch any content outside the marker pair. If the user picks **[B]** in any case, leave the file alone — no error, no retry.
-
-9. **Surface migration steps.** If any changelog entry between `installed + 1` and `source` includes a `### Migration` block, print it now so the user knows what manual work remains.
-10. **Bump version.** Write `source_version` to `.claude/skills/kipi/.version`. Confirm.
-
-Notes:
-- `/kipi upgrade` never edits `.claude/settings.json` — if a future version needs new hook entries, the changelog's migration section will say so and the user re-runs the wizard's hook step.
-- `/kipi upgrade` edits `CLAUDE.md` only inside the `<!-- kipi-pointer:do-not-remove -->` markers (step 8.5). Anything outside the marker pair is left alone.
-- `upgrade-source` is set at install time by the wizard. To change it later, just edit the file (one line: a path or URL). To revert to the default, delete it.
 
 ## Writing style (read before drafting any chapter)
 
@@ -392,7 +339,6 @@ Kipi never reads `KIPI_FINDINGS.md` back — the user processes findings out-of-
 
 ADRs — strategic and architectural decisions with rationale. Curated, not generated:
 
-- `/grillme` writes ADRs here at the end of an adversarial design session. It targets the **most-specific KB** whose scope covers the topic; it asks if ambiguous.
 - Users can drop ADRs into `user-data/` and `/kipi process` routes them to this KB's `decisions/`.
 - `/kipi scan` never touches this folder.
 - `/kipi update` flags chapters whose code is referenced by a decision when that code changes.
@@ -414,7 +360,7 @@ Describe instead what the shape *carries* and what role each piece plays ("a UUI
 
 - **A map, not the territory.** A chapter orients the reader in the code; it never reproduces it. Maps lose detail on purpose. Judge every passage by derivation cost, not derivability — see the Writing Style rules. `trim` exists to enforce this on chapters that drifted.
 - **Each KB is self-contained.** Never write into one KB while operating on another. Never merge state.
-- **Output-only knowledge tree.** All writes to `core-knowledge/` go through these workflows. The only external writer is `/grillme`, and only into `decisions/`.
+- **Output-only knowledge tree.** All writes to `core-knowledge/` go through these workflows, except hand-curated ADRs in `decisions/`.
 - **No write without approval.** Always show the diff. Always wait.
 - **Incremental and resumable.** Save state after every approved write.
 - **Present state, not ledger.** Both chapters and ADRs describe what is, not what changed. Findings track open backlog, not resolved history.
