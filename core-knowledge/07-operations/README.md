@@ -78,7 +78,7 @@ flowchart LR
     PHOTOS[("Photo archive<br/>PHOTOS_DIR")]
     DB[("faces.db + tmp/frames<br/>+ reports/")]
     SRV["Home server<br/>base install only"]
-    PROXY["Reverse proxy<br/>TLS, rate limits"]
+    PROXY["Reverse proxy<br/>TLS, off-box"]
     BROWSER["Family browser"]
 
     PHOTOS --> MB
@@ -91,6 +91,25 @@ flowchart LR
 
 The serving box reads the same photo tree, because the UI serves crops and
 thumbnails from the original files.
+
+**Deployment specifics live elsewhere.** What terminates TLS, which ports are
+already taken on the serving host, and what else runs beside Ritrova are owned
+by `docs/server-deployment-plan.md` while that work is in progress, and are
+verified there against the hosts. This chapter does not restate them; each
+workstream's facts land here once they are present state rather than intent.
+
+Three consequences this repository does determine, whatever the host turns out
+to be:
+
+- `serve` provides neither TLS nor authentication, so anything in front of it
+  owns both. Nothing in the app will refuse a request that reached it.
+- Where the database file sits decides where three other things sit: the frame
+  cache, the thumbnail cache and the run reports all derive from its parent
+  directory. Putting the database inside a tree that something else
+  synchronises or backs up therefore drags a live SQLite file, its WAL and two
+  regenerable caches along with it.
+- Per-request work that scales with archive size is felt on the serving host,
+  which is the smaller machine — not on the one that does the scanning.
 
 ## Operational notes
 
@@ -213,4 +232,4 @@ thumbnails from the original files.
 
 ---
 
-_Last updated: 2026-10-24 by Kipi_
+_Last updated: 2026-10-25 by Kipi_
