@@ -32,6 +32,8 @@ services:
       # rest of the house out.
       - "${POSTGRES_BIND:-0.0.0.0}:5432:5432"
     volumes:
+      # A named volume on purpose. Postgres data inside the synced photo tree
+      # would be rewritten under the running server by the same rclone pass.
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ritrova} -d ${POSTGRES_DB:-ritrova}"]
@@ -41,6 +43,9 @@ services:
       start_period: 30s
     deploy:
       resources:
+        # Ceilings, not reservations — an idle server reserves nothing from
+        # the half-hourly rclone pass or from pihole. The contention case is
+        # a long `ritrova cluster` run, not ordinary serving.
         limits:
           cpus: "1.5"
           memory: 1536M
@@ -65,8 +70,11 @@ services:
       # Reachable from the whole LAN, per the owner's explicit decision.
       - "${RITROVA_BIND:-0.0.0.0}:8787:8787"
     volumes:
-      # Read-only: this service never writes to the photo archive, and the
-      # Nextcloud sync client owns that tree.
+      # NEVER make this writable. The tree is the destination of a pull-only
+      # `rclone sync` running every 30 minutes, which exists to make the
+      # destination identical to the source: anything we write that is not on
+      # the Nextcloud server is moved to rclone-attic within half an hour.
+      # Files can be fished back out of the attic; empty directories cannot.
       - ${PHOTOS_DIR:?set PHOTOS_DIR in .env}:/photos:ro
       # D15: thumbnails and extracted video frames.
       - ritrova-data:/data
