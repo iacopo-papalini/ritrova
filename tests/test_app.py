@@ -760,3 +760,24 @@ class TestNamespaceCollision(PostgresAppTestCase):
                 break
         else:
             pytest.fail("Expected cluster-cluster suggestion not found")
+
+
+class TestTemplateIdRendering(PostgresAppTestCase):
+    """Ids reach Alpine through ``|tojson``, which json.dumps cannot render
+    for a UUID — every such page 500s without the configured policy."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.client = self.make_client()
+
+    async def test_subject_detail_renders_with_uuid_ids(self) -> None:
+        sid = await self.db.create_subject("Alice")
+        resp = self.client.get(f"/people/{sid}")
+        assert resp.status_code == 200, resp.text
+
+    async def test_subject_id_reaches_javascript_quoted(self) -> None:
+        """A bare UUID in a JS expression is not valid JavaScript."""
+        sid = await self.db.create_subject("Alice")
+        body = self.client.get(f"/people/{sid}").text
+        assert f'subjectId: "{sid}"' in body
+        assert f"subjectId: {sid}," not in body

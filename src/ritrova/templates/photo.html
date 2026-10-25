@@ -69,7 +69,7 @@
        #}
     <div class="relative inline-block max-w-full"
          x-data="manualFinding({
-           sourceId: {{ source.id }},
+           sourceId: {{ source.id|tojson }},
            sourceWidth: {{ source.width }},
            sourceHeight: {{ source.height }},
            defaultSpecies: '{{ 'dog' if kind == 'pets' else 'human' }}'
@@ -170,7 +170,7 @@
            id="face-{{ face.id }}"
            {% if is_focus and suggest_name %}data-suggest-name="{{ suggest_name }}"{% endif %}
            x-data='photoFaceTile({
-             findingId: {{ face.id }},
+             findingId: {{ face.id|tojson }},
              initialState: "{{ state }}",
              initialSubjectName: {{ (face.subject_name or '')|tojson }}
            })'>

@@ -81,7 +81,7 @@
                 fetch('/api/findings/swap', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ face_ids: faceIds, target_subject_id: {{ subject_b.id }} })
+                  body: JSON.stringify({ face_ids: faceIds, target_subject_id: {{ subject_b.id|tojson }} })
                 }).then(r => r.ok && r.json()).then(d => {
                   if (!d) return;
                   removeTiles(faceIds);
@@ -174,7 +174,7 @@
                 fetch('/api/findings/swap', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ face_ids: faceIds, target_subject_id: {{ subject_a.id }} })
+                  body: JSON.stringify({ face_ids: faceIds, target_subject_id: {{ subject_a.id|tojson }} })
                 }).then(r => r.ok && r.json()).then(d => {
                   if (!d) return;
                   removeTiles(faceIds);

@@ -54,6 +54,10 @@ def create_app(
     thumbnails_dir = Path(data_dir) / "tmp" / "thumbnails"
     thumbnails_dir.mkdir(parents=True, exist_ok=True)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+    # ``|tojson`` is how ids reach the JavaScript, and json.dumps has no
+    # rendering for UUID or datetime — without this every page that hands
+    # Alpine an id raises at render time.
+    templates.env.policies["json.dumps_kwargs"] = {"sort_keys": True, "default": str}
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:

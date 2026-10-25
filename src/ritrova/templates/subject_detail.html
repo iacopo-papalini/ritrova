@@ -78,7 +78,7 @@
   {% endset %}
 
   {% set header_meta_html %}
-    <div x-data="subjectCircleMeta({ subjectId: {{ subject.id }}, circleIds: {{ member_ids|tojson }} })"
+    <div x-data="subjectCircleMeta({ subjectId: {{ subject.id|tojson }}, circleIds: {{ member_ids|tojson }} })"
          data-subject-circle-meta
          @click="handleClick($event)"
          @circle-add-request.window="addCircle($event.detail.circle)"
