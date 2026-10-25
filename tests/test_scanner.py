@@ -5,9 +5,11 @@ their tests removed. What remains: file-discovery + EXIF guard tests
 that still apply to the slim discovery-only module.
 """
 
+from datetime import datetime
 from pathlib import Path
+from unittest import TestCase
 
-from ritrova.scanner import find_images, find_videos
+from ritrova.scanner import find_images, find_videos, parse_exif_datetime
 
 from ._postgres import PostgresTestCase
 
@@ -108,3 +110,34 @@ class TestGetExifGps(PostgresTestCase):
 
         with patch("ritrova.scanner.Image.open", return_value=fake_img_cm):
             assert get_exif_gps(Path("/fake.jpg")) is None  # must not raise
+
+
+class TestParseExifDatetime(TestCase):
+    """The parser is pure, so it needs no database."""
+
+    def test_plain_exif_timestamp(self) -> None:
+        assert parse_exif_datetime("2002:08:09 20:07:38") == datetime(2002, 8, 9, 20, 7, 38)
+
+    def test_nul_terminated_value_still_parses(self) -> None:
+        """EXIF fields are fixed-width, so a good date arrives NUL-padded.
+
+        140 photos in the live archive carry this form; dropping it loses
+        their capture date silently.
+        """
+        assert parse_exif_datetime("2015:11:01 12:01:43\x00") == datetime(2015, 11, 1, 12, 1, 43)
+
+    def test_zero_sentinel_is_none(self) -> None:
+        assert parse_exif_datetime("0000:00:00 00:00:00") is None
+
+    def test_nul_only_is_none(self) -> None:
+        assert parse_exif_datetime("\x00") is None
+
+    def test_iso_value_parses(self) -> None:
+        assert parse_exif_datetime("2016-07-01T10:00:00") == datetime(2016, 7, 1, 10, 0, 0)
+
+    def test_junk_is_none(self) -> None:
+        assert parse_exif_datetime("junk") is None
+
+    def test_empty_and_none(self) -> None:
+        assert parse_exif_datetime("") is None
+        assert parse_exif_datetime(None) is None

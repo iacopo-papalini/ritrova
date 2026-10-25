@@ -29,6 +29,11 @@ def parse_exif_datetime(value: str | None) -> datetime | None:
     parser; the two must agree or migrated and freshly-scanned rows will
     disagree about the same photo.
     """
+    if not value:
+        return None
+    # EXIF strings come out of fixed-width fields, so a NUL terminator and
+    # padding ride along on a date that is otherwise perfectly good.
+    value = value.replace("\x00", "").strip()
     if not value or value.startswith("0000"):
         return None
     try:

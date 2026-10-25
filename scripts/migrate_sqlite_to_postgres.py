@@ -145,6 +145,11 @@ BOOL_COLUMNS = {"source_path_metadata": ("date_conflict",)}
 
 def exif_to_naive(value: str | None) -> datetime | None:
     """``2002:08:09 20:07:38`` -> naive datetime. Sentinels and junk -> None."""
+    if not value:
+        return None
+    # EXIF strings come out of fixed-width fields, so a NUL terminator and
+    # padding ride along on a date that is otherwise perfectly good.
+    value = value.replace("\x00", "").strip()
     if not value or value.startswith("0000"):
         return None
     try:
