@@ -67,4 +67,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # Binds to every interface inside the container; what the host actually
 # exposes is the published port's business, not this image's.
-CMD ["sh", "-c", "ritrova --data-dir \"$RITROVA_DATA_DIR\" --photos-dir \"$RITROVA_PHOTOS_DIR\" serve --host 0.0.0.0 --port 8787"]
+# RITROVA_FORWARDED_ALLOW_IPS names the reverse proxy whose X-Forwarded-For
+# may be believed. Unset, nothing is trusted and every proxied visitor
+# arrives wearing the proxy's own address.
+CMD ["sh", "-c", "ritrova --data-dir \"$RITROVA_DATA_DIR\" --photos-dir \"$RITROVA_PHOTOS_DIR\" serve --host 0.0.0.0 --port 8787 --forwarded-allow-ips \"${RITROVA_FORWARDED_ALLOW_IPS:-}\""]

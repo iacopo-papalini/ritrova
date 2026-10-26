@@ -99,7 +99,7 @@ class TestUndoStore(PostgresAppTestCase):
 class TestUndoEndpoints(PostgresAppTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.client = self.make_client()
+        self.client = await self.make_client()
 
     def test_peek_empty(self) -> None:
         resp = self.client.get("/api/undo/peek")

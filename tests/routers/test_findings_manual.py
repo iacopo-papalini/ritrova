@@ -29,7 +29,7 @@ class TestCreateManualFindingRouter(PostgresAppTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
         self.tmp = self.tmp_path
-        self.client = self.make_client()
+        self.client = await self.make_client()
 
         self.image_path = self.tmp_path / "photo.jpg"
         Image.new("RGB", (400, 300), color="red").save(self.image_path, "JPEG")
