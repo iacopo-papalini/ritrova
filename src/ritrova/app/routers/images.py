@@ -14,12 +14,11 @@ the image bytes — they share one aggregate from the client's perspective.
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response
 
 from ...db import FaceDB, Finding
 from ...images import crop_face_thumbnail, resize_photo
@@ -74,13 +73,13 @@ async def _resolve_finding_image_or_restore(db: FaceDB, finding: Finding) -> Pat
 
 
 @router.get("/api/findings/{finding_id}/thumbnail")
-async def finding_thumbnail(finding_id: UUID, size: int = 150) -> StreamingResponse:
+async def finding_thumbnail(finding_id: UUID, size: int = 150) -> Response:
     db = get_db()
     size = min(size, 500)
     cache_path = get_thumbnails_dir() / f"{finding_id}_{size}.jpg"
     if cache_path.exists():
-        return StreamingResponse(
-            io.BytesIO(cache_path.read_bytes()),
+        return Response(
+            cache_path.read_bytes(),
             media_type="image/jpeg",
             headers=IMMUTABLE_IMAGE_HEADERS,
         )
@@ -102,7 +101,7 @@ async def finding_thumbnail(finding_id: UUID, size: int = 150) -> StreamingRespo
         size,
     )
     cache_path.write_bytes(buf.getvalue())
-    return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
+    return Response(buf.getvalue(), media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
 
 
 def _view_cache_path(source_id: UUID, size: int) -> Path:
@@ -112,13 +111,13 @@ def _view_cache_path(source_id: UUID, size: int) -> Path:
 
 
 @router.get("/api/sources/{source_id}/image")
-async def source_image(source_id: UUID, max_size: int = 1600) -> StreamingResponse:
+async def source_image(source_id: UUID, max_size: int = 1600) -> Response:
     db = get_db()
     size = min(max_size, 2000)
     cache_path = _view_cache_path(source_id, size)
     if cache_path.exists():
-        return StreamingResponse(
-            io.BytesIO(cache_path.read_bytes()),
+        return Response(
+            cache_path.read_bytes(),
             media_type="image/jpeg",
             headers=IMMUTABLE_IMAGE_HEADERS,
         )
@@ -138,13 +137,13 @@ async def source_image(source_id: UUID, max_size: int = 1600) -> StreamingRespon
             raise HTTPException(404)
         buf = await imaging.run(resize_photo, resolved, size)
         cache_path.write_bytes(buf.getvalue())
-        return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
+        return Response(buf.getvalue(), media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
     resolved = db.resolve_path(source.file_path)
     if not resolved.exists():
         raise HTTPException(404)
     buf = await imaging.run(resize_photo, resolved, size)
     cache_path.write_bytes(buf.getvalue())
-    return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
+    return Response(buf.getvalue(), media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
 
 
 @router.get("/api/sources/{source_id}/original")
@@ -183,7 +182,7 @@ async def source_info(source_id: UUID) -> JSONResponse:
 
 
 @router.get("/api/findings/{finding_id}/frame")
-async def finding_frame(finding_id: UUID, max_size: int = 1600) -> StreamingResponse:
+async def finding_frame(finding_id: UUID, max_size: int = 1600) -> Response:
     """Serve the image for a finding — the extracted frame for video findings,
     or the source image for photo findings. `resolve_finding_image` dispatches.
     """
@@ -195,7 +194,7 @@ async def finding_frame(finding_id: UUID, max_size: int = 1600) -> StreamingResp
     if resolved is None or not resolved.exists():
         raise HTTPException(404)
     buf = await imaging.run(resize_photo, resolved, min(max_size, 2000))
-    return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
+    return Response(buf.getvalue(), media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
 
 
 @router.get("/api/findings/{finding_id}/info")
