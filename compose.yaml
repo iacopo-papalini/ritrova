@@ -5,6 +5,11 @@
 # The host is shared with pihole, which serves DNS for the whole house, so
 # both services are capped rather than left to take what they like.
 
+# Pinned so the stack keeps its volumes wherever the checkout lives — the
+# project name otherwise follows the directory, and moving it would hand
+# the database a brand new, empty volume.
+name: ritrova
+
 x-logging: &logging
   # Snap docker keeps json-file logs forever by default and the volume is
   # the same one the photos live on.

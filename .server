@@ -1,0 +1,4 @@
+HOST=172.20.42.3
+USER=iacopo
+MAIN_DIR=/srv/family-data
+

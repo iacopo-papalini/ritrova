@@ -87,6 +87,39 @@ Important:
 - identity should be keyed by `google_sub`, not just email
 - email is useful for allowlisting and display, but `sub` is the stable identity key
 
+## Google Project Configuration
+
+Added 2026-10-25. The "Google login in testing mode" assumption at the top of this
+document is more pessimistic than it needs to be.
+
+An app that requests **only** `openid`, `email` and `profile`:
+
+- is not required to complete Google's app verification
+- is not capped to the trusted-tester list
+- does **not** have its authorizations expire after 7 days
+
+That exemption is narrow and applies to those identity scopes alone. Requesting any
+other scope voids it, so the scope list is a thing to guard in review, not just to set
+once.
+
+Two consequences for this design:
+
+- Publish the consent screen rather than staying in testing mode. It is a single button
+  and it removes the test-user list and the 7-day re-consent cycle that otherwise make
+  family use annoying.
+- Brand verification is a separate, lighter process, and is only needed to show an app
+  name and logo on the consent screen. Cosmetic here.
+
+The 7-day refresh-token limit people usually attach to testing mode is doubly irrelevant
+to this design in any case: Ritrova exchanges the authorization code once at login and
+runs its own cookie session afterwards. No Google refresh token is ever stored, which is
+the same reason "do not use Google access tokens as your app session" appears below.
+
+Sources, current as of 2026-10-25 and worth re-checking at implementation time, since
+Google moves this:
+[OAuth App Verification](https://support.google.com/cloud/answer/9110914),
+[publishing status and user limits](https://support.google.com/cloud/answer/10311615).
+
 ## Authorization Model
 
 Keep it minimal.
