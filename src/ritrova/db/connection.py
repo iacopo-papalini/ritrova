@@ -18,6 +18,7 @@ from typing import Self
 import asyncpg
 
 from .assignments import AssignmentMixin
+from .auth import AuthMixin
 from .circles import CirclesMixin
 from .clusters import ClusterMixin
 from .curation import CurationMixin
@@ -111,6 +112,7 @@ class FaceDB(
     PrintSelectionMixin,
     CirclesMixin,
     AssignmentMixin,
+    AuthMixin,
     UndoMixin,
     MaintenanceMixin,
 ):

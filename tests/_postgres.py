@@ -60,6 +60,10 @@ class PostgresTestCase(IsolatedAsyncioTestCase):
 # Tables in dependency order; children before parents so TRUNCATE ... CASCADE
 # is not needed and the intent stays explicit.
 _TABLES = (
+    "audit_log",
+    "sessions",
+    "allowed_users",
+    "users",
     "finding_assignment",
     "cluster_findings",
     "print_selection",

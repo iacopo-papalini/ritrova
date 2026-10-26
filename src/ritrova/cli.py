@@ -11,8 +11,10 @@ from uuid import UUID
 import click
 from dotenv import load_dotenv
 
+from .app.network import is_loopback_bind
 from .capabilities import INSTALL_HINT, scan_available
 from .db import FaceDB
+from .db.auth import ROLES
 from .describer import DEFAULT_TRANSLATOR_MODEL, DEFAULT_VLM_MODEL
 
 load_dotenv()
@@ -1283,15 +1285,41 @@ def warmup() -> None:
 @cli.command()
 @click.option("--host", default="0.0.0.0", help="Host to bind to")
 @click.option("--port", default=8787, type=int, help="Port to listen on")
+@click.option(
+    "--logged-user",
+    envvar="RITROVA_LOGGED_USER",
+    default=None,
+    metavar="EMAIL",
+    help="Run every request as this allowlisted user, skipping Google sign-in. "
+    "Only permitted when bound to loopback.",
+)
 @click.pass_context
-def serve(ctx: click.Context, host: str, port: int) -> None:
+def serve(ctx: click.Context, host: str, port: int, logged_user: str | None) -> None:
     """Start the web UI for browsing and naming faces."""
     import uvicorn
 
+    # D19: refuse rather than warn. Anyone who can reach the port is this
+    # user, so an unauthenticated process must be unable to listen anywhere
+    # but this machine — a warning on a server nobody watches is an open
+    # Ritrova on the network.
+    if logged_user and not is_loopback_bind(host):
+        msg = (
+            f"--logged-user is only allowed when bound to loopback, not {host!r}. "
+            "Bind 127.0.0.1, or drop --logged-user and sign in."
+        )
+        raise click.UsageError(msg)
+
     from .app import create_app
 
-    app = create_app(ctx.obj["dsn"], ctx.obj["data_dir"], photos_dir=ctx.obj["photos_dir"])
+    app = create_app(
+        ctx.obj["dsn"],
+        ctx.obj["data_dir"],
+        photos_dir=ctx.obj["photos_dir"],
+        logged_user=logged_user,
+    )
     print(f"Ritrova → http://localhost:{port}")
+    if logged_user:
+        print(f"Signed in as {logged_user} (loopback only, no Google sign-in)")
     uvicorn.run(app, host=host, port=port)
 
 
@@ -1586,4 +1614,62 @@ async def doctor(ctx: click.Context, fix: bool, yes: bool) -> None:
     await db.delete_orphans(report)
     click.echo(f"Deleted {report.total} orphan row(s).")
     await db.close()
+    await db.close()
+
+
+@cli.group()
+def auth() -> None:
+    """Manage who may sign in."""
+
+
+@auth.command("allow")
+@click.argument("email")
+@click.option(
+    "--role", type=click.Choice(ROLES), default="editor", show_default=True, help="Role to grant"
+)
+@click.pass_context
+@_async_command
+async def auth_allow(ctx: click.Context, email: str, role: str) -> None:
+    """Invite EMAIL to sign in, or change an existing invitation's role.
+
+    The allowlist is data, not configuration: addresses live in the database
+    so that adding a family member never means editing or committing a file.
+    """
+    db = await _open_db(ctx)
+    try:
+        invited = await db.allow_user(email, role=role)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+    click.echo(f"{invited.email} may sign in as {invited.role}")
+    await db.close()
+
+
+@auth.command("list")
+@click.pass_context
+@_async_command
+async def auth_list(ctx: click.Context) -> None:
+    """List the addresses allowed to sign in."""
+    db = await _open_db(ctx)
+    allowed = await db.list_allowed_users()
+    if not allowed:
+        click.echo("(nobody is allowed to sign in)")
+    else:
+        click.echo(f"{'email':40s}  {'role':6s}  invited")
+        for entry in allowed:
+            click.echo(f"{entry.email:40s}  {entry.role:6s}  {entry.created_at:%Y-%m-%d %H:%M}")
+        click.echo(f"\n{len(allowed)} address(es)")
+    await db.close()
+
+
+@auth.command("revoke")
+@click.argument("email")
+@click.pass_context
+@_async_command
+async def auth_revoke(ctx: click.Context, email: str) -> None:
+    """Withdraw EMAIL's invitation. Existing sessions are left alone."""
+    db = await _open_db(ctx)
+    if await db.revoke_allowed_user(email):
+        click.echo(f"{email} may no longer sign in")
+    else:
+        click.echo(f"{email} was not on the allowlist")
     await db.close()

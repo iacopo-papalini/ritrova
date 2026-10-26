@@ -26,6 +26,7 @@ from fastapi.templating import Jinja2Templates
 
 from ..capabilities import scan_available
 from ..db import FaceDB
+from ..db.auth import AllowedUser
 from ..undo import UndoStore
 from . import deps, imaging
 from .responses import JSONResponse
@@ -62,12 +63,24 @@ def _photo_archive_present(base_dir: Path | None) -> bool:
         return False
 
 
+async def _resolve_logged_user(db: FaceDB, email: str) -> AllowedUser:
+    allowed = await db.find_allowed_user(email)
+    if allowed is None:
+        msg = (
+            f"{email} is not on the allowlist, so there is no identity to run as. "
+            f"Add it with: ritrova auth allow {email}"
+        )
+        raise RuntimeError(msg)
+    return allowed
+
+
 def create_app(
     dsn: str,
     data_dir: str | Path,
     photos_dir: str | None = None,
     *,
     imaging_workers: int = 4,
+    logged_user: str | None = None,
 ) -> FastAPI:
     undo_store = UndoStore()
     thumbnails_dir = Path(data_dir) / "tmp" / "thumbnails"
@@ -86,6 +99,11 @@ def create_app(
         # The pool has to be created inside the running loop, so it belongs
         # here rather than in the constructor.
         db = await FaceDB.connect(dsn, data_dir=data_dir, base_dir=photos_dir)
+        # Local mode stands in for a completed Google login, so it may only
+        # adopt an identity the allowlist already grants — otherwise it would
+        # invent users and roles that no real sign-in could produce.
+        if logged_user is not None:
+            _app.state.logged_user = await _resolve_logged_user(db, logged_user)
         imaging.configure(imaging_workers)
         deps.configure(
             db=db,
