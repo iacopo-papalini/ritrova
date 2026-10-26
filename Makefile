@@ -55,3 +55,13 @@ lint: ## Run linter + type checker
 
 migrate-paths: ## Rewrite DB paths to relative
 	$(RITROVA) migrate-paths
+
+css-check: ## Fail if the committed stylesheet is stale
+	./tailwindcss -i src/ritrova/static/input.css -o /tmp/ritrova-css-check.css --minify
+	@diff -q /tmp/ritrova-css-check.css src/ritrova/static/style.css \
+	  || { echo "style.css is stale — run 'make css' and commit the result"; exit 1; }
+
+deploy: ## Pull and rebuild the server stack (run ON the server)
+	git pull --ff-only
+	docker compose up -d --build
+	@docker compose ps
