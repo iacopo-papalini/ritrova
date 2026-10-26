@@ -146,3 +146,41 @@ class TestPaioloCannotServeWithoutAuth(TestCase):
         )
         self.assertNotEqual(result.exit_code, 0)
         run.assert_not_called()
+
+
+class TestForwardedAllowIps(TestCase):
+    """W6.5: only a named proxy's X-Forwarded-For may be believed."""
+
+    def _run(self, *args: str):
+        with patch("uvicorn.run") as run:
+            result = CliRunner().invoke(
+                cli,
+                ["serve", *args],
+                env={
+                    "RITROVA_GOOGLE_CLIENT_ID": "id",
+                    "RITROVA_GOOGLE_CLIENT_SECRET": "secret",
+                },
+            )
+        return result, run
+
+    def test_nothing_is_trusted_by_default(self) -> None:
+        """Unset means uvicorn's own default, which is loopback only."""
+        _, run = self._run("--host", "0.0.0.0")
+        self.assertIsNone(run.call_args.kwargs["forwarded_allow_ips"])
+        self.assertFalse(run.call_args.kwargs["proxy_headers"])
+
+    def test_the_named_proxy_is_trusted(self) -> None:
+        result, run = self._run("--host", "0.0.0.0", "--forwarded-allow-ips", "172.20.42.2")
+        self.assertEqual(run.call_args.kwargs["forwarded_allow_ips"], ["172.20.42.2"])
+        self.assertTrue(run.call_args.kwargs["proxy_headers"])
+        self.assertIn("Trusting X-Forwarded-For from: 172.20.42.2", result.output)
+
+    def test_several_proxies(self) -> None:
+        _, run = self._run("--host", "0.0.0.0", "--forwarded-allow-ips", "172.20.42.2, 10.0.0.1")
+        self.assertEqual(run.call_args.kwargs["forwarded_allow_ips"], ["172.20.42.2", "10.0.0.1"])
+
+    def test_an_empty_value_trusts_nothing(self) -> None:
+        """The container passes "" when the variable is unset."""
+        _, run = self._run("--host", "0.0.0.0", "--forwarded-allow-ips", "")
+        self.assertIsNone(run.call_args.kwargs["forwarded_allow_ips"])
+        self.assertFalse(run.call_args.kwargs["proxy_headers"])

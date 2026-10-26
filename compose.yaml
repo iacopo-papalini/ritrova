@@ -71,6 +71,18 @@ services:
       RITROVA_DSN: postgresql://${POSTGRES_USER:-ritrova}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ritrova}
       RITROVA_DATA_DIR: /data
       RITROVA_PHOTOS_DIR: /photos
+      # Google sign-in. The app refuses to bind anything but loopback without
+      # these, so an unauthenticated Ritrova cannot reach the network.
+      RITROVA_GOOGLE_CLIENT_ID: ${RITROVA_GOOGLE_CLIENT_ID:?set it in .env}
+      RITROVA_GOOGLE_CLIENT_SECRET: ${RITROVA_GOOGLE_CLIENT_SECRET:?set it in .env}
+      # The redirect URI is built from this and compared byte-for-byte by
+      # Google, and is never derived from the Host header, which the client
+      # supplies.
+      RITROVA_PUBLIC_ORIGIN: ${RITROVA_PUBLIC_ORIGIN:?set it in .env}
+      # W6.5. Only the NAS's X-Forwarded-For is believed. Without this every
+      # visitor from the internet arrives wearing 172.20.42.2 — a private
+      # address — and would pass for a LAN client.
+      RITROVA_FORWARDED_ALLOW_IPS: ${RITROVA_FORWARDED_ALLOW_IPS:-172.20.42.2}
     ports:
       # Reachable from the whole LAN, per the owner's explicit decision.
       - "${RITROVA_BIND:-0.0.0.0}:8787:8787"

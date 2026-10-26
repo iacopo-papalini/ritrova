@@ -1292,6 +1292,13 @@ def warmup() -> None:
 )
 @click.option("--port", default=8787, type=int, help="Port to listen on")
 @click.option(
+    "--forwarded-allow-ips",
+    default=None,
+    metavar="ADDRESSES",
+    help="Comma-separated proxies whose X-Forwarded-For may be believed, e.g. the "
+    "reverse proxy's address. Leave unset when nothing proxies to this process.",
+)
+@click.option(
     "--logged-user",
     default=None,
     metavar="EMAIL",
@@ -1303,7 +1310,13 @@ def warmup() -> None:
     "Only permitted when bound to loopback.",
 )
 @click.pass_context
-def serve(ctx: click.Context, host: str, port: int, logged_user: str | None) -> None:
+def serve(
+    ctx: click.Context,
+    host: str,
+    port: int,
+    forwarded_allow_ips: str | None,
+    logged_user: str | None,
+) -> None:
     """Start the web UI for browsing and naming faces."""
     import uvicorn
 
@@ -1330,10 +1343,24 @@ def serve(ctx: click.Context, host: str, port: int, logged_user: str | None) -> 
         photos_dir=ctx.obj["photos_dir"],
         logged_user=logged_user,
     )
+    # Only believe X-Forwarded-For from the proxies named here. Left unset,
+    # uvicorn trusts loopback alone, so a proxied visitor arrives wearing the
+    # proxy's own address — which behind a reverse proxy is a private one, and
+    # would make every visitor from the internet look like a LAN client.
+    trusted = [a.strip() for a in (forwarded_allow_ips or "").split(",") if a.strip()]
+
     print(f"Ritrova → http://localhost:{port}")
+    if trusted:
+        print(f"Trusting X-Forwarded-For from: {', '.join(trusted)}")
     if logged_user:
         print(f"Signed in as {logged_user} (loopback only, no Google sign-in)")
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        proxy_headers=bool(trusted),
+        forwarded_allow_ips=trusted or None,
+    )
 
 
 @cli.command()
