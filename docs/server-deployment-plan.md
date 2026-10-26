@@ -782,19 +782,28 @@ The large one. Everything else waits behind it.
 - [x] **W1.5 — Imaging on a bounded executor** (2026-10-25). Original scope: (D3). `asyncio.to_thread` for decode and
       encode, pool sized to core count rather than anyio's default 40, and a semaphore
       capping concurrent decodes. Without this, D2 makes the Celeron slower.
-- [ ] **W1.8 — Bound OpenCV's internal threading on paiolo.** Measured 2026-10-26 on the
-      Mac: `cv2.getNumThreads()` reports **18**, so a single video seek already fans out
-      across every core before the imaging pool multiplies it. Scaling confirms it —
-      seeking 16 frames of a 1,482-frame clip ran 1.40s on one thread, 0.95s on two and
-      0.88s on four, a plateau at **1.59x** rather than the 3.52x the Pillow decode path
-      reaches. That shape is internal parallelism saturating, not a GIL hold, which would
-      have capped it at 1.00x.
+- [ ] **W1.8 — Bound OpenCV's threading and size the imaging pool per host.** Measured
+      2026-10-26 on the Mac: a single video seek already fans out across every core
+      before the imaging pool multiplies it. Seeking 16 frames of a 1,482-frame clip ran
+      1.40s on one thread, 0.95s on two and 0.88s on four — a plateau at **1.59x**,
+      against the 3.52x the Pillow decode path reaches. That shape is OpenCV's own
+      parallelism saturating, not a GIL hold, which would have pinned it at 1.00x.
 
-      The consequence is for the Celeron, not the Mac: pool size x OpenCV's own threads
-      oversubscribes four cores badly, and the standing rule is half the host. Call
-      `cv2.setNumThreads()` with a bounded value at startup. Also worth knowing that the
-      imaging pool buys little for video seeks specifically — the reason to keep them on
-      it is that they would otherwise block the event loop, which holds regardless.
+      **OpenCV defaults to one thread per core**, not to a constant: `getNumThreads()`,
+      `getNumberOfCPUs()` and `os.cpu_count()` all return 18 here, and on paiolo all
+      three will return 4. The overcommit on the Celeron is therefore
+      `imaging_workers` x 4, not anything larger.
+
+      Two numbers make it concrete, and the second is a correction to W1.5 below.
+      `imaging_workers` is a **hardcoded default of 4** at `app/__init__.py:70` with no
+      caller overriding it — it is not sized to core count, on any host. So paiolo runs
+      4 pool threads x 4 OpenCV threads = **16 compute threads on 4 cores**, a 4x
+      overcommit, against a standing rule of half the host.
+
+      The fix is two settings, not one: `cv2.setNumThreads()` bounded at startup, and
+      `imaging_workers` derived from the host rather than fixed. Note also that the pool
+      buys video seeks very little — the reason to keep them on it is that they would
+      otherwise block the event loop, which holds whatever OpenCV does.
 
 - [ ] **W1.6 — One-shot data migration.** SQLite → Postgres on the Mac: 33,712 sources,
       70,002 findings with their embeddings, 77,977 scans, 36,884 assignments. Verify
