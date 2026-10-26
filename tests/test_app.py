@@ -838,3 +838,40 @@ class TestServeOnlyMode(PostgresAppTestCase):
     async def test_healthz_is_not_shadowed_by_the_kind_catchall(self) -> None:
         """``/{kind}`` matches any single segment; /healthz must win."""
         assert self.client.get("/healthz").headers["content-type"].startswith("application/json")
+
+
+class TestSourceImageCache(PostgresAppTestCase):
+    """Resizing a multi-megapixel original on every view is the one image
+    cost that never improves; thumbnails have always been cached."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        photos = Path(self.tmp_path) / "photos"
+        photos.mkdir()
+        from PIL import Image
+
+        Image.new("RGB", (2400, 1800), "red").save(photos / "big.jpg")
+        self.client = self.make_client(photos_dir=str(photos))
+        self.source_id = await self.db.add_source("big.jpg", width=2400, height=1800)
+
+    async def test_second_request_is_served_from_disk(self) -> None:
+        first = self.client.get(f"/api/sources/{self.source_id}/image")
+        assert first.status_code == 200, first.text
+        cached = Path(self.tmp_path) / "tmp" / "views" / f"{self.source_id}_1600.jpg"
+        assert cached.exists()
+
+        # Remove the original: a second hit that still succeeds can only
+        # have come from the cache.
+        (Path(self.tmp_path) / "photos" / "big.jpg").unlink()
+        second = self.client.get(f"/api/sources/{self.source_id}/image")
+        assert second.status_code == 200
+        assert second.content == first.content
+
+    async def test_each_size_is_cached_separately(self) -> None:
+        self.client.get(f"/api/sources/{self.source_id}/image?max_size=400")
+        self.client.get(f"/api/sources/{self.source_id}/image?max_size=1600")
+        views = Path(self.tmp_path) / "tmp" / "views"
+        assert {p.name for p in views.iterdir()} == {
+            f"{self.source_id}_400.jpg",
+            f"{self.source_id}_1600.jpg",
+        }

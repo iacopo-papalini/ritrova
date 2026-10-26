@@ -105,9 +105,23 @@ async def finding_thumbnail(finding_id: UUID, size: int = 150) -> StreamingRespo
     return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
 
 
+def _view_cache_path(source_id: UUID, size: int) -> Path:
+    views = get_thumbnails_dir().parent / "views"
+    views.mkdir(parents=True, exist_ok=True)
+    return views / f"{source_id}_{size}.jpg"
+
+
 @router.get("/api/sources/{source_id}/image")
 async def source_image(source_id: UUID, max_size: int = 1600) -> StreamingResponse:
     db = get_db()
+    size = min(max_size, 2000)
+    cache_path = _view_cache_path(source_id, size)
+    if cache_path.exists():
+        return StreamingResponse(
+            io.BytesIO(cache_path.read_bytes()),
+            media_type="image/jpeg",
+            headers=IMMUTABLE_IMAGE_HEADERS,
+        )
     source = await db.get_source(source_id)
     if not source:
         raise HTTPException(404)
@@ -122,12 +136,14 @@ async def source_image(source_id: UUID, max_size: int = 1600) -> StreamingRespon
         resolved = await _resolve_finding_image_or_restore(db, frame_finding)
         if resolved is None or not resolved.exists():
             raise HTTPException(404)
-        buf = await imaging.run(resize_photo, resolved, min(max_size, 2000))
+        buf = await imaging.run(resize_photo, resolved, size)
+        cache_path.write_bytes(buf.getvalue())
         return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
     resolved = db.resolve_path(source.file_path)
     if not resolved.exists():
         raise HTTPException(404)
-    buf = await imaging.run(resize_photo, resolved, min(max_size, 2000))
+    buf = await imaging.run(resize_photo, resolved, size)
+    cache_path.write_bytes(buf.getvalue())
     return StreamingResponse(buf, media_type="image/jpeg", headers=IMMUTABLE_IMAGE_HEADERS)
 
 

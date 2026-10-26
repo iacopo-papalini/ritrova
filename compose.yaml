@@ -81,8 +81,11 @@ services:
       # the Nextcloud server is moved to rclone-attic within half an hour.
       # Files can be fished back out of the attic; empty directories cannot.
       - ${PHOTOS_DIR:?set PHOTOS_DIR in .env}:/photos:ro
-      # D15: thumbnails and extracted video frames.
-      - ritrova-data:/data
+      # D15: thumbnails, resized views and extracted video frames. A bind
+      # rather than a named volume, so the bulk sits on the data disk
+      # instead of the system one. Losing it costs only regeneration, which
+      # is why it is the cache and not the database that lives out here.
+      - ${DATA_DIR:?set DATA_DIR in .env}:/data
     deploy:
       resources:
         limits:
@@ -92,5 +95,8 @@ services:
           memory: 2048M
 
 volumes:
+  # The database stays on the system disk on purpose: it is small and
+  # irreplaceable, and a named volume cannot turn into an empty directory
+  # the way a bind over a separate disk can — which Postgres would answer
+  # by initialising a brand new, empty cluster.
   postgres-data:
-  ritrova-data:
