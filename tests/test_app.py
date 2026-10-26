@@ -1,6 +1,7 @@
 """Tests for ritrova.app routes and API endpoints."""
 
 import io
+from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
 
@@ -817,6 +818,22 @@ class TestServeOnlyMode(PostgresAppTestCase):
         resp = self.client.get("/healthz")
         assert resp.status_code == 200, resp.text
         assert resp.json()["status"] == "ok"
+
+    async def test_healthz_unhealthy_when_the_photo_mount_is_gone(self) -> None:
+        """A bind mount over a disk that did not come back leaves an empty
+        directory, which otherwise serves 404s while reporting healthy."""
+        empty = Path(self.tmp_path) / "no_mount"
+        empty.mkdir()
+        client = self.make_client(photos_dir=str(empty))
+        resp = client.get("/healthz")
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["photos"] == "archive empty or unreadable"
+
+    async def test_healthz_ok_when_the_archive_has_content(self) -> None:
+        mounted = Path(self.tmp_path) / "mounted"
+        (mounted / "2002").mkdir(parents=True)
+        client = self.make_client(photos_dir=str(mounted))
+        assert client.get("/healthz").json()["status"] == "ok"
 
     async def test_healthz_is_not_shadowed_by_the_kind_catchall(self) -> None:
         """``/{kind}`` matches any single segment; /healthz must win."""

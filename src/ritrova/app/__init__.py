@@ -46,6 +46,22 @@ TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 STATIC_DIR = Path(__file__).parent.parent / "static"
 
 
+def _photo_archive_present(base_dir: Path | None) -> bool:
+    """An empty photo directory means a lost mount, not an empty archive.
+
+    The server reaches the archive through a bind mount over a separate
+    disk. If that disk does not come back, the bind leaves an empty
+    directory behind: every page still renders and every image 404s. Report
+    it rather than look healthy.
+    """
+    if base_dir is None:
+        return True
+    try:
+        return any(base_dir.iterdir())
+    except OSError:
+        return False
+
+
 def create_app(
     dsn: str,
     data_dir: str | Path,
@@ -104,13 +120,21 @@ def create_app(
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
-        """Liveness plus a real query, so a pool that cannot reach Postgres
-        reports unhealthy instead of serving 500s to every page."""
+        """Liveness plus the two dependencies that fail silently: a pool that
+        cannot reach Postgres, and a photo archive that is not actually
+        mounted. Both otherwise leave a server that looks fine and serves
+        nothing."""
+        db = deps.get_db()
         try:
-            await deps.get_db().fetchval("SELECT 1")
+            await db.fetchval("SELECT 1")
         except (OSError, asyncpg.PostgresError) as exc:
             return JSONResponse(
                 {"status": "unhealthy", "database": type(exc).__name__}, status_code=503
+            )
+        if not _photo_archive_present(db.base_dir):
+            return JSONResponse(
+                {"status": "unhealthy", "photos": "archive empty or unreadable"},
+                status_code=503,
             )
         return JSONResponse({"status": "ok", "scan_models": scan_available()})
 
