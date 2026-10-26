@@ -66,6 +66,52 @@ def is_loopback_bind(host: str) -> bool:
         return False
 
 
+def refuse_unauthenticated_exposure(host: str, *, auth_configured: bool) -> str | None:
+    """Why serving on ``host`` without authentication must be refused, or None.
+
+    Returns the reason rather than raising, so the CLI can present it and
+    tests can assert on it without catching.
+
+    A bind beyond loopback is reachable by anything that can route to this
+    machine — which, behind the NAS's reverse proxy, is the internet. There
+    is no configuration of this app that makes that safe without a login,
+    so it is refused at startup instead of trusting whoever deploys it to
+    notice.
+    """
+    if is_loopback_bind(host):
+        return None
+    if auth_configured:
+        return None
+    return (
+        f"Refusing to serve on {host!r} without authentication. Anything that can "
+        "route to this machine could read and change the archive, and behind a "
+        "reverse proxy that means the internet.\n"
+        "Either configure Google sign-in (RITROVA_GOOGLE_CLIENT_ID and "
+        "RITROVA_GOOGLE_CLIENT_SECRET), or bind loopback with "
+        "--host 127.0.0.1 --logged-user <allowlisted address>."
+    )
+
+
+def storable_address(value: str | None) -> str | None:
+    """``value`` if it is an IP address, else None.
+
+    ``request.client.host`` is not guaranteed to be one: a UNIX-socket peer,
+    a test client and a malformed proxy header all produce something else.
+    The audit and session columns are ``inet``, which rejects those, and an
+    audit write that raises would fail the request it was recording — so a
+    login would break over a value we only wanted for the record. Dropping
+    the address is the lesser loss, and the row still carries everything
+    else.
+    """
+    if not value:
+        return None
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    return value
+
+
 def is_local_address(peer_address: str | None) -> bool:
     """Whether ``peer_address`` is a host on our network that is not a relay.
 

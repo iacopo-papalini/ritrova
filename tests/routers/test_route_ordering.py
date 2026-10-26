@@ -25,7 +25,7 @@ from .._postgres import PostgresAppTestCase
 class TestRouteOrdering(PostgresAppTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.client = self.make_client()
+        self.client = await self.make_client()
 
     def test_api_routes_registered_before_kind_catchall(self) -> None:
         first_kind_idx: int | None = None

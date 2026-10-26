@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
 # A test that opens a second connection while another holds a conflicting lock
 # would otherwise wait forever; fail fast so the cause is visible.
+TEST_USER_EMAIL = "test-user@example.com"
+TEST_USER_SUB = "google-sub-test-user"
+
 _TIMEOUTS = "SET lock_timeout = '5s'; SET statement_timeout = '30s'"
 
 
@@ -100,21 +103,45 @@ class PostgresAppTestCase(IsolatedAsyncioTestCase):
         assert self._pool is not None
         self.db = FaceDB(self._pool, data_dir=self.tmp_path, base_dir=None)
 
-    def make_client(self, photos_dir: str | None = None) -> TestClient:
+    async def make_client(
+        self,
+        photos_dir: str | None = None,
+        *,
+        authenticated: bool = True,
+        role: str = "admin",
+    ) -> TestClient:
         """Build the app and start it, so the lifespan opens its own pool.
 
         The app runs in TestClient's own thread and loop; it reaches the
         same database as ``self.db``, and both commit, so each sees the
         other's writes.
+
+        Authenticated by default, with a real allowlist entry, user row and
+        session row rather than a bypass — so these tests exercise the same
+        gate, CSRF check and role check that production does. Pass
+        ``authenticated=False`` to drive the app as a stranger.
         """
         from fastapi.testclient import TestClient
 
         from ritrova.app import create_app
+        from ritrova.app.sessions import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE
+        from ritrova.db.auth import new_session_token
 
         self.app = create_app(TEST_DSN, self.tmp_path, photos_dir=photos_dir)
         client = TestClient(self.app)
         client.__enter__()
         self.addCleanup(client.__exit__, None, None, None)
+
+        if authenticated:
+            await self.db.allow_user(TEST_USER_EMAIL, role=role)
+            user = await self.db.record_login(TEST_USER_SUB, TEST_USER_EMAIL, "Test User", role)
+            self.user = user
+            token = new_session_token()
+            await self.db.create_session(user.id, token, ip_address="127.0.0.1")
+            csrf = "test-csrf-token"
+            client.cookies.set(SESSION_COOKIE, token)
+            client.cookies.set(CSRF_COOKIE, csrf)
+            client.headers[CSRF_HEADER] = csrf
         return client
 
     async def asyncTearDown(self) -> None:

@@ -28,9 +28,10 @@ from ..capabilities import scan_available
 from ..db import FaceDB
 from ..db.auth import AllowedUser
 from ..undo import UndoStore
-from . import deps, imaging
+from . import deps, imaging, sessions
 from .responses import JSONResponse
 from .routers import (
+    auth,
     browse,
     circles,
     clusters,
@@ -123,9 +124,14 @@ def create_app(
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+    # Registered before any router so it sees every request, including
+    # routes added later. Default is deny; see sessions.EXEMPT_PREFIXES.
+    sessions.install(app)
+
     # Order is load-bearing: every /api/... router is registered before
     # `pages`, whose /{kind}/... catch-alls would otherwise shadow them.
     # See CLAUDE.md:16 and tests/routers/test_route_ordering.py.
+    app.include_router(auth.router)
     app.include_router(images.router)
     app.include_router(findings.router)
     app.include_router(clusters.router)

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Signed out · Ritrova{% endblock %}
+{% block content %}
+<div class="mx-auto max-w-xl px-4 py-16 text-center">
+  <h1 class="text-2xl font-semibold">Signed out</h1>
+  <p class="mt-4 text-gray-600">Your Ritrova session has ended.</p>
+  <p class="mt-2 text-sm text-gray-500">You are still signed in to Google itself.</p>
+  <a href="/auth/login"
+     class="mt-8 inline-block rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
+    Sign in again
+  </a>
+</div>
+{% endblock %}

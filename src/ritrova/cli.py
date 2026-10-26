@@ -11,7 +11,8 @@ from uuid import UUID
 import click
 from dotenv import load_dotenv
 
-from .app.network import is_loopback_bind
+from .app.network import is_loopback_bind, refuse_unauthenticated_exposure
+from .app.oidc import google_oidc_configured
 from .capabilities import INSTALL_HINT, scan_available
 from .db import FaceDB
 from .db.auth import ROLES
@@ -1283,13 +1284,21 @@ def warmup() -> None:
 
 
 @cli.command()
-@click.option("--host", default="0.0.0.0", help="Host to bind to")
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    show_default=True,
+    help="Host to bind to. Binding beyond loopback requires Google sign-in to be configured.",
+)
 @click.option("--port", default=8787, type=int, help="Port to listen on")
 @click.option(
     "--logged-user",
-    envvar="RITROVA_LOGGED_USER",
     default=None,
     metavar="EMAIL",
+    # Deliberately no envvar: a value in .env applies silently to every
+    # invocation from that directory, and the failure it produces is a run
+    # that looks authenticated and is not. A flag is per-run and visible in
+    # the command that was actually typed.
     help="Run every request as this allowlisted user, skipping Google sign-in. "
     "Only permitted when bound to loopback.",
 )
@@ -1308,6 +1317,10 @@ def serve(ctx: click.Context, host: str, port: int, logged_user: str | None) -> 
             "Bind 127.0.0.1, or drop --logged-user and sign in."
         )
         raise click.UsageError(msg)
+
+    refusal = refuse_unauthenticated_exposure(host, auth_configured=google_oidc_configured())
+    if refusal is not None:
+        raise click.ClickException(refusal)
 
     from .app import create_app
 

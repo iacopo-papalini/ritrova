@@ -18,13 +18,18 @@ serve: $(MODELS_STAMP) ## Start the web UI
 	$(RITROVA) serve
 
 # Loopback-bound so --logged-user is permitted at all: it runs every request
-# as that user, so anyone who can reach the port is them. The address comes
-# from RITROVA_LOGGED_USER in $(ENV_FILE) rather than this file, which is
-# committed. The sync runs before warmup, which needs the models it installs.
-scan-serve: ## Install the scan extra and serve on loopback as RITROVA_LOGGED_USER
+# as that user, so anyone who can reach the port is them. LOGGED_USER is
+# passed on the command line rather than read from $(ENV_FILE) on purpose —
+# a value in a config file applies silently to every run, and the failure
+# it causes is a server that looks authenticated and is not.
+# The sync runs before warmup, which needs the models it installs.
+scan-serve: ## Install the scan extra and serve on loopback. Needs LOGGED_USER=<email>
+ifndef LOGGED_USER
+	$(error LOGGED_USER is not set. Use: make scan-serve LOGGED_USER=you@example.com)
+endif
 	uv sync --extra scan
 	@$(MAKE) --no-print-directory $(MODELS_STAMP)
-	$(RITROVA) serve --host 127.0.0.1
+	$(RITROVA) serve --host 127.0.0.1 --logged-user $(LOGGED_USER)
 
 # Downloads buffalo_l / yolo11m / siglip on first run so a family member's
 # first manual finding doesn't stall on ~1.1 GB of weights. Delete the stamp

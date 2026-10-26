@@ -61,7 +61,7 @@ class TestImageEndpoints(PostgresAppTestCase):
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.client = self.make_client()
+        self.client = await self.make_client()
         self.tmp = self.tmp_path
 
         # Create a real JPEG image for testing
@@ -267,7 +267,7 @@ class TestMergeSuggestionsAPI(PostgresAppTestCase):
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.client = self.make_client()
+        self.client = await self.make_client()
 
     def test_empty_suggestions(self) -> None:
         resp = self.client.get("/api/merge-suggestions")
@@ -332,7 +332,7 @@ class TestClusterDetailPage(PostgresAppTestCase):
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.client = self.make_client()
+        self.client = await self.make_client()
 
     async def test_cluster_detail_shows_queue_context_and_navigation(self) -> None:
         _, old_a = await _add_finding(self.db, "/archive/2023-01/old-a.jpg", seed=1)
@@ -354,7 +354,7 @@ class TestSearchConsolidation(PostgresAppTestCase):
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.client = self.make_client()
+        self.client = await self.make_client()
 
     def test_legacy_search_redirects_to_people_filter(self) -> None:
         resp = self.client.get("/search?q=Alice Smith", follow_redirects=False)
@@ -379,7 +379,7 @@ class TestSubjectsAPI(PostgresAppTestCase):
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.client = self.make_client()
+        self.client = await self.make_client()
 
     def test_all_subjects_empty(self) -> None:
         resp = self.client.get("/api/subjects/all")
@@ -450,7 +450,7 @@ class TestTogetherAPI(PostgresAppTestCase):
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.client = self.make_client()
+        self.client = await self.make_client()
 
     def test_empty_query(self) -> None:
         resp = self.client.get("/api/together")
@@ -598,7 +598,7 @@ class TestTogetherAPI(PostgresAppTestCase):
 class TestBrowsePage(PostgresAppTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.client = self.make_client()
+        self.client = await self.make_client()
 
     def test_browse_page_renders(self) -> None:
         resp = self.client.get("/browse")
@@ -646,7 +646,7 @@ class TestPrintSelectionPage(PostgresAppTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
         self.db.base_dir = self.tmp_path.resolve()
-        self.client = self.make_client(str(self.tmp_path))
+        self.client = await self.make_client(str(self.tmp_path))
         self.tmp = self.tmp_path
         (self.tmp_path / "prints").mkdir()
         self.first_path = self.tmp_path / "prints" / "z first.jpg"
@@ -729,7 +729,7 @@ class TestNamespaceCollision(PostgresAppTestCase):
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.client = self.make_client()
+        self.client = await self.make_client()
 
     async def test_cluster_suggestion_is_not_labelled_with_a_subject_name(self) -> None:
         """A cluster-cluster suggestion carries no subject name.
@@ -770,7 +770,7 @@ class TestTemplateIdRendering(PostgresAppTestCase):
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.client = self.make_client()
+        self.client = await self.make_client()
 
     async def test_subject_detail_renders_with_uuid_ids(self) -> None:
         sid = await self.db.create_subject("Alice")
@@ -792,7 +792,7 @@ class TestServeOnlyMode(PostgresAppTestCase):
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.client = self.make_client()
+        self.client = await self.make_client()
         self.source_id = await self.db.add_source("/a.jpg", width=400, height=300)
 
     async def test_manual_finding_returns_503_without_models(self) -> None:
@@ -824,7 +824,7 @@ class TestServeOnlyMode(PostgresAppTestCase):
         directory, which otherwise serves 404s while reporting healthy."""
         empty = Path(self.tmp_path) / "no_mount"
         empty.mkdir()
-        client = self.make_client(photos_dir=str(empty))
+        client = await self.make_client(photos_dir=str(empty))
         resp = client.get("/healthz")
         assert resp.status_code == 503, resp.text
         assert resp.json()["photos"] == "archive empty or unreadable"
@@ -832,7 +832,7 @@ class TestServeOnlyMode(PostgresAppTestCase):
     async def test_healthz_ok_when_the_archive_has_content(self) -> None:
         mounted = Path(self.tmp_path) / "mounted"
         (mounted / "2002").mkdir(parents=True)
-        client = self.make_client(photos_dir=str(mounted))
+        client = await self.make_client(photos_dir=str(mounted))
         assert client.get("/healthz").json()["status"] == "ok"
 
     async def test_healthz_is_not_shadowed_by_the_kind_catchall(self) -> None:
@@ -851,7 +851,7 @@ class TestSourceImageCache(PostgresAppTestCase):
         from PIL import Image
 
         Image.new("RGB", (2400, 1800), "red").save(photos / "big.jpg")
-        self.client = self.make_client(photos_dir=str(photos))
+        self.client = await self.make_client(photos_dir=str(photos))
         self.source_id = await self.db.add_source("big.jpg", width=2400, height=1800)
 
     async def test_second_request_is_served_from_disk(self) -> None:
