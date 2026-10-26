@@ -37,11 +37,13 @@ pushed.
 > faces relabelled from Lilia to Carla Gabbrielli**. Both conditions still exist in the
 > SQLite source, so a fresh migration silently reintroduces them and nothing fails.
 >
-> The SQL is not in the repo. That makes
-> `~/Progettini/ritrova-dumps/ritrova-20261025-2022.dump` (155 MB, custom format) the only
-> artifact carrying that work, and it sits outside the repo and outside any backup. Until
-> the cleanup is captured as a migration or a script, the pipeline is not reproducible —
-> there is one good dump instead.
+> The SQL is not in the repo, and **the user has declined to capture it** ("no need — we
+> also have the live postgres session here"). That decision stands on better ground than
+> when it was taken: the live database is now dumped to the NAS daily and the restore has
+> been verified, so the cleanup survives in a backed-up artifact rather than in one
+> unreplicated dump file. Accepted consequence: the pipeline is not reproducible from
+> `faces.db`, and a fresh migration would silently reintroduce both conditions. Not to be
+> re-raised.
 >
 > Current contents: 32,721 sources · 67,460 findings · 33,751 named faces.
 
@@ -139,6 +141,11 @@ Three facts that shape everything below:
 | D13 | **UUIDv7 primary keys on all six surrogate-keyed tables**, replacing integer identities. User's decision, against `ritrova-67`'s recommendation. | 2026-10-25 |
 | D14 | **Strong typing at the boundary.** Dataclasses carry real `datetime`, not the strings they hold today. | 2026-10-25 |
 | D15 | **`data_dir` becomes an explicit setting**, alongside `RITROVA_DSN`. `db_path.parent` was load-bearing and there is no longer a db path. | 2026-10-25 |
+| ~~D16~~ | Revised the same day by D17–D20 — see *Why D16*, kept for the reasoning. | 2026-10-26 |
+| D17 | **Serving is HTTPS-only, through the NAS.** No plain HTTP anywhere. `8787` on paiolo is firewalled to `172.20.42.2`. One ingress for the house and the internet alike. | 2026-10-26 |
+| D18 | **Reads are open from LAN addresses; every write is authenticated.** Keyed on `X-Forwarded-For`, trusted from the NAS alone. | 2026-10-26 |
+| D19 | **Local mode: loopback bind, auth off.** The app **refuses to start** with auth disabled on any non-loopback bind. | 2026-10-26 |
+| D20 | **The Mac reaches paiolo's Postgres through an SSH tunnel.** Postgres stays bound to `127.0.0.1`; nothing on paiolo changes. | 2026-10-26 |
 
 Superseded on 2026-10-25, kept for the reasoning: the server-owns-SQLite split, the
 scan-delta handoff, the Mac-as-authoritative-copy rule and the snapshot-as-reference rule.
@@ -170,6 +177,119 @@ decode stalls every other request on the loop, including the other 49 thumbnails
 releases the GIL inside its C codec loops, so a *thread* executor gives real parallelism
 across the four cores without pickling image bytes between processes. Threads, not
 processes, and bounded — anyio's default of 40 would thrash a 4-core box.
+
+### Why D17–D20
+
+D16 said LAN clients could use plain HTTP without logging in. The user then asked the
+question that unpicked it: **do we want to send session cookies over HTTP?**
+
+We do not, and the conflict is structural rather than a matter of taste. The design
+specifies a `Secure` cookie, which a browser will not send over HTTP at all — so an
+authenticated LAN session over HTTP requires dropping `Secure`, putting the session token
+in clear across the house WiFi. The two coherent positions are *HTTP with no auth at all*
+(no cookie exists, nothing to leak) or *HTTPS with auth*. There is no safe middle.
+
+Google settles it independently. Verified 2026-10-26: redirect URIs must use HTTPS, and
+the host may not be a bare IP — loopback is the only exemption. So
+`http://172.20.42.3:8787` is rejected twice over, and OIDC needs a hostname over HTTPS
+regardless of what we would have preferred. **HTTPS is therefore not the reward for
+finishing auth; it is a precondition for auth existing at all**, and W6 moves alongside W5
+rather than after it. The W5-before-W6 rule is unharmed — it was always about not exposing
+an *unauthenticated* UI.
+
+What makes this workable is that **Google never connects to the app.** OAuth is a sequence
+of browser redirects, so the hostname only has to resolve and be trusted by the browsers
+in the house — which is W6.4's pihole record pointing at the NAS, exactly as `cloud` and
+`wiki` already work.
+
+**D17 simplifies more than it costs.** One ingress instead of two: every client, at home
+or outside, reaches `https://photos.papalini.casa` through the NAS, and `8787` is
+firewalled to it. There is no direct-to-paiolo path left to reason about, and
+`X-Forwarded-For` is trusted from exactly one source. **The relay exclusions survive
+anyway** — if proxy-header handling breaks, every request presents as `172.20.42.2`, which
+is private, and the exemption would be fail-open again. Excluding the NAS and the router
+keeps the failure safe, and costs nothing.
+
+**D19** exists because the Mac runs `analyse` outside Docker and wants no auth. Making the
+bind address govern it means the unsafe configuration is unreachable rather than merely
+discouraged: an auth-less instance cannot be shipped to paiolo, because it will not listen
+anywhere that matters. Refusal at startup, not a warning.
+
+**D20** removes a decision instead of taking one. The MacBook is on DHCP, so scoping
+`pg_hba` to its address was unattractive, and opening Postgres to the subnet would have
+made D1's deferred LAN clause real. An SSH tunnel means **nothing on paiolo changes** — no
+compose edit, no `pg_hba` entry, no firewall rule, no port on the LAN — and the
+authentication is the SSH key that already exists. DHCP stops mattering because the Mac
+dials out.
+
+**On proportion.** The user's standing reminder applies to all of this: *Ritrova is a
+helper application, not the photo store.* The photos are mirrored to disk through
+Nextcloud, so losing Ritrova costs search and curation, not access. The NAS becoming a
+single point for serving is therefore not a risk worth designing around, and security
+measures here should be scaled to a family helper app whose real data lives elsewhere —
+`pg_hba` and a password, not mutual TLS between two machines in one house.
+
+### Why D16, and the trap in it (superseded)
+
+The user's decision: *"http connections from same network IP addresses should be allowed —
+the https + auth is only required as a precondition to open the app on the Internet"*.
+
+**The naive implementation inverts it.** TLS terminates on the NAS (`172.20.42.2`), which
+proxies to paiolo (`172.20.42.3:8787`). An internet request therefore reaches the app with
+a source address of `172.20.42.2` — a private address. A rule reading "exempt private
+ranges" would exempt **every request arriving from the internet** while appearing to work
+perfectly on the LAN, which is where it would be tested.
+
+What makes it correct is already in W6.5: uvicorn with `--proxy-headers
+--forwarded-allow-ips=172.20.42.2`. Then `X-Forwarded-For` is honoured **only** from the
+NAS, so:
+
+- proxied visitor → client host is their real public address → not private → auth required;
+- LAN machine on 8787 → its own `172.20.42.x` → exempt;
+- LAN machine forging `X-Forwarded-For` → ignored, the header is untrusted from anywhere
+  but the NAS.
+
+The exemption must key on the connection's own address, never on a header, and the NAS's
+own address must not itself be exempt.
+
+**Belt and braces, approved by the user 2026-10-26: blacklist `172.20.42.2` explicitly**
+rather than relying on proxy-header handling alone. The two mechanisms fail in opposite
+directions, which is the point. Trusting only `--forwarded-allow-ips` means a
+misconfiguration lets internet traffic through looking private — fail-open. Excluding the
+NAS address outright means a misconfiguration asks proxied users to log in — wrong, but
+fail-safe. Implement both; the blacklist is what makes the mistake survivable.
+
+**The router is blacklisted too** (`172.20.42.1`, confirmed by ARP on the LAN; user's
+call, 2026-10-26). A port forward of 8787 straight to paiolo — misconfigured, or added
+later by someone solving a different problem — puts the app on the internet without
+passing the NAS at all. Whether that is catastrophic depends on router behaviour nobody
+should have to rely on: if it source-NATs forwarded connections, every visitor arrives
+looking like `172.20.42.1` and is exempted; if it preserves the source address they
+present public addresses and are challenged. Firmware updates can change which. Excluding
+the router removes the question.
+
+It does not close the port forward — it means anyone arriving through one must log in.
+
+**State the rule, not the two addresses.** The invariant is: *exempt only hosts that
+cannot relay traffic from outside the network.* The NAS and the router are both relays,
+which is why they are excluded despite holding private addresses. Anything that later
+becomes a proxy — another reverse proxy, a VPN concentrator, a container host with its own
+NAT — joins the list. A reader who sees only two magic IPs will not know when to extend
+it.
+
+**Three consequences that are easy to miss:**
+
+- **Admin actions still require real authentication, even on the LAN.** Allowlist
+  management, role changes and account disable are the controls protecting internet
+  access; leaving them reachable unauthenticated from the house makes the rest decorative.
+- **CSRF (W5.4) still applies to LAN requests.** No session does not mean no writes —
+  it means the token cannot be anchored to a session, so it needs its own cookie.
+- **The audit log (W5.8) must not record LAN writes as nobody.** Attribute them to the
+  connecting address, or curation history goes blank for the common case.
+
+Accepted risk, stated plainly: any device on the house network can read and modify the
+archive without credentials. That follows from the decision and is consistent with the
+already-taken decision to accept LAN exposure.
 
 ### Why D15
 
@@ -345,7 +465,40 @@ Nextcloud may upload a 486 MB file while SQLite is mid-transaction, which costs 
 *backup*, not a usable *database*. The live file on the Mac is never at risk from the
 sync; only the copy of it is.
 
-> **Parked: backup design.** Deferred by the user on 2026-10-25 as premature — it is a
+> **Unparked and largely built, 2026-10-26.** `pg_dump` on paiolo at **00:40 daily**,
+> two slots alternating on epoch-week parity, pushed to the NAS over SSH under a forced
+> command that validates slot and byte count before renaming over the target. Lands in
+> `/volume1/Documenti/ritrova-backup/`, inside the `documenti` set of the NAS's existing
+> weekly `nas-backup.sh` — gpg AES-256 to S3 Glacier Deep Archive, 180-day compliance
+> lock, deltas 760 days.
+>
+> **Restore-verified, not merely written.** A fresh dump restored into a scratch database
+> on paiolo and compared against the Mac on 16 aggregates — 32,721 sources · 67,460
+> findings · 35,253 assignments · 33,751 named · 47,355 cluster memberships · 140,924,928
+> bytes of embeddings — identical throughout. 21 seconds to restore. End-to-end: 89s
+> dump, 3s transfer.
+>
+> **Why 00:40.** `ritrova-67`'s first choice of 03:00 would have collided with
+> `e2scrub_all -A -r` at 03:10 daily — a 470 MB dump stacked on an ext4 scrub of every
+> filesystem, most nights. 00:40 clears the rclone passes (:00–:05:30, :30–:35:30) and
+> lands ~80 minutes before the Sunday 02:00 Glacier run, so what goes off-site is
+> same-night rather than a day stale.
+>
+> **Generations.** Daily dumps on weekly parity means the standing state is "today's
+> dump" plus "last week's final dump", so a corrupt dump can only spoil the current
+> week's slot. The local staging copy on paiolo is replaced only after a successful send,
+> so a failed run leaves the previous good dump intact.
+>
+> **Outstanding: the health signal**, and it is the piece that cannot live on paiolo. The
+> crontab the job joins begins `MAILTO=""`, so a non-zero exit produces nothing at all;
+> and no return code can report the case this backup exists for, which is paiolo being
+> dead and running no job. The alarm must key on dump **mtime observed from the NAS**,
+> ~36 hours, folded into the healthchecks.io setup already there.
+
+> **Superseded: parked backup design.** The transport is now **rclone**, not nextcloudcmd — see
+> *Constraints established 2026-10-26*. The `flock` reasoning below still governs.
+>
+> Deferred by the user on 2026-10-25 as premature — it is a
 > real problem and will be addressed, but not before the migration lands. Nothing below
 > is decided. It is kept only so the analysis does not have to be redone, and it must not
 > be read as an agreed plan. Several of these points came from peer sessions and were
@@ -629,6 +782,20 @@ The large one. Everything else waits behind it.
 - [x] **W1.5 — Imaging on a bounded executor** (2026-10-25). Original scope: (D3). `asyncio.to_thread` for decode and
       encode, pool sized to core count rather than anyio's default 40, and a semaphore
       capping concurrent decodes. Without this, D2 makes the Celeron slower.
+- [ ] **W1.8 — Bound OpenCV's internal threading on paiolo.** Measured 2026-10-26 on the
+      Mac: `cv2.getNumThreads()` reports **18**, so a single video seek already fans out
+      across every core before the imaging pool multiplies it. Scaling confirms it —
+      seeking 16 frames of a 1,482-frame clip ran 1.40s on one thread, 0.95s on two and
+      0.88s on four, a plateau at **1.59x** rather than the 3.52x the Pillow decode path
+      reaches. That shape is internal parallelism saturating, not a GIL hold, which would
+      have capped it at 1.00x.
+
+      The consequence is for the Celeron, not the Mac: pool size x OpenCV's own threads
+      oversubscribes four cores badly, and the standing rule is half the host. Call
+      `cv2.setNumThreads()` with a bounded value at startup. Also worth knowing that the
+      imaging pool buys little for video seeks specifically — the reason to keep them on
+      it is that they would otherwise block the event loop, which holds regardless.
+
 - [ ] **W1.6 — One-shot data migration.** SQLite → Postgres on the Mac: 33,712 sources,
       70,002 findings with their embeddings, 77,977 scans, 36,884 assignments. Verify
       counts and spot-check the embedding round-trip.
@@ -689,6 +856,54 @@ The large one. Everything else waits behind it.
       *both machines* at Postgres", which assumed a network-reachable server. There is one
       machine in scope. Needs the user's explicit go-ahead.
 
+## Constraints established 2026-10-26 (`ritrova-11`)
+
+### The sync transport changed, and why
+
+`nextcloudcmd` is retired. paiolo now pulls with **`rclone sync` over WebDAV**, one-way,
+`*/30`, `flock`-guarded, deletions moved to `/srv/family-data/rclone-attic/<date>` rather
+than unlinked. 26+ consecutive unattended runs, all `rc=0`, no overlap skips, ~5m15s per
+pass. Mac→server→paiolo round trip verified with a real file: md5 and mtime preserved,
+~32 min worst-case latency.
+
+The cause was not performance. **The Nextcloud desktop client (35.0.0) cannot handle macOS
+NFD filenames** — `FileSystem::setFolderPermissions` throws on decomposed accents, and it
+is not a locale issue (three UTF-8 locales tested). On 25 October it created empty NFD
+twins locally and then instructed the server to delete the populated NFC originals: six
+directories, including `Documenti/identità` — passports, ID cards, driving licence. All
+recovered from the trashbin. The structural fix is that **paiolo is now incapable of
+pushing a deletion upward.**
+
+### No Mac test can validate filesystem semantics
+
+Docker Desktop bind-mounts APFS into the container. **APFS is normalization-insensitive;
+paiolo's ext4 is byte-exact.** Therefore no difference in that class can be caught by any
+test run on the Mac. This is measured, not theoretical: `ritrova-67`'s container smoke
+tests passed clean locally while **193 photos would have 404'd on paiolo**.
+
+Case sensitivity is the same class — APFS insensitive, ext4 sensitive. Currently clean (0
+case-only differences, 0 collisions) but nothing prevents recurrence. **Anything touching
+path resolution, filename encoding or case must be tested on paiolo**, and a green local
+run is not evidence.
+
+### Two operational facts
+
+- **Snap docker cannot see `/srv` at all** — the daemon reports "no such file or
+  directory", and symlinks and local volumes with bind options fail identically. Hence the
+  `/srv/family-data/Nextcloud` → `/home/iacopo/photos` ro bind in `/etc/fstab`. Applies to
+  anything else containerised there.
+- **A missing data disk must fail loudly.** `/srv/family-data` is a separate ext4 (303 G
+  used) while `/` has 63.7 G free, so an unmounted disk would have had the pull fill root
+  and take down Postgres, the containers and pihole. The wrapper now aborts `exit 1` —
+  never 0 — when `/srv/family-data` is not a mount point. Both paths tested.
+
+### Known-open on paiolo, all the user's call, none blocking
+
+Six empty NFD husk directories (cosmetic, 6 NOTICE lines per run; nothing depends on them
+since `ritrova-67` fixed normalization at the lookup boundary) · `/home/iacopo/ritrova/.env`
+still carries a stale `FACE_DB` pointing inside the synced tree · pihole's container logs
+sit outside the configured rotation while snap docker grows logs unboundedly.
+
 ## W1 follow-ups (found by `ritrova-3b`, 2026-10-25)
 
 - [ ] **`sync_scan_types` has no caller in the application.** Defined at
@@ -699,7 +914,7 @@ The large one. Everything else waits behind it.
       key would have been an outage waiting for the first scan. Either call it from a
       migration or delete it; leaving a seeding function that nothing seeds with is the
       worst of the three.
-- [ ] **`imaging.py:1` cites "ADR-012 D3".** The D-numbers exist only in this plan, and
+- [ ] **`imaging.py:1` cites "ADR-012 D3".** *Routed to `ritrova-3b` 2026-10-26.* The D-numbers exist only in this plan, and
       this plan says of itself that it will be archived rather than maintained. The
       citation becomes unresolvable the moment that happens. Same class of defect as the
       ADR-006 gap, in a docstring — and the same reason CLAUDE.md forbids citing ticket
@@ -780,8 +995,62 @@ session, no CSRF, no user table anywhere in `src/`.
       sensitive mutations.
 - [ ] **W5.9 — Secrets.** Client id, client secret, session signing key and the Postgres
       password in a `0600` env file on the box. Never in the repo.
-- [ ] **W5.10 — Publish the OAuth consent screen** once the scope list is confirmed to be
-      only `openid`/`email`/`profile`.
+- [ ] **W5.10 — Publish the OAuth consent screen.** *Deferred, not dropped (2026-10-26).*
+      Blocked on the branding page requiring privacy-policy and terms-of-service URLs that
+      are publicly reachable on `papalini.casa`, which does not resolve from the internet
+      until W6. The app runs in **Test mode** until then. That costs only the test-user
+      list, because Test mode's 7-day re-consent applies to refresh tokens and this design
+      stores none. Revisit after W6, with a one-paragraph privacy page behind the domain.
+
+### Google OAuth client — pinned contract (2026-10-26)
+
+Agreed with ritrova-11 so that the console entry and the code cannot drift apart.
+
+| Thing | Value |
+|---|---|
+| Authorised redirect URI | `https://photos.papalini.casa/auth/callback` — no trailing slash |
+| Optional second URI | `http://127.0.0.1:8787/auth/callback`, loopback exemption, only if a real Google login is ever wanted on the Mac |
+| Scopes | `openid`, `email`, `profile` and nothing else |
+| Publishing status | **Test** — see W5.10 |
+| Console project | `Ritrova`, personal Google account, no billing account attached |
+| Env vars | `RITROVA_GOOGLE_CLIENT_ID`, `RITROVA_GOOGLE_CLIENT_SECRET`, `RITROVA_PUBLIC_ORIGIN` |
+
+The redirect URI is built as `{RITROVA_PUBLIC_ORIGIN}/auth/callback` and deliberately **not**
+from the `Host` header — deriving it from an attacker-controlled header is host-header
+injection with an authorization code as the prize, and behind the NAS the app would
+otherwise be trusting the proxy's framing to construct a security-critical URL.
+
+Two consequences recorded rather than discovered later:
+
+- **The credentials must not reach paiolo's `.env` until the login flow lands.** The
+  startup guard checks that credentials *exist*, not that requests are authenticated. It
+  is currently the only thing keeping paiolo down; satisfying it early reopens the archive
+  unauthenticated. ritrova-67 has been warned that the container exiting non-zero after
+  the auth branch is pulled is intended, not a crash-loop.
+- **`/auth/...` depends on the same route-ordering invariant as `/api/...`.** `pages.py`
+  registers a two-segment catch-all `/{kind}/{subject_id}`, so `/auth/callback` is safe
+  only because `pages` is included last. `tests/routers/test_route_ordering.py` asserts
+  that for `/api/...` alone; ritrova-11 is extending it to cover `/auth/...`.
+- **Two gates hold the same email, but they fail in different places.** An account
+  outside Google's test-user list is refused at Google's own consent screen — no redirect,
+  no authorization code, so Ritrova never learns the attempt happened and cannot log it.
+  Only the `allowed_users` check runs in the callback. Diagnosis therefore reads off
+  *which page* the refusal appears on: Google's error screen means the Cloud console
+  test-user list; Ritrova's unauthorized page means `allowed_users`, fixed with
+  `ritrova auth allow <email>`. W5.6's page must say plainly that it is Ritrova refusing
+  and name that remedy, precisely because the other failure never reaches it.
+  ritrova-11 will confirm the Google-side behaviour the first time the flow runs.
+- **A refused sign-in has no `users` row to attribute.** That is why
+  `audit_log.actor_user_id` is nullable and carries `actor_address` alongside — the row is
+  the record of the refusal itself.
+- **Local mode is entered by CLI flag only.** Decided by the user 2026-10-26:
+  `RITROVA_LOGGED_USER` is removed, `--logged-user` is the sole route in. The variable
+  was found to win silently over Google — `cli.py` calls `load_dotenv()` at import, so a
+  line in `.env` applied to every invocation from that directory and produced a run that
+  looked authenticated and was not. Making the precedence explicit would have fixed the
+  symptom; deleting the variable removes the class. A flag is per-run and visible in the
+  command actually typed. `make serve-analyser` (W7.6) carries the flag for the Mac
+  analysis workflow.
 
 ## W6 — HTTPS and DNS
 
@@ -813,6 +1082,28 @@ Blocked on W5. Each step is small; the ordering matters more than the effort.
       mypy over `src/` and `tests/`; the hook runs ruff `--fix`, ruff-format and mypy over
       `src/` only. CLAUDE.md says checkers go through the hook, so `make lint` should call
       it.
+- [ ] **W7.6 — `make serve-analyser`, over a shared tunnel prerequisite.** The Mac
+      workflow as one command: SSH tunnel to paiolo's Postgres (D20), `RITROVA_DSN` at the
+      local end, loopback bind with auth off (D19), serve. Decided 2026-10-26 so the setup
+      stops being a sequence anyone has to remember.
+
+      **The tunnel belongs to more than this target.** `analyse`, `cluster`,
+      `auto-assign`, `stats` and `migrate-paths` all reach the database as well, and all
+      break once it is remote. Make the tunnel a prerequisite those targets share, with
+      `serve-analyser` one consumer among them — then `make analyse` keeps working exactly
+      as it is typed today and nothing grows a twin. The project already runs every
+      command through `make` with the `## ` help convention, so this follows the existing
+      shape rather than adding one.
+
+      Unrelated and trivial, noticed while reading: `deploy` and `css-check` are missing
+      from `.PHONY`.
+
+      Two things it must get right: `-o ExitOnForwardFailure=yes`, because `ssh -fN -L`
+      otherwise backgrounds successfully when the forward fails to bind and the failure
+      surfaces later as a confusing Postgres error; and idempotence, so a second run
+      neither stacks tunnels nor dies on a bound port — a `ControlMaster` socket plus a
+      `stop-analyser` target is the tidy form. The D19 guard stays in the application
+      regardless: the Makefile supplies flags, the app refuses the unsafe combination.
 - [ ] **W7.4 — `make deploy`.** Tag, build, ship, `alembic upgrade head`, restart, verify
       `/healthz`.
 - [ ] **W7.5 — Nightly `pg_dump`** (D5), gzipped into the Nextcloud tree so the NAS carries
