@@ -255,6 +255,14 @@ def install(app: object) -> None:
 
         response = await call_next(request)
 
+        # Every authenticated request must be able to make the next write, so
+        # the token is issued here rather than only at login: local mode never
+        # goes through the callback, and a session predating this check has no
+        # cookie. Without it the browser cannot set the header and every write
+        # answers 403.
+        if request.state.user is not None and CSRF_COOKIE not in request.cookies:
+            set_csrf_cookie(response, new_csrf_token())
+
         if session_id is not None:
             await deps.get_db().touch_session(session_id)
         return response
