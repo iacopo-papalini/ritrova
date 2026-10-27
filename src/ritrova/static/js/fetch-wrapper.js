@@ -11,6 +11,29 @@
    alongside a confirm dialog.
    =================================================================== */
 
+const CSRF_COOKIE = 'ritrova_csrf';
+const CSRF_HEADER = 'X-CSRF-Token';
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/* The server compares this header against the cookie of the same value
+   (double-submit): a cross-site page can send the request but cannot read
+   our cookie, so it cannot set the header. Every write therefore needs it,
+   and the server answers 403 without it. Hooked here rather than at each
+   call site because this module already owns window.fetch, and there are
+   nineteen fetch() calls across the other modules. */
+function csrfToken() {
+  const match = document.cookie.match(/(?:^|;\s*)ritrova_csrf=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function requestMethod(resource, init) {
+  if (init && init.method) return init.method.toUpperCase();
+  if (resource && typeof resource !== 'string' && resource.method) {
+    return resource.method.toUpperCase();
+  }
+  return 'GET';
+}
+
 const _origFetch = window.fetch.bind(window);
 window.fetch = async function (resource, init) {
   const skip = init && init.skipErrorToast;
@@ -19,6 +42,15 @@ window.fetch = async function (resource, init) {
   if (init && 'skipErrorToast' in init) {
     realInit = { ...init };
     delete realInit.skipErrorToast;
+  }
+  if (MUTATING_METHODS.has(requestMethod(resource, realInit))) {
+    const token = csrfToken();
+    if (token) {
+      realInit = { ...(realInit || {}) };
+      const headers = new Headers(realInit.headers || {});
+      headers.set(CSRF_HEADER, token);
+      realInit.headers = headers;
+    }
   }
   try {
     const response = await _origFetch(resource, realInit);
@@ -69,3 +101,14 @@ document.addEventListener('htmx:responseError', (evt) => {
 document.addEventListener('htmx:sendError', () => {
   safeToast('error', 'Network error — could not reach the server');
 });
+
+// htmx uses XMLHttpRequest, so the fetch patch above never sees it. Its
+// mutating requests need the same header.
+document.addEventListener('htmx:configRequest', (evt) => {
+  const verb = (evt.detail.verb || 'get').toUpperCase();
+  if (!MUTATING_METHODS.has(verb)) return;
+  const token = csrfToken();
+  if (token) evt.detail.headers[CSRF_HEADER] = token;
+});
+
+export { CSRF_COOKIE, CSRF_HEADER, csrfToken };

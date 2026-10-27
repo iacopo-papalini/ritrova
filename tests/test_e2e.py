@@ -24,6 +24,9 @@ def _emb(seed: int = 42, dim: int = 512) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
+E2E_USER = "e2e-user@example.com"
+
+
 async def _truncate(db: FaceDB) -> None:
     """These modules seed a server of their own, so they start from empty."""
     await db.execute(f"TRUNCATE {', '.join(_TABLES)} RESTART IDENTITY")
@@ -74,6 +77,11 @@ def app_url(tmp_path_factory: pytest.TempPathFactory) -> Generator[str]:
         f4 = await db.get_source_findings(source_id4)
         await db.update_cluster_ids({f3[0].id: 100, f4[0].id: 100})
 
+        # The request gate authenticates everything, so the browser needs an
+        # identity. Local mode supplies one from the allowlist, exactly as it
+        # does on the Mac — which keeps CSRF and the role checks live in these
+        # tests rather than bypassed.
+        await db.allow_user(E2E_USER, role="admin")
         await db.close()
 
     # A loop may already be running here, and asyncio.run cannot nest. A thread
@@ -93,7 +101,7 @@ def app_url(tmp_path_factory: pytest.TempPathFactory) -> Generator[str]:
     if seed_error:
         raise seed_error[0]
 
-    app = create_app(TEST_DSN, tmp)
+    app = create_app(TEST_DSN, tmp, logged_user=E2E_USER)
     port = 18787
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     thread = threading.Thread(target=server.run, daemon=True)
